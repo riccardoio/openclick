@@ -109,6 +109,8 @@ export class RealSystemProbe implements SystemProbe {
 const CUA_INSTALL_HINT =
   '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"';
 const CUA_DAEMON_HINT = "open -n -g -a CuaDriver --args serve";
+const CUA_DAEMON_AUTOFIX_HINT =
+  "or run `showme doctor --fix` to start it for you";
 const SR_HINT =
   "Run `cua-driver check_permissions`. If Screen Recording is missing, grant it in System Settings → Privacy & Security → Screen Recording for the CuaDriver app, then restart the daemon.";
 const RECORDER_BUILD_HINT =
@@ -153,7 +155,7 @@ export async function runDoctor(probe: SystemProbe): Promise<DoctorReport> {
           name: "cua-driver daemon",
           status: "fail",
           detail: "not running",
-          fixHint: `Start it: ${CUA_DAEMON_HINT}`,
+          fixHint: `Start it: ${CUA_DAEMON_HINT} (${CUA_DAEMON_AUTOFIX_HINT})`,
         },
   );
 
@@ -222,6 +224,62 @@ export async function runDoctor(probe: SystemProbe): Promise<DoctorReport> {
   );
 
   return { results, allOk: results.every((r) => r.status === "ok") };
+}
+
+/**
+ * Attempts to launch the CuaDriver daemon via `open -n -g -a CuaDriver --args
+ * serve`, then polls the probe until it reports the daemon as running or a
+ * deadline elapses. Side-effecty by design — kept out of `runDoctor` so the
+ * report builder stays pure.
+ *
+ * Returns:
+ *   started: true  → polling observed daemon transition to running
+ *   started: false → daemon was already running (no-op), or polling timed out,
+ *                    or the spawn failed (e.g. `open` not on PATH)
+ * `message` is a one-liner suitable for printing to the user.
+ */
+export async function tryAutoStartDaemon(
+  probe: SystemProbe,
+): Promise<{ started: boolean; message: string }> {
+  // Don't double-start.
+  if (await probe.cuaDriverDaemonRunning()) {
+    return { started: false, message: "[doctor] daemon already running" };
+  }
+
+  // `open` exits immediately while the daemon launches in the background, so
+  // fire-and-forget. If `open` itself isn't available (extremely rare on
+  // macOS), fall back to telling the user.
+  try {
+    Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  } catch (e) {
+    return {
+      started: false,
+      message: `[doctor] could not invoke 'open' (${(e as Error).message}). Run \`${CUA_DAEMON_HINT}\` manually.`,
+    };
+  }
+
+  console.log("[doctor] starting cua-driver daemon...");
+
+  const deadline = Date.now() + 5000;
+  const pollMs = 250;
+  while (Date.now() < deadline) {
+    await sleep(pollMs);
+    if (await probe.cuaDriverDaemonRunning()) {
+      return { started: true, message: "[doctor] daemon up" };
+    }
+  }
+
+  return {
+    started: false,
+    message: `[doctor] daemon did not come up within 5s. It may still be launching — re-run \`showme doctor\` in a moment, or start it manually with \`${CUA_DAEMON_HINT}\`.`,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
