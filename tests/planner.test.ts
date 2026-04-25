@@ -174,7 +174,7 @@ describe("planner", () => {
     expect(lastPrompt).toMatch(/SUFFIX/i);
   });
 
-  test("system prompt picks primitive based on focused element, NOT 'always keyboard'", async () => {
+  test("system prompt is small, generic, and grounded in intent + screenshot + AX tree", async () => {
     let lastPrompt = "";
     const client: PlannerClient = {
       async generatePlanText(prompt) {
@@ -187,20 +187,20 @@ describe("planner", () => {
       currentStateSummary: "",
       claudeClient: client,
     });
-    // Primitive-selection guidance present (renamed from "keyboard-first" —
-    // the original framing pushed type_text on apps like Calculator that
-    // have no text input. Now the rule is "look at the AX tree first".)
-    expect(lastPrompt).toMatch(/Choosing the right primitive/i);
-    // The anti-pattern callout names the exact failure mode the user hit.
-    expect(lastPrompt).toContain("ANTI-PATTERN");
-    expect(lastPrompt).toMatch(/Inserted .* char/);
-    // Both interaction modes appear in the examples: type_text for text
-    // fields (form fill) AND clicks for button-grid apps (Calculator).
-    expect(lastPrompt).toContain("type_text");
-    expect(lastPrompt).toContain("__selector");
-    expect(lastPrompt).toContain("Labels");
-    // Warns against press_key("*").
-    expect(lastPrompt).toMatch(/press_key.*"\*"|press_key\("\*"\)/);
+    // The system-guidance preamble (everything before "SKILL.md:") is the
+    // first principles block we shipped — extract it so we measure that, not
+    // the SKILL.md / replan / state appendices.
+    const guidance = lastPrompt.split("\nSKILL.md:")[0] ?? "";
+    const guidanceLines = guidance.split("\n").length;
+    // ~50 lines is a generous ceiling for "first principles, not a tutorial".
+    expect(guidanceLines).toBeLessThanOrEqual(50);
+    // Refers to all three planner inputs.
+    expect(guidance).toMatch(/intent/i);
+    expect(guidance).toMatch(/screenshot/i);
+    expect(guidance).toMatch(/AX tree/i);
+    // No app-specific hand-holding.
+    expect(guidance).not.toContain("Calculator");
+    expect(guidance).not.toContain("ANTI-PATTERN");
   });
 
   test("replan context tells the planner to switch primitive on retry", async () => {

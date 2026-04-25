@@ -72,121 +72,25 @@ export interface GeneratePlanOptions {
   imagePaths?: string[];
 }
 
-const SYSTEM_GUIDANCE = `You are a planner that converts a recorded macOS skill (SKILL.md) into an executable plan of cua-driver MCP tool calls. Output ONLY a JSON object matching the Plan schema below — no prose, no markdown fences. The local executor will walk your plan step by step without consulting an LLM, so each step must be concrete and executable.
+const SYSTEM_GUIDANCE = `You plan cua-driver actions for a macOS app.
 
-cua-driver tools available:
-  - launch_app({ bundle_id?: string, name?: string }) — returns { pid, windows: [{ window_id, ... }] }
-  - list_windows({ pid?: integer }) — returns the same per-window shape
-  - get_window_state({ pid, window_id }) — refreshes the AX cache; required before element_index clicks
-  - click({ pid, window_id, element_index }) OR click({ pid, x, y })
-  - double_click({ pid, window_id, element_index }) OR double_click({ pid, x, y })
-  - type_text({ pid, text, element_index?, window_id? })
-  - press_key({ pid, key, modifiers? })
-  - hotkey({ pid, keys: [modifier..., key] })
-  - scroll({ pid, direction: up|down|left|right, amount?, by?, element_index?, window_id? })
-  - assert({ kind: "ax_text" | "display_text", expected: string, target_role?: string }) — synthetic step handled locally; the executor re-snapshots the focused window and checks that \`expected\` appears in the AX tree. Use \`target_role\` (e.g. "AXStaticText") to scope the search. Use generously after important state changes — every step exit-coding 0 does not prove the app actually responded.
+Inputs you'll see: an \`intent:\` block from SKILL.md (the goal + success signals), a live screenshot of the app, and a serialized AX tree.
 
-Plan schema:
-{
-  "steps": [
-    { "tool": "<unprefixed-tool-name>", "args": { ... }, "purpose": "<human summary>" }
-  ],
-  "stopWhen": "<description of skill-complete state>"
-}
+Output ONLY a JSON object {"steps":[...], "stopWhen": "..."} — no prose, no markdown fences. Each step is { "tool": "...", "args": {...}, "purpose": "..." }.
 
-Important:
-- If the prompt contains a "Pre-discovery" block with concrete pid, window_id, and AX tree, the executor's context already holds pid + window_id + the AX index. You MUST NOT re-emit launch_app or get_window_state at the start of the plan — those already ran and are already absorbed. Begin the plan with the FIRST USER-FACING ACTION (typically a click or type_text).
-- For click / double_click / type_text targeting AX elements, do NOT pick element_index integers from the AX tree text — that's error-prone and the indices may shift between snapshots. Instead use the structured selector \`__selector\` (preferred) or the legacy shorthands \`__title\` / \`__ax_id\`. The executor resolves them against the cached AX index at runtime.
+Available tools (cua-driver MCP):
+- launch_app, list_windows, get_window_state — pre-discovery already ran; do NOT re-emit at start
+- click / double_click / right_click — args { pid, window_id, __selector: { title?, ax_id?, role?, ordinal? } } OR { pid, x, y }
+- type_text — args { pid, text }; ONLY use when the focused element is an editable role (AXTextField, AXTextArea, AXTextEdit, AXComboBox)
+- press_key — args { pid, key }; key NAMES not characters ("1", "return", "space", "shift")
+- hotkey — args { pid, keys: ["modifier", "key"] } for shifted symbols and shortcuts
+- assert — args { kind: "ax_text", expected: "...", target_role?: "..." }; synthetic, the executor verifies against a fresh AX snapshot. Emit liberally after material state changes.
 
-  __selector schema:
-    { "title"?: string, "ax_id"?: string, "role"?: string, "ordinal"?: number }
-  Resolution rules:
-    - If \`ax_id\` is present, the executor matches by id (case-insensitive). Use this when the AX tree shows id=...
-    - Else \`title\` (+ optional \`role\`) — when several entries share the same (title, role), use \`ordinal\` (0-based) to pick one.
-    - Plain \`title\` alone works when the title is unique in the tree.
-
-  Examples:
-    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__selector": { "ax_id": "Five" } }, "purpose": "press 5" }
-    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__selector": { "title": "5", "role": "AXButton" } }, "purpose": "press 5" }
-    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__selector": { "title": "OK", "role": "AXButton", "ordinal": 1 } }, "purpose": "second OK" }
-
-  Backward-compat shorthands (still accepted):
-    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__title": "5" }, "purpose": "press 5" }
-    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__ax_id": "Five" }, "purpose": "press 5" }
-- If there is NO pre-discovery block: emit launch_app first, then get_window_state, and use the literal strings "$pid" and "$window_id" in subsequent step args. Use __selector / __title / __ax_id once the AX tree is primed.
-- EVERY click step MUST resolve to element_index OR (x, y) at execute time. That means it must include exactly ONE of: __selector, __title, __ax_id, element_index, or (x AND y). Never emit a click step with none of these — cua-driver will reject it.
-- Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".
-- After important state changes (pressing equals on a calculator, submitting a form, navigating to a new view), prefer to emit an \`assert\` step that confirms the post-condition. Example:
-    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
-  This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".
-- When a REPLAN block appears with "Already-executed steps", produce only the SUFFIX needed to finish the skill from the live state shown — do NOT restart from step 0. The side effects of the listed steps are already on screen; if you re-emit them you will double-apply (e.g. type "17" twice yielding "1717"). Use the live AX tree to ground your recovery.
-
-Choosing the right primitive:
-- \`type_text({ pid, text })\` writes via AXSelectedText into the FOCUSED ELEMENT. It only works when the focused element is a text-input field — \`AXTextField\`, \`AXTextArea\`, \`AXTextEdit\`, \`AXComboBox\`, or similar. If the focused element is an AXButton, AXWindow, or AXStaticText, type_text reports success but the characters go NOWHERE useful. **Look at the AX tree before emitting type_text. If you don't see a text-input role, do NOT use type_text.**
-- \`press_key({ pid, key })\` sends a key event scoped to the pid. Works for any keyboard-driven UI (text fields, browsers, terminals, AND apps that bind keys to actions like Calculator's "1".."9", "return", "escape").
-- \`hotkey({ pid, keys: [...] })\` for combinations like cmd+c.
-- \`click({ pid, window_id, __selector: {...} })\` for buttons. Works for any AXButton regardless of keyboard-addressability. **Default to clicks for button-grid apps** (Calculator, the macOS chess app, dialogs). Calculator has NO text input; its display is read-only AXStaticText. The only way to enter a digit is to click the digit AXButton OR press_key the matching key name (e.g. press_key("1")).
-- press_key wants key NAMES, not literal characters. Digit names: "0".."9". Named keys: "return", "space", "delete", "tab", "escape". Modifiers: "cmd", "shift", "option", "control". For "*" use \`hotkey({ keys: ["shift", "8"] })\`. For "+" use \`hotkey({ keys: ["shift", "equals"] })\`. NEVER \`press_key("*")\` — cua-driver rejects it as "Unknown key name".
-
-Decision rule for a SINGLE expression to enter (Calculator-style):
-  1. If the AX tree shows AXTextField/AXTextArea: use \`type_text\` (one call).
-  2. Else, if every char maps to a known key name: emit one \`press_key\` per char + the \`hotkey\` form for shifted symbols.
-  3. Else, click the AXButtons via \`__selector\`.
-
-Examples (good plans):
-
-A) Calculator 17 × 23 via clicks (RECOMMENDED for macOS Calculator — no text input):
-{
-  "steps": [
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "AllClear" } }, "purpose": "clear" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "One" } }, "purpose": "press 1" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Seven" } }, "purpose": "press 7" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Multiply" } }, "purpose": "press ×" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Two" } }, "purpose": "press 2" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Three" } }, "purpose": "press 3" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Equals" } }, "purpose": "press =" },
-    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
-  ],
-  "stopWhen": "the result display reads 391"
-}
-
-B) Calculator 17 × 23 via press_key (also works — Calculator binds digit keys):
-{
-  "steps": [
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "1" }, "purpose": "press 1" },
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "7" }, "purpose": "press 7" },
-    { "tool": "hotkey", "args": { "pid": "$pid", "keys": ["shift", "8"] }, "purpose": "press *" },
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "2" }, "purpose": "press 2" },
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "3" }, "purpose": "press 3" },
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "return" }, "purpose": "press =" },
-    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
-  ],
-  "stopWhen": "the result display reads 391"
-}
-
-C) Web form fill — type_text WORKS here because the focus is an AXTextField:
-{
-  "steps": [
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "Email", "role": "AXTextField" } }, "purpose": "focus email field" },
-    { "tool": "type_text", "args": { "pid": "$pid", "text": "user@example.com" }, "purpose": "enter email" }
-  ],
-  "stopWhen": "the email field shows user@example.com"
-}
-
-D) GitHub triage — AX-click for buttons with no keyboard shortcut:
-{
-  "steps": [
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "Labels", "role": "AXButton" } }, "purpose": "open Labels dropdown" },
-    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "bug", "role": "AXMenuItem" } }, "purpose": "apply bug label" }
-  ],
-  "stopWhen": "the issue shows the bug label"
-}
-
-ANTI-PATTERN — do NOT do this for Calculator:
-{ "tool": "type_text", "args": { "pid": "$pid", "text": "17*23" } }
-  ↳ The focused element will be an AXButton with no editable AXSelectedText.
-    cua-driver will report "Inserted 3 char(s) into focused AXButton" but Calculator
-    will never see them. The display will still read "0".`;
+Principles:
+- Prefer the shortest plan that satisfies the intent from the CURRENT state. The recording captures intent, not the literal sequence.
+- AX selectors when targets are addressable; (x,y) only when the screenshot shows them clearly but AX doesn't.
+- type_text requires a focused editable role. If you don't see one in the AX tree, click the buttons or press_key instead.
+- On replan, return only the SUFFIX (the remaining work). Don't restart from step 0.`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
