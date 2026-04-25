@@ -223,6 +223,9 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
   }
 
   let totalExecuted = 0;
+  let runSucceeded = false;
+  let plan: Plan | null = null;
+  let lastResult: Awaited<ReturnType<typeof executePlan>> | null = null;
   try {
     // Pre-discovery: launch the target app + grab its AX tree so the planner
     // can emit grounded selectors AND so the executor's initial context is
@@ -246,7 +249,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       }
     }
 
-    let plan: Plan = await generatePlan({
+    plan = await generatePlan({
       skillMd,
       currentStateSummary: stateSummary,
       claudeClient: plannerClient,
@@ -271,7 +274,11 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
         throw e;
       }
       totalExecuted += result.stepsExecuted;
-      if (result.error === undefined) break;
+      lastResult = result;
+      if (result.error === undefined) {
+        runSucceeded = true;
+        break;
+      }
       if (replansUsed >= maxReplans) {
         console.error(
           `[showme] step ${result.failedStepIndex} failed after ${replansUsed} replan(s): ${result.error}`,
@@ -298,6 +305,35 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
         },
       });
       console.log(`[showme] replan: ${plan.steps.length} step(s)`);
+    }
+
+    // Post-run stopWhen verification. If the plan completed all steps with
+    // no error AND the plan declared a non-trivial stopWhen, do one cheap
+    // Sonnet call: snapshot the live AX state, ask the model whether the
+    // skill actually succeeded. Catches the "every step exit-coded 0 but
+    // the result display still says 0" case Codex flagged.
+    if (
+      runSucceeded &&
+      opts.live &&
+      plan &&
+      plan.stopWhen.trim().length > 0 &&
+      lastResult?.lastContext.pid !== undefined &&
+      lastResult.lastContext.windowId !== undefined
+    ) {
+      const ok = await verifyStopWhen({
+        plannerClient,
+        stopWhen: plan.stopWhen,
+        pid: lastResult.lastContext.pid,
+        windowId: lastResult.lastContext.windowId,
+      });
+      if (!ok.success) {
+        console.error(
+          `[showme] stopWhen verification FAILED: ${ok.explanation}`,
+        );
+        process.exitCode = 3;
+      } else {
+        console.log(`[showme] stopWhen verified: ${ok.explanation}`);
+      }
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
@@ -449,6 +485,82 @@ async function runCuaDriverCapture(
   ]);
   await proc.exited;
   return { ok: proc.exitCode === 0, stdout, stderr };
+}
+
+/**
+ * One-shot Sonnet call that takes a snapshot of the live AX tree and the
+ * skill's stopWhen description, and asks "did this succeed?". The model
+ * answers YES/NO + a one-sentence explanation, which we surface to the user.
+ *
+ * This is the safety net for the case where every step exit-coded 0 but
+ * the actual app state didn't change (silent click on the wrong element,
+ * keyboard input swallowed by a modal, etc.).
+ *
+ * `snapshot` is injectable so tests can avoid the cua-driver subprocess.
+ */
+export async function verifyStopWhen(args: {
+  plannerClient: PlannerClient;
+  stopWhen: string;
+  pid: number;
+  windowId: number;
+  snapshot?: (
+    pid: number,
+    windowId: number,
+  ) => Promise<{ ok: boolean; stdout: string; error?: string }>;
+}): Promise<{ success: boolean; explanation: string }> {
+  const snapshotFn = args.snapshot ?? defaultSnapshot;
+  const snap = await snapshotFn(args.pid, args.windowId);
+  if (!snap.ok)
+    return {
+      success: false,
+      explanation: `couldn't snapshot window for verification: ${snap.error ?? "unknown"}`,
+    };
+  const trimmed = snap.stdout.slice(0, 12_000);
+  const prompt = `You are verifying that a recorded macOS skill succeeded.
+
+Skill stopWhen: ${args.stopWhen}
+
+Live AX tree of the focused window (truncated):
+${trimmed}
+
+Did the skill succeed? Reply on a single line in this exact shape:
+  YES — <one-sentence explanation>
+  NO — <one-sentence explanation>
+Nothing else.`;
+  const reply = await args.plannerClient.generatePlanText(prompt);
+  const trimmedReply = reply.trim();
+  const yesMatch = trimmedReply.match(/^YES\b\s*[—:-]?\s*(.*)$/i);
+  if (yesMatch)
+    return {
+      success: true,
+      explanation: yesMatch[1]?.trim() || "skill complete",
+    };
+  const noMatch = trimmedReply.match(/^NO\b\s*[—:-]?\s*(.*)$/i);
+  if (noMatch)
+    return {
+      success: false,
+      explanation: noMatch[1]?.trim() || "model returned NO without detail",
+    };
+  return {
+    success: false,
+    explanation: `verifier returned an unparseable reply: ${trimmedReply.slice(0, 200)}`,
+  };
+}
+
+async function defaultSnapshot(
+  pid: number,
+  windowId: number,
+): Promise<{ ok: boolean; stdout: string; error?: string }> {
+  const snap = await runCuaDriverCapture([
+    "call",
+    "get_window_state",
+    JSON.stringify({ pid, window_id: windowId }),
+  ]);
+  return {
+    ok: snap.ok,
+    stdout: snap.stdout,
+    error: snap.ok ? undefined : snap.stderr.trim() || snap.stdout.trim(),
+  };
 }
 
 export interface DiscoveryResult {

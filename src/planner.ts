@@ -59,6 +59,7 @@ cua-driver tools available:
   - press_key({ pid, key, modifiers? })
   - hotkey({ pid, keys: [modifier..., key] })
   - scroll({ pid, direction: up|down|left|right, amount?, by?, element_index?, window_id? })
+  - assert({ kind: "ax_text" | "display_text", expected: string, target_role?: string }) — synthetic step handled locally; the executor re-snapshots the focused window and checks that \`expected\` appears in the AX tree. Use \`target_role\` (e.g. "AXStaticText") to scope the search. Use generously after important state changes — every step exit-coding 0 does not prove the app actually responded.
 
 Plan schema:
 {
@@ -89,7 +90,10 @@ Important:
     { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__ax_id": "Five" }, "purpose": "press 5" }
 - If there is NO pre-discovery block: emit launch_app first, then get_window_state, and use the literal strings "$pid" and "$window_id" in subsequent step args. Use __selector / __title / __ax_id once the AX tree is primed.
 - EVERY click step MUST resolve to element_index OR (x, y) at execute time. That means it must include exactly ONE of: __selector, __title, __ax_id, element_index, or (x AND y). Never emit a click step with none of these — cua-driver will reject it.
-- Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".`;
+- Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".
+- After important state changes (pressing equals on a calculator, submitting a form, navigating to a new view), prefer to emit an \`assert\` step that confirms the post-condition. Example:
+    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
+  This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StepRunner } from "../src/executor.ts";
 import type { PlannerClient } from "../src/planner.ts";
-import { type QueryFn, runSkill } from "../src/run.ts";
+import { type QueryFn, runSkill, verifyStopWhen } from "../src/run.ts";
 
 describe("run", () => {
   test("--dry-run blocks tool execution via PreToolUse hook", async () => {
@@ -365,6 +365,91 @@ describe("run --fast", () => {
       },
     });
     expect(toggles).toEqual([true, false]);
+  });
+});
+
+describe("verifyStopWhen", () => {
+  test("returns success=true when the model replies YES", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "YES — display reads 391 as expected";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "display shows 391",
+      pid: 1,
+      windowId: 2,
+      snapshot: async () => ({
+        ok: true,
+        stdout: "- [4] AXStaticText (391) id=display\n",
+      }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.explanation).toMatch(/391/);
+  });
+
+  test("returns success=false when the model replies NO", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "NO — display still shows 0";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "display shows 391",
+      pid: 1,
+      windowId: 2,
+      snapshot: async () => ({
+        ok: true,
+        stdout: "- [4] AXStaticText (0) id=display\n",
+      }),
+    });
+    expect(result.success).toBe(false);
+    expect(result.explanation).toMatch(/still shows 0/);
+  });
+
+  test("threads stopWhen and live AX tree into the prompt", async () => {
+    let capturedPrompt = "";
+    const planner: PlannerClient = {
+      async generatePlanText(prompt) {
+        capturedPrompt = prompt;
+        return "YES — ok";
+      },
+    };
+    await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "display shows 391",
+      pid: 1,
+      windowId: 2,
+      snapshot: async () => ({
+        ok: true,
+        stdout: "- [4] AXStaticText (391) id=display\n",
+      }),
+    });
+    expect(capturedPrompt).toContain("display shows 391");
+    expect(capturedPrompt).toContain("AXStaticText");
+  });
+
+  test("returns failure with the snapshot error if get_window_state fails", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        throw new Error("should not be called");
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "x",
+      pid: 1,
+      windowId: 2,
+      snapshot: async () => ({
+        ok: false,
+        stdout: "",
+        error: "no such window",
+      }),
+    });
+    expect(result.success).toBe(false);
+    expect(result.explanation).toMatch(/no such window/);
   });
 });
 
