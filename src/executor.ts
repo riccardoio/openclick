@@ -36,6 +36,14 @@ export interface ExecutePlanOptions {
    * `get_window_state`.
    */
   initialContext?: ExecutorContext;
+  /**
+   * Before each AX-targeted step (click / double_click / right_click /
+   * type_text with a selector), re-run get_window_state and rebuild the AX
+   * index. State-changing clicks can rerender, shift indices, or move focus —
+   * so a stale cached map points to the wrong button. Default: true.
+   * Tests / cases that already prime the cache can disable this.
+   */
+  refreshBeforeAxClick?: boolean;
 }
 
 export interface ExecutePlanResult {
@@ -214,10 +222,38 @@ export async function executePlan(
       }
     : {};
 
+  const refreshBeforeAxClick = opts.refreshBeforeAxClick ?? true;
+
   let executed = 0;
   for (let i = 0; i < plan.steps.length; i++) {
     const step = plan.steps[i];
     if (!step) continue; // satisfy noUncheckedIndexedAccess
+
+    // Auto-refresh: state-changing clicks rerender; element_index drifts. If
+    // the upcoming step is an AX-targeted click/type and we know pid+window,
+    // re-run get_window_state through the same runner before resolving the
+    // selector. Skip when context isn't ready (the in-plan steps will populate
+    // it normally) or when the caller opts out.
+    if (
+      !opts.dryRun &&
+      refreshBeforeAxClick &&
+      isAxTargetedStep(step) &&
+      ctx.pid !== undefined &&
+      ctx.windowId !== undefined
+    ) {
+      const refreshStep: PlanStep = {
+        tool: "get_window_state",
+        args: { pid: ctx.pid, window_id: ctx.windowId },
+        purpose: "refresh AX index",
+      };
+      log("[showme] (refresh AX index)");
+      const refreshResult = await runner(refreshStep);
+      if (refreshResult.ok && refreshResult.stdout)
+        absorbContext(ctx, "get_window_state", refreshResult.stdout);
+      // A failed refresh shouldn't kill the run — fall through and let the
+      // real click attempt produce the error message the user expects.
+    }
+
     const resolved: PlanStep = {
       tool: step.tool,
       args: substitutePlaceholders(step.args, ctx),
@@ -255,6 +291,28 @@ export async function executePlan(
     totalSteps: plan.steps.length,
     lastContext: ctx,
   };
+}
+
+/** Tools that we want to refresh AX state before, when an AX selector is used. */
+const AX_TARGETED_TOOLS = new Set([
+  "click",
+  "double_click",
+  "right_click",
+  "type_text",
+]);
+
+/**
+ * Does this step target an AX element by selector (rather than absolute
+ * coordinates / a simple key press)? True when the tool is one of the
+ * AX-targeted ones AND the args reference at least one selector key.
+ */
+function isAxTargetedStep(step: PlanStep): boolean {
+  if (!AX_TARGETED_TOOLS.has(step.tool)) return false;
+  return (
+    "__selector" in step.args ||
+    "__title" in step.args ||
+    "__ax_id" in step.args
+  );
 }
 
 /**
