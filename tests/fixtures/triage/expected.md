@@ -34,12 +34,6 @@ close as duplicate.
 4. If the issue duplicates an earlier one, close it as a duplicate.
 5. Return to the list and continue until no unread issues remain.
 
-## Anchors
-- Labels button is `AXButton[title=Labels]` in the right toolbar.
-- Issue list items are `AXLink` under `AXList` in the main content area.
-- The "Close issue" control is an `AXButton` at the bottom of the issue
-  body, with a paired dropdown for picking a close reason.
-
 ## Stop conditions
 - All visible issues have a label.
 - A modal the skill doesn't recognize appears.

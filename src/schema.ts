@@ -81,6 +81,34 @@ export function validateSkillMd(md: string): ValidationResult {
     errors.push("body must include a `## Steps` section");
   }
 
+  // Body: reject coordinate / positional leakage. The planner gets a LIVE
+  // screenshot + LIVE AX tree at run time; frozen hints from the recording
+  // ("around y≈47", "top of the window") only confuse it. Compile must emit
+  // INTENT, not replay scaffolding.
+  //
+  // Patterns are narrow on purpose. \b[xy] ≈ \d catches "y≈47" and "x ~ 320"
+  // (the AX-coord prose pattern that bit us with Safari) but tolerates
+  // legitimate "x = 5" algebra and "GPS coordinates" descriptions.
+  const coordPatterns: Array<{ re: RegExp; label: string }> = [
+    { re: /\b[xy]\s*[≈~]\s*\d/i, label: "x/y position hint (≈/~)" },
+    {
+      re: /\b\d+\s*px\s+(wide|tall|high|from|away|left|right|top|bottom)\b/i,
+      label: "pixel-position phrase",
+    },
+    {
+      re: /\bpixel\s+coordinates?\b|\bscreen\s+coordinates?\b|\b[xy]-?coordinates?\b/i,
+      label: "pixel/screen coordinate phrase",
+    },
+    { re: /^##\s+Anchors\b/im, label: "## Anchors section" },
+  ];
+  for (const { re, label } of coordPatterns) {
+    if (re.test(body)) {
+      errors.push(
+        `body must not contain ${label} — SKILL.md is intent only, no positional hints`,
+      );
+    }
+  }
+
   return { valid: errors.length === 0, errors, frontmatter: fm };
 }
 

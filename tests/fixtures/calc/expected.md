@@ -31,10 +31,6 @@ Open Calculator and compute 17 × 23.
 3. Enter the expression 17 × 23.
 4. Evaluate the expression.
 
-## Anchors
-- All number/operator buttons are AXButton inside Calculator's main window.
-- The result display is an AXStaticText inside Calculator's main window.
-
 ## Stop conditions
 - The result display reads "391".
 - Any unrecognized modal appears.

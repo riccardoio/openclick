@@ -27,8 +27,5 @@ For each open issue, apply a label.
 2. For each issue, click Labels.
 3. Apply the matching label.
 
-## Anchors
-- Labels button is `AXButton[title=Labels]`.
-
 ## Stop conditions
 - All visible issues have a label.

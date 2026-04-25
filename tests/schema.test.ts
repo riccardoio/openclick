@@ -128,6 +128,78 @@ intent:
     expect(result.errors.some((e) => /success_signals/.test(e))).toBe(true);
   });
 
+  test("rejects coordinate / positional leakage in body", () => {
+    const base = `---
+name: ok
+description: leaks coords
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  goal: do the thing
+  success_signals:
+    - done
+---
+# Title
+## Steps
+1. step
+`;
+    // y≈ position hint
+    expect(
+      validateSkillMd(`${base}\nThe address bar sits around y≈47-58.\n`).errors
+        .some((e) => /position|positional/i.test(e)),
+    ).toBe(true);
+    // pixel-position phrase (the leak pattern: "320px wide", "320px from")
+    expect(
+      validateSkillMd(`${base}\nClick the button 320px from the top.\n`).errors
+        .some((e) => /pixel/i.test(e)),
+    ).toBe(true);
+    // Anchors section
+    expect(
+      validateSkillMd(`${base}\n## Anchors\n- some hint\n`).errors.some((e) =>
+        /Anchors/i.test(e),
+      ),
+    ).toBe(true);
+    // pixel/screen coordinates phrase
+    expect(
+      validateSkillMd(
+        `${base}\nUse the pixel coordinates from the screenshot.\n`,
+      ).errors.some((e) => /pixel|coordinate/i.test(e)),
+    ).toBe(true);
+  });
+
+  test("allows legitimate domain words ('GPS coordinates', 'x=5')", () => {
+    const base = `---
+name: ok
+description: real domain words
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  goal: do the thing
+  success_signals:
+    - done
+---
+# Title
+## Steps
+1. step
+`;
+    // GPS coordinates is a legitimate domain phrase, not a position hint.
+    expect(
+      validateSkillMd(`${base}\nEnter the GPS coordinates of your location.\n`)
+        .valid,
+    ).toBe(true);
+    // Algebra-style x=5 should pass (no ≈ or ~).
+    expect(validateSkillMd(`${base}\nSet x = 5 in the form field.\n`).valid).toBe(
+      true,
+    );
+    // Bare "320px" with no positional follow-up word should pass.
+    expect(
+      validateSkillMd(`${base}\nThe icon is rendered at 320px resolution.\n`)
+        .valid,
+    ).toBe(true);
+  });
+
   test("intent block with goal + non-empty success_signals validates", () => {
     const result = validateSkillMd(`---
 name: ok

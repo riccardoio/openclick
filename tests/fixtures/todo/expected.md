@@ -29,10 +29,5 @@ Open Reminders and add a new checkbox task to today's list.
 2. Create a new reminder row.
 3. Type the task text and commit it.
 
-## Anchors
-- Sidebar entries are `AXOutlineRow` under `AXOutline`.
-- The new-reminder button is `AXButton` in the main window's toolbar.
-- The task title field is an `AXTextField` once a row is created.
-
 ## Stop conditions
 - A new row appears in Today's list with the typed text.
