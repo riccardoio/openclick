@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type StepRunner, executePlan } from "./executor.ts";
+import {
+  type ExecutorContext,
+  type StepRunner,
+  executePlan,
+  parseAxTreeIndex,
+} from "./executor.ts";
 import {
   AnthropicPlannerClient,
   type Plan,
@@ -220,15 +225,24 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
   let totalExecuted = 0;
   try {
     // Pre-discovery: launch the target app + grab its AX tree so the planner
-    // can emit concrete element_index values. Without this, Sonnet has no way
-    // to know which AXButton corresponds to "1" (element_index varies per app
-    // launch and is only revealed by get_window_state).
+    // can emit grounded selectors AND so the executor's initial context is
+    // already populated. Without this, Sonnet has no way to know which
+    // AXButton corresponds to "1" (element_index varies per app launch and
+    // is only revealed by get_window_state).
     let stateSummary = opts.userPrompt ? `User asked: ${opts.userPrompt}` : "";
+    let initialContext: ExecutorContext | undefined;
     if (opts.live) {
       const discovered = await preDiscoverAppState(skillMd);
       if (discovered) {
-        stateSummary = `${stateSummary}\n\n${discovered}`;
-        console.log("[showme] pre-discovered app state for planner");
+        stateSummary = `${stateSummary}\n\n${discovered.promptText}`;
+        initialContext = {
+          pid: discovered.pid,
+          windowId: discovered.windowId,
+          axIndex: discovered.axIndex,
+        };
+        console.log(
+          `[showme] pre-discovered app state for planner (pid=${discovered.pid}, window=${discovered.windowId}, ax-entries=${discovered.axIndex.size})`,
+        );
       }
     }
 
@@ -250,6 +264,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           stepRunner: opts.stepRunner ?? verboseStepRunner,
           dryRun: !opts.live,
           confirm: opts.confirm,
+          initialContext,
         });
       } catch (e) {
         console.error(`[showme] executor crashed: ${e}`);
@@ -436,14 +451,29 @@ async function runCuaDriverCapture(
   return { ok: proc.exitCode === 0, stdout, stderr };
 }
 
+export interface DiscoveryResult {
+  pid: number;
+  windowId: number;
+  /** Lowercased title|id → element_index map of the focused window. */
+  axIndex: Map<string, number>;
+  /** Pretty-printed AX tree + ids to thread into the planner prompt. */
+  promptText: string;
+}
+
 /**
  * Reads SKILL.md, finds the first reverse-DNS bundle id (e.g. com.apple.calculator),
  * launches that app via cua-driver, then snapshots the focused window.
- * Returns a text block to feed the planner so it can emit concrete element_index
- * values. Returns null if discovery isn't possible (no bundle_id in skill,
- * cua-driver subprocess errors, etc.) — the planner falls back to placeholders.
+ *
+ * Returns a {@link DiscoveryResult} containing the live pid + window_id, a
+ * pre-built AX index map (so the executor doesn't need an in-plan
+ * `get_window_state` to populate context), and a prompt-ready text block for
+ * the planner. Returns null if discovery isn't possible (no bundle_id in
+ * skill, cua-driver subprocess errors, etc.) — the planner then falls back to
+ * placeholders and the executor will populate context via in-plan steps.
  */
-async function preDiscoverAppState(skillMd: string): Promise<string | null> {
+async function preDiscoverAppState(
+  skillMd: string,
+): Promise<DiscoveryResult | null> {
   // Try the cheap path first: literal bundle id mentioned in the SKILL.md.
   let bundleId = extractBundleId(skillMd);
   if (!bundleId) {
@@ -495,17 +525,20 @@ async function preDiscoverAppState(skillMd: string): Promise<string | null> {
   // Trim AX tree to keep the prompt small. Most useful info is in the first
   // ~12k chars (the visible toolbar + main controls).
   const axTreeTrim = state.stdout.slice(0, 12_000);
+  const axIndex = parseAxTreeIndex(state.stdout);
 
-  return [
-    "Pre-discovery (already executed; do NOT re-emit launch_app or initial get_window_state):",
+  const promptText = [
+    "Pre-discovery (already executed; the executor's context already holds pid, window_id, and the AX index — do NOT re-emit launch_app or get_window_state at the start of the plan):",
     `  bundle_id: ${bundleId}`,
     `  pid: ${pid}`,
     `  window_id: ${windowId}`,
     "",
-    "AX tree of the focused window. Use the element_index values shown here in your click/type_text steps.",
+    "AX tree of the focused window. Use the __title / __ax_id / __selector synthetic keys (NOT element_index integers) to address controls — the executor will resolve them against this tree.",
     "",
     axTreeTrim,
   ].join("\n");
+
+  return { pid, windowId, axIndex, promptText };
 }
 
 const BUNDLE_ID_RE =
