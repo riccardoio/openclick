@@ -21,6 +21,10 @@ target:
   bundle_id: com.apple.calculator
   app_name: Calculator
 keyboard_addressable: true
+intent:
+  goal: Compute 17 × 23 in Calculator.
+  success_signals:
+    - The display shows 391.
 ---
 
 # Calculator: 17 × 23
@@ -69,6 +73,10 @@ description: ok now.
 target:
   bundle_id: com.apple.calculator
   app_name: Calculator
+intent:
+  goal: Compute something.
+  success_signals:
+    - Done.
 ---
 # C
 ## Steps

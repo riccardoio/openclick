@@ -5,6 +5,18 @@ target:
   bundle_id: com.apple.reminders
   app_name: Reminders
 keyboard_addressable: true
+intent:
+  goal: Add a new checkbox task to today's Reminders list.
+  subgoals:
+    - Focus today's list
+    - Create a new reminder row
+    - Type the task and commit
+  success_signals:
+    - A new row appears in Today's list with the typed text.
+  observed_input_modes:
+    - click
+    - type_text
+    - press_key
 ---
 
 # Add Todo to Reminders
