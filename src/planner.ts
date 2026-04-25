@@ -105,7 +105,36 @@ Important:
 - After important state changes (pressing equals on a calculator, submitting a form, navigating to a new view), prefer to emit an \`assert\` step that confirms the post-condition. Example:
     { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
   This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".
-- When a REPLAN block appears with "Already-executed steps", produce only the SUFFIX needed to finish the skill from the live state shown — do NOT restart from step 0. The side effects of the listed steps are already on screen; if you re-emit them you will double-apply (e.g. type "17" twice yielding "1717"). Use the live AX tree to ground your recovery.`;
+- When a REPLAN block appears with "Already-executed steps", produce only the SUFFIX needed to finish the skill from the live state shown — do NOT restart from step 0. The side effects of the listed steps are already on screen; if you re-emit them you will double-apply (e.g. type "17" twice yielding "1717"). Use the live AX tree to ground your recovery.
+
+Keyboard-first principle:
+- When the target app accepts keyboard input (Calculator, text editors, browsers, terminals, anything calculator-style for numeric entry), PREFER:
+    type_text({ pid, text: "<chars>" })            for sequences of characters
+    press_key({ pid, key: "<key-name>" })          for single keys
+    hotkey({ pid, keys: [...] })                   for combinations
+  Reserve \`click\` for buttons that have NO keyboard equivalent (the Labels button on GitHub, OK in dialogs, toolbar items). For Calculator specifically: use \`type_text\` to enter expressions like "17*23" and \`press_key("return")\` for equals — clicking the AXButtons works but is slower and races with rerenders.
+- press_key wants key NAMES, not literal characters. Digit names: "0".."9". Named keys: "return", "space", "delete", "tab", "escape". Modifiers: "cmd", "shift", "option", "control". Do NOT emit \`press_key("*")\` — emit \`type_text("*")\` or \`hotkey({ keys: ["shift", "8"] })\`.
+
+Examples (good plans):
+
+A) Calculator 17 × 23 — keyboard-first (preferred when app accepts keyboard input):
+{
+  "steps": [
+    { "tool": "type_text", "args": { "pid": "$pid", "text": "17*23" }, "purpose": "enter expression" },
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "return" }, "purpose": "submit" },
+    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
+  ],
+  "stopWhen": "the result display reads 391"
+}
+
+B) GitHub triage — AX-click for buttons with no keyboard shortcut:
+{
+  "steps": [
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "Labels", "role": "AXButton" } }, "purpose": "open Labels dropdown" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "bug", "role": "AXMenuItem" } }, "purpose": "apply bug label" }
+  ],
+  "stopWhen": "the issue shows the bug label"
+}`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
