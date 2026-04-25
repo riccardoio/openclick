@@ -315,6 +315,122 @@ describe("resolveSelector", () => {
   });
 });
 
+describe("assert step", () => {
+  test("snapshots, finds the expected substring, and succeeds", async () => {
+    const calls: string[] = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "assert",
+          args: {
+            kind: "display_text",
+            expected: "391",
+            target_role: "AXStaticText",
+          },
+          purpose: "verify result is 391",
+        },
+      ],
+      stopWhen: "display shows 391",
+    };
+    const runner: StepRunner = async (step) => {
+      calls.push(step.tool);
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: "- [4] AXStaticText (391) id=display\n",
+        };
+      }
+      throw new Error(`unexpected tool: ${step.tool}`);
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.stepsExecuted).toBe(1);
+    expect(calls).toEqual(["get_window_state"]);
+  });
+
+  test("fails the run with a clear error when the expected substring is absent", async () => {
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "assert",
+          args: {
+            kind: "display_text",
+            expected: "391",
+            target_role: "AXStaticText",
+          },
+          purpose: "verify result is 391",
+        },
+      ],
+      stopWhen: "display shows 391",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "get_window_state") {
+        return { ok: true, stdout: "- [4] AXStaticText (0) id=display\n" };
+      }
+      throw new Error(`unexpected tool: ${step.tool}`);
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(result.error).toMatch(/assertion failed.*391/);
+    expect(result.failedStepIndex).toBe(0);
+  });
+
+  test("dryRun skips the snapshot entirely", async () => {
+    let runs = 0;
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "assert",
+          args: { kind: "display_text", expected: "391" },
+          purpose: "verify",
+        },
+      ],
+      stopWhen: "x",
+    };
+    const runner: StepRunner = async () => {
+      runs++;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      dryRun: true,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(runs).toBe(0);
+  });
+
+  test("does not call cua-driver with tool=assert (handles locally)", async () => {
+    const tools: string[] = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "assert",
+          args: { kind: "ax_text", expected: "Hello" },
+          purpose: "verify",
+        },
+      ],
+      stopWhen: "x",
+    };
+    const runner: StepRunner = async (step) => {
+      tools.push(step.tool);
+      if (step.tool === "get_window_state")
+        return { ok: true, stdout: "- [1] AXStaticText (Hello) id=greeting\n" };
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(tools).toEqual(["get_window_state"]);
+    expect(tools).not.toContain("assert");
+  });
+});
+
 describe("refreshBeforeAxClick", () => {
   test("re-runs get_window_state before each AX-targeted click and reflects new index", async () => {
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
