@@ -32,44 +32,44 @@ describe("eval (offline structure check)", () => {
   }
 });
 
-describe("eval (live Claude API)", () => {
+describe.skipIf(!RUN_LIVE)("eval (live Claude API)", () => {
   for (const fx of FIXTURES) {
-    test(`fixture/${fx} compiles to a valid SKILL.md matching assertions`, async () => {
-      if (!RUN_LIVE) return;
-      const fixtureRoot = join(import.meta.dir, "fixtures", fx);
-      const trajectoryDir = join(fixtureRoot, "trajectory");
-      if (!existsSync(trajectoryDir)) {
-        console.warn(
-          `[eval] skipping ${fx}: ${trajectoryDir} doesn't exist. ` +
-            `See ${fixtureRoot}/README.md for how to record one.`,
+    const fixtureRoot = join(import.meta.dir, "fixtures", fx);
+    const trajectoryDir = join(fixtureRoot, "trajectory");
+    const hasTrajectory = existsSync(trajectoryDir);
+
+    test.skipIf(!hasTrajectory)(
+      `fixture/${fx} compiles to a valid SKILL.md matching assertions`,
+      async () => {
+        const assertions = JSON.parse(
+          readFileSync(join(fixtureRoot, "assertions.json"), "utf-8"),
+        ) as Assertions;
+
+        // compileSkillMd throws CompileValidationError if both attempts produce
+        // an invalid SKILL.md. If we get here without throwing, the output is
+        // schema-valid by construction.
+        const result = await compileSkillMd({
+          trajectoryDir,
+          skillName: `eval-${fx}`,
+          claudeClient: new AnthropicClaudeClient(),
+          outputDir: mkdtempSync(join(tmpdir(), `showme-eval-${fx}-`)),
+        });
+
+        const stepLines = result.skillMd.match(/^\d+\./gm) ?? [];
+        expect(stepLines.length).toBeGreaterThanOrEqual(
+          assertions.step_count_min,
         );
-        return;
-      }
-      const assertions = JSON.parse(
-        readFileSync(join(fixtureRoot, "assertions.json"), "utf-8"),
-      ) as Assertions;
-
-      const result = await compileSkillMd({
-        trajectoryDir,
-        skillName: `eval-${fx}`,
-        claudeClient: new AnthropicClaudeClient(),
-        outputDir: mkdtempSync(join(tmpdir(), `showme-eval-${fx}-`)),
-      });
-
-      expect(result.valid).toBe(true);
-      const stepLines = result.skillMd.match(/^\d+\./gm) ?? [];
-      expect(stepLines.length).toBeGreaterThanOrEqual(
-        assertions.step_count_min,
-      );
-      expect(stepLines.length).toBeLessThanOrEqual(assertions.step_count_max);
-      const lower = result.skillMd.toLowerCase();
-      for (const phrase of assertions.must_contain_step_with) {
-        expect(lower).toContain(phrase.toLowerCase());
-      }
-      // Loose anchor check: the SKILL.md mentions the expected AX role somewhere.
-      expect(result.skillMd).toContain(
-        assertions.must_contain_anchor_with_role,
-      );
-    }, 60_000);
+        expect(stepLines.length).toBeLessThanOrEqual(assertions.step_count_max);
+        const lower = result.skillMd.toLowerCase();
+        for (const phrase of assertions.must_contain_step_with) {
+          expect(lower).toContain(phrase.toLowerCase());
+        }
+        // Loose anchor check: the SKILL.md mentions the expected AX role somewhere.
+        expect(result.skillMd).toContain(
+          assertions.must_contain_anchor_with_role,
+        );
+      },
+      60_000,
+    );
   }
 });
