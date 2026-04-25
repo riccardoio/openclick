@@ -1,6 +1,6 @@
 {
   "name": "showme",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Record a task once, replay it on macOS via cua-driver.",
   "type": "module",
   "bin": { "showme": "./bin/showme" },
