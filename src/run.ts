@@ -61,11 +61,21 @@ async function runSkillAgent(opts: RunOptions): Promise<void> {
   }
   console.log("[showme] press Ctrl-C to abort.");
 
+  // Abort flag pattern: SIGINT sets the flag and lets the loop notice it.
+  // The previous handler called process.exit(130) immediately, which bypassed
+  // the cursor-restore + final-status logging in `finally`. Codex called this
+  // out: "the silent exit path is your own process kill, not the executor loop."
   let aborted = false;
   const onSigint = (): void => {
+    if (aborted) {
+      // Second Ctrl-C: user is impatient, exit hard.
+      console.log("\n[showme] hard-aborted (second Ctrl-C).");
+      process.exit(130);
+    }
     aborted = true;
-    console.log("\n[showme] aborted by user.");
-    process.exit(130);
+    console.log(
+      "\n[showme] aborting after current step finishes... (Ctrl-C again to force)",
+    );
   };
   process.on("SIGINT", onSigint);
 
@@ -170,11 +180,17 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
     await ensureDaemonRunning();
   }
 
+  // Abort flag pattern (see runSkillAgent for rationale).
   let aborted = false;
   const onSigint = (): void => {
+    if (aborted) {
+      console.log("\n[showme] hard-aborted (second Ctrl-C).");
+      process.exit(130);
+    }
     aborted = true;
-    console.log("\n[showme] aborted by user.");
-    process.exit(130);
+    console.log(
+      "\n[showme] aborting after current step finishes... (Ctrl-C again to force)",
+    );
   };
   process.on("SIGINT", onSigint);
 
@@ -308,6 +324,7 @@ async function defaultCursorToggle(enabled: boolean): Promise<void> {
 
 async function runCuaDriver(args: string[]): Promise<void> {
   const proc = Bun.spawn(["cua-driver", ...args], {
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -355,6 +372,7 @@ async function ensureDaemonRunning(): Promise<void> {
 
 async function isDaemonRunning(): Promise<boolean> {
   const proc = Bun.spawn(["cua-driver", "status"], {
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -376,7 +394,7 @@ async function isDaemonRunning(): Promise<boolean> {
 const verboseStepRunner: import("./executor.ts").StepRunner = async (step) => {
   const proc = Bun.spawn(
     ["cua-driver", "call", step.tool, JSON.stringify(step.args)],
-    { stdout: "pipe", stderr: "pipe" },
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -406,6 +424,7 @@ async function runCuaDriverCapture(
   args: string[],
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["cua-driver", ...args], {
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });

@@ -212,7 +212,7 @@ function absorbContext(
 const defaultStepRunner: StepRunner = async (step) => {
   const proc = Bun.spawn(
     ["cua-driver", "call", step.tool, JSON.stringify(step.args)],
-    { stdout: "pipe", stderr: "pipe" },
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
   await proc.exited;
   const stdout = await new Response(proc.stdout).text();
