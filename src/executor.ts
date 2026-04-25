@@ -44,11 +44,46 @@ export interface ExecutePlanResult {
 /**
  * Tracks the most recent pid + window_id observed from launch_app /
  * list_windows / get_window_state output so subsequent steps can use
- * the `$pid` / `$window_id` placeholders.
+ * the `$pid` / `$window_id` placeholders. Also caches a {title|id → element_index}
+ * map from the most recent get_window_state output for `__title` / `__ax_id`
+ * placeholder resolution (lets the planner say "click button '5'" instead
+ * of trying to read an index out of the AX tree text — Sonnet gets that wrong).
  */
 export interface ExecutorContext {
   pid?: number;
   windowId?: number;
+  /** title or id (lowercased) → element_index from the latest get_window_state */
+  axIndex?: Map<string, number>;
+}
+
+/**
+ * Parses cua-driver's `get_window_state` text output. The format is:
+ *   - [12] AXButton (5) id=Five
+ *   - [4] AXButton (All Clear) id=AllClear
+ *   - [22] AXButton (Equals) id=Equals
+ * (and lines without parens / id, which we still index by role+number).
+ *
+ * Returns map keyed by lowercased title AND lowercased id (both populated when
+ * present) so a planner saying `__title: "5"` or `__ax_id: "Five"` resolves
+ * to the same `element_index`.
+ */
+export function parseAxTreeIndex(stdout: string): Map<string, number> {
+  const map = new Map<string, number>();
+  // \s*-\s+\[N\]\s+ROLE\s*(?:\(TITLE\))?\s*(?:id=ID)?
+  const lineRe =
+    /^\s*-\s+\[(\d+)\]\s+\S+(?:\s+\(([^)]+)\))?(?:\s+id=([^\s]+))?/gm;
+  let m: RegExpExecArray | null = lineRe.exec(stdout);
+  while (m !== null) {
+    const index = Number.parseInt(m[1] ?? "", 10);
+    const title = m[2];
+    const id = m[3];
+    if (Number.isFinite(index)) {
+      if (title) map.set(title.toLowerCase(), index);
+      if (id) map.set(id.toLowerCase(), index);
+    }
+    m = lineRe.exec(stdout);
+  }
+  return map;
 }
 
 export async function executePlan(
@@ -104,8 +139,10 @@ export async function executePlan(
 
 /**
  * Replace literal "$pid" / "$window_id" string values with concrete numbers
- * from the executor context. Untouched if the placeholder isn't resolvable
- * yet — the cua-driver subprocess will then surface a clear error on use.
+ * from the executor context. Also resolves `__title` / `__ax_id` synthetic
+ * keys to a real `element_index` by looking up the cached AX-tree index.
+ * Untouched if a placeholder isn't resolvable yet — the cua-driver subprocess
+ * surfaces a clear error.
  */
 function substitutePlaceholders(
   args: Record<string, unknown>,
@@ -113,6 +150,14 @@ function substitutePlaceholders(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
+    if ((k === "__title" || k === "__ax_id") && typeof v === "string") {
+      // Synthetic key: resolve to element_index via AX tree lookup.
+      const idx = ctx.axIndex?.get(v.toLowerCase());
+      if (idx !== undefined) out.element_index = idx;
+      // Drop __title / __ax_id from the outgoing args either way — cua-driver
+      // doesn't accept them as real fields.
+      continue;
+    }
     if (v === "$pid" && ctx.pid !== undefined) out[k] = ctx.pid;
     else if (v === "$window_id" && ctx.windowId !== undefined)
       out[k] = ctx.windowId;
@@ -139,6 +184,14 @@ function absorbContext(
     tool !== "get_window_state"
   )
     return;
+
+  // get_window_state output is human-readable text (not JSON) — parse the
+  // bracketed [N] AXRole entries to build the title/id → element_index map.
+  if (tool === "get_window_state") {
+    const idx = parseAxTreeIndex(stdout);
+    if (idx.size > 0) ctx.axIndex = idx;
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);

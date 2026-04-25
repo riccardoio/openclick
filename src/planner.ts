@@ -69,10 +69,14 @@ Plan schema:
 }
 
 Important:
-- If the prompt contains a "Pre-discovery" block with concrete pid, window_id, and AX tree, USE THOSE EXACT VALUES IN YOUR STEPS. DO NOT emit "$pid" or "$window_id" placeholders — they're already known. DO NOT re-emit the initial launch_app or get_window_state — those already ran. Read element_index integers directly from the AX tree shown.
-- If there is NO pre-discovery block: emit launch_app first, then get_window_state, and use the literal strings "$pid" and "$window_id" in subsequent step args. The executor will substitute them at runtime from the most recent launch_app/list_windows/get_window_state result.
-- EVERY click step MUST include either a concrete element_index (from a known AX tree) OR concrete (x, y) pixel coordinates. Never emit a click step with neither — cua-driver will reject it.
-- ALWAYS include a get_window_state step before any click that uses element_index when no pre-discovery exists — element indices are scoped per (pid, window_id) and the cache must be primed.
+- If the prompt contains a "Pre-discovery" block with concrete pid, window_id, and AX tree, USE THOSE EXACT VALUES IN YOUR STEPS. DO NOT emit "$pid" or "$window_id" placeholders — they're already known. DO NOT re-emit the initial launch_app or get_window_state — those already ran.
+- For click / double_click / type_text targeting AX elements, do NOT pick element_index integers from the AX tree text — that's error-prone and the indices may shift between snapshots. Instead use the SYNTHETIC KEY \`__title\` (the visible button title) or \`__ax_id\` (the id= field shown in the tree). The local executor parses the most recent get_window_state output, builds a {title|id → element_index} map, and substitutes the real index at runtime. Examples:
+    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__title": "5" }, "purpose": "press 5" }
+    { "tool": "click", "args": { "pid": 1234, "window_id": 5678, "__ax_id": "Five" }, "purpose": "press 5" }
+  Both work. Prefer __ax_id when an id= is present in the AX tree (it's more stable across localizations).
+- If there is NO pre-discovery block: emit launch_app first, then get_window_state, and use the literal strings "$pid" and "$window_id" in subsequent step args. Use __title / __ax_id once the AX tree is primed.
+- EVERY click step MUST resolve to element_index OR (x, y) at execute time. That means it must include exactly ONE of: __title, __ax_id, element_index, or (x AND y). Never emit a click step with none of these — cua-driver will reject it.
+- ALWAYS include a get_window_state step before any click when no pre-discovery exists — element indices are scoped per (pid, window_id) and the cache must be primed.
 - Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
