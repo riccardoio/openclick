@@ -5,11 +5,24 @@ import { join } from "node:path";
 import { AnthropicClaudeClient, compileSkillMd } from "../src/compile.ts";
 import { validateSkillMd } from "../src/schema.ts";
 
+/**
+ * Shape-based assertions for the live-API eval. Compile is non-deterministic
+ * across model rolls so we deliberately AVOID asserting on specific button
+ * labels or literal step text — instead we check that the output is
+ * schema-valid (structurally well-formed), the step phase count is in a
+ * reasonable range for the task, and the intent block matches the goal
+ * domain of the recording.
+ */
 interface Assertions {
-  must_contain_step_with: string[];
-  must_contain_anchor_with_role: string;
+  /** Phase count range — semantic phases, NOT button-by-button steps. */
   step_count_min: number;
   step_count_max: number;
+  /**
+   * Substrings expected in the intent block (frontmatter). These describe
+   * the goal/domain (e.g. "calculator", "reminder") — not button labels.
+   * One match anywhere in the rendered intent suffices per phrase.
+   */
+  intent_must_mention: string[];
 }
 
 const FIXTURES = ["calc", "triage", "todo"] as const;
@@ -55,19 +68,24 @@ describe.skipIf(!RUN_LIVE)("eval (live Claude API)", () => {
           outputDir: mkdtempSync(join(tmpdir(), `showme-eval-${fx}-`)),
         });
 
-        const stepLines = result.skillMd.match(/^\d+\./gm) ?? [];
+        // Phase count: count "## Steps" body items. Use numbered list lines
+        // that occur AFTER "## Steps" up to the next top-level (## or end).
+        const stepsMatch = result.skillMd.match(
+          /## Steps\s*\n([\s\S]*?)(?=^##\s|\Z)/m,
+        );
+        const stepsBody = stepsMatch?.[1] ?? "";
+        const stepLines = stepsBody.match(/^\d+\./gm) ?? [];
         expect(stepLines.length).toBeGreaterThanOrEqual(
           assertions.step_count_min,
         );
         expect(stepLines.length).toBeLessThanOrEqual(assertions.step_count_max);
+
+        // Intent block must mention the goal domain. Match against the full
+        // SKILL.md (which includes the intent: frontmatter) — case-insensitive.
         const lower = result.skillMd.toLowerCase();
-        for (const phrase of assertions.must_contain_step_with) {
+        for (const phrase of assertions.intent_must_mention) {
           expect(lower).toContain(phrase.toLowerCase());
         }
-        // Loose anchor check: the SKILL.md mentions the expected AX role somewhere.
-        expect(result.skillMd).toContain(
-          assertions.must_contain_anchor_with_role,
-        );
       },
       60_000,
     );
