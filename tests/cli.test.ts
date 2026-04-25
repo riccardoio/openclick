@@ -53,8 +53,7 @@ describe("cli", () => {
     );
   });
 
-  test("run still prints stub (until Task 13)", async () => {
-    await main(["run"]);
-    expect(text()).toBe("(run not implemented yet)");
+  test("run without skill-name throws", async () => {
+    await expect(main(["run"])).rejects.toThrow(/run requires <skill-name>/);
   });
 });
