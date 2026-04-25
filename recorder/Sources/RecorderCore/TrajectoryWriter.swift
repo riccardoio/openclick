@@ -1,5 +1,9 @@
 import Foundation
 
+/// Thread-safe writer for a cua-skills-format trajectory directory.
+/// All public methods serialize through `queue` so the CGEventTap callback,
+/// the screenshotter timer, and the SIGINT handler can call freely without
+/// stepping on `eventsHandle`, `screenshotCounter`, or `eventCount`.
 public final class TrajectoryWriter {
   private let directory: URL
   private let taskName: String
@@ -8,6 +12,8 @@ public final class TrajectoryWriter {
   private let eventsHandle: FileHandle
   private var screenshotCounter: Int = 0
   private var eventCount: Int = 0
+  private var finalized: Bool = false
+  private let queue = DispatchQueue(label: "showme.writer")
 
   public init(directory: URL, taskName: String, taskDescription: String) throws {
     self.directory = directory
@@ -21,16 +27,21 @@ public final class TrajectoryWriter {
   }
 
   public func appendEvent(_ event: Event, axTree: AXNode?, screenshotRef: String?) throws {
-    let envelope = EventEnvelope(event: event, axTree: axTree, screenshotRef: screenshotRef)
-    let data = try JSONEncoder().encode(envelope)
-    eventsHandle.write(data)
-    eventsHandle.write(Data([0x0A]))  // newline
-    eventCount += 1
+    try queue.sync {
+      guard !finalized else { return }
+      let envelope = EventEnvelope(event: event, axTree: axTree, screenshotRef: screenshotRef)
+      let data = try JSONEncoder().encode(envelope)
+      eventsHandle.write(data)
+      eventsHandle.write(Data([0x0A]))  // newline
+      eventCount += 1
+    }
   }
 
   public func nextScreenshotName() -> String {
-    screenshotCounter += 1
-    return String(format: "step_%04d.jpg", screenshotCounter)
+    queue.sync {
+      screenshotCounter += 1
+      return String(format: "step_%04d.jpg", screenshotCounter)
+    }
   }
 
   public func screenshotURL(name: String) -> URL {
@@ -38,33 +49,39 @@ public final class TrajectoryWriter {
   }
 
   public func finalize() throws {
-    try eventsHandle.close()
-    let session = SessionMetadata(
-      taskName: taskName,
-      taskDescription: taskDescription,
-      startedAt: ISO8601DateFormatter().string(from: startedAt),
-      endedAt: ISO8601DateFormatter().string(from: Date()),
-      eventCount: eventCount,
-      screenshotCount: screenshotCounter
-    )
-    let data = try JSONEncoder().encode(session)
-    try data.write(to: directory.appendingPathComponent("session.json"))
+    try queue.sync {
+      guard !finalized else { return }
+      finalized = true
+      try eventsHandle.close()
+      let session = SessionMetadata(
+        taskName: taskName,
+        taskDescription: taskDescription,
+        startedAt: ISO8601DateFormatter().string(from: startedAt),
+        endedAt: ISO8601DateFormatter().string(from: Date()),
+        eventCount: eventCount,
+        screenshotCount: screenshotCounter
+      )
+      let data = try JSONEncoder().encode(session)
+      try data.write(to: directory.appendingPathComponent("session.json"))
+    }
   }
 }
 
+/// Encodes the recorded event with its discriminator + fields inlined at the
+/// top level of the JSON object, alongside ax_tree and screenshot keys.
+/// We piggyback on Event's own encode(to:) to avoid a JSONSerialization round-trip
+/// (which corrupts Bool fields via NSNumber bridging).
 private struct EventEnvelope: Encodable {
   let event: Event
   let axTree: AXNode?
   let screenshotRef: String?
 
   func encode(to encoder: Encoder) throws {
+    // Event.encode writes "kind" + the inner event's fields into the encoder's
+    // underlying object. ClickEvent uses CodingKeys with windowId="window_id"
+    // so snake_case is preserved on the wire.
+    try event.encode(to: encoder)
     var container = encoder.container(keyedBy: DynamicKey.self)
-    // Inline event fields by re-encoding through the event's own encoder
-    let eventData = try JSONEncoder().encode(event)
-    let eventDict = try JSONSerialization.jsonObject(with: eventData) as? [String: Any] ?? [:]
-    for (k, v) in eventDict {
-      try container.encode(AnyEncodable(v), forKey: DynamicKey(stringValue: k)!)
-    }
     if let axTree = axTree {
       try container.encode(axTree, forKey: DynamicKey(stringValue: "ax_tree")!)
     }
@@ -79,25 +96,6 @@ private struct DynamicKey: CodingKey {
   var intValue: Int? { nil }
   init?(stringValue: String) { self.stringValue = stringValue }
   init?(intValue: Int) { return nil }
-}
-
-private struct AnyEncodable: Encodable {
-  let value: Any
-  init(_ value: Any) { self.value = value }
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.singleValueContainer()
-    switch value {
-    case let v as String: try container.encode(v)
-    case let v as Int: try container.encode(v)
-    case let v as Double: try container.encode(v)
-    case let v as Bool: try container.encode(v)
-    case let v as [Any]: try container.encode(v.map(AnyEncodable.init))
-    case let v as [String: Any]:
-      var keyed = encoder.container(keyedBy: DynamicKey.self)
-      for (k, vv) in v { try keyed.encode(AnyEncodable(vv), forKey: DynamicKey(stringValue: k)!) }
-    default: try container.encodeNil()
-    }
-  }
 }
 
 private struct SessionMetadata: Encodable {

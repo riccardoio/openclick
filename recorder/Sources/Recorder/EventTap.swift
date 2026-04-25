@@ -32,19 +32,29 @@ public final class EventTap {
     }
     self.tap = tap
     self.runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-    CFRunLoopAddSource(CFRunLoopGetCurrent(), self.runLoopSource, .commonModes)
+    // CFRunLoopGetMain() — clicky's pattern. CFRunLoopGetCurrent() varies by thread
+    // and silently no-ops on stop if start/stop run on different threads.
+    CFRunLoopAddSource(CFRunLoopGetMain(), self.runLoopSource, .commonModes)
     CGEvent.tapEnable(tap: tap, enable: true)
   }
 
   public func stop() {
     if let tap = tap { CGEvent.tapEnable(tap: tap, enable: false) }
-    if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes) }
+    if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
     tap = nil; runLoopSource = nil
   }
 
   private static let callback: CGEventTapCallBack = { _, type, event, userInfo in
     guard let userInfo = userInfo else { return Unmanaged.passUnretained(event) }
     let me = Unmanaged<EventTap>.fromOpaque(userInfo).takeUnretainedValue()
+
+    // macOS disables the tap if our callback runs slow (kernel timeout ~1s).
+    // Re-enable on either disable signal so recording survives transient slowness.
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+      if let tap = me.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+      return Unmanaged.passUnretained(event)
+    }
+
     let ts = ISO8601DateFormatter().string(from: Date())
     let pid = event.getIntegerValueField(.eventTargetUnixProcessID)
     let location = event.location

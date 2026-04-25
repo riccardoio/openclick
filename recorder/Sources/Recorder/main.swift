@@ -32,6 +32,12 @@ let writer = try TrajectoryWriter(
 )
 let screenshotter = Screenshotter(writer: writer)
 
+// All cua-driver shellouts and writer appends happen on this serial queue,
+// NOT on the CGEventTap callback's run-loop thread. CGEventTap has a kernel
+// timeout (~1s); doing 2-3 sync subprocess calls inside the callback would
+// trip it and disable the tap. The tap handler enqueues work and returns.
+let ingest = DispatchQueue(label: "showme.ingest")
+
 let tap = EventTap { event in
   let pid: Int32
   switch event {
@@ -40,25 +46,22 @@ let tap = EventTap { event in
   case .scroll(let e): pid = e.pid
   }
 
-  var axNode: AXNode? = nil
-  if pid > 0 {
-    if let windows = try? CuaDriver.listWindows(pid: pid), let first = windows.first {
-      screenshotter.setTarget(pid: pid, windowId: first.windowId)
-      if let state = try? CuaDriver.getWindowState(pid: pid, windowId: first.windowId) {
-        axNode = state.axTree
+  ingest.async {
+    var axNode: AXNode? = nil
+    if pid > 0 {
+      if let windows = try? CuaDriver.listWindows(pid: pid), let first = windows.first {
+        screenshotter.setTarget(pid: pid, windowId: first.windowId)
+        if let state = try? CuaDriver.getWindowState(pid: pid, windowId: first.windowId) {
+          axNode = state.axTree
+        }
       }
     }
-  }
-
-  // Single source of truth for the screenshot name: captureNow() writes the file
-  // AND returns the name. If it fails or there's no target, screenshotRef is nil
-  // and the LLM can correlate frames by timestamp.
-  let screenshotRef = screenshotter.captureNow()
-
-  do {
-    try writer.appendEvent(event, axTree: axNode, screenshotRef: screenshotRef)
-  } catch {
-    FileHandle.standardError.write("append failed: \(error)\n".data(using: .utf8)!)
+    let screenshotRef = screenshotter.captureNow()
+    do {
+      try writer.appendEvent(event, axTree: axNode, screenshotRef: screenshotRef)
+    } catch {
+      FileHandle.standardError.write("append failed: \(error)\n".data(using: .utf8)!)
+    }
   }
 }
 
@@ -71,9 +74,17 @@ sigSrc.setEventHandler {
   print("\nFinalizing trajectory...")
   tap.stop()
   screenshotter.stop()
-  try? writer.finalize()
-  print("Wrote: \(outURL.path)")
-  exit(0)
+  // Drain in-flight ingest work before finalizing so the last few events make
+  // it into events.jsonl. ingest.sync waits for the queue to flush.
+  ingest.sync {}
+  do {
+    try writer.finalize()
+    print("Wrote: \(outURL.path)")
+    exit(0)
+  } catch {
+    FileHandle.standardError.write("finalize failed: \(error)\n".data(using: .utf8)!)
+    exit(1)
+  }
 }
 sigSrc.resume()
 
