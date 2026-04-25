@@ -4,9 +4,14 @@ public enum CuaDriverError: Error {
   case binaryNotFound
   case nonZeroExit(Int32, String)
   case parseError(String)
+  case timedOut(TimeInterval)
 }
 
 public enum CuaDriver {
+  /// Per-call cua-driver timeout. Long enough for a 4K screenshot; short enough
+  /// that a hung daemon doesn't wedge the recorder for the session.
+  public static let defaultTimeoutSeconds: TimeInterval = 30
+
   public static func parseWindowState(_ data: Data) throws -> WindowState {
     do {
       return try JSONDecoder().decode(WindowState.self, from: data)
@@ -39,7 +44,10 @@ public enum CuaDriver {
     return try JSONDecoder().decode(Resp.self, from: data).windows
   }
 
-  private static func run(_ args: [String]) throws -> Data {
+  /// Spawns cua-driver with the given args. Drains stdout AND stderr concurrently
+  /// before waitUntilExit so a child writing >64KB to stdout doesn't deadlock on
+  /// a full pipe. Times out after `timeout` seconds.
+  private static func run(_ args: [String], timeout: TimeInterval = defaultTimeoutSeconds) throws -> Data {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: try resolveBinary())
     process.arguments = args
@@ -48,13 +56,28 @@ public enum CuaDriver {
     process.standardOutput = stdout
     process.standardError = stderr
     do { try process.run() } catch { throw CuaDriverError.binaryNotFound }
+
+    let group = DispatchGroup()
+    var outData = Data()
+    var errData = Data()
+    let drainQueue = DispatchQueue(label: "showme.cua-driver.drain", attributes: .concurrent)
+    drainQueue.async(group: group) {
+      outData = stdout.fileHandleForReading.readDataToEndOfFile()
+    }
+    drainQueue.async(group: group) {
+      errData = stderr.fileHandleForReading.readDataToEndOfFile()
+    }
+    if group.wait(timeout: .now() + timeout) == .timedOut {
+      process.terminate()
+      _ = group.wait(timeout: .now() + 1)
+      throw CuaDriverError.timedOut(timeout)
+    }
     process.waitUntilExit()
-    let data = stdout.fileHandleForReading.readDataToEndOfFile()
     if process.terminationStatus != 0 {
-      let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let err = String(data: errData, encoding: .utf8) ?? ""
       throw CuaDriverError.nonZeroExit(process.terminationStatus, err)
     }
-    return data
+    return outData
   }
 
   private static func resolveBinary() throws -> String {
