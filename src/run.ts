@@ -325,10 +325,18 @@ async function runCuaDriverCapture(
  * cua-driver subprocess errors, etc.) — the planner falls back to placeholders.
  */
 async function preDiscoverAppState(skillMd: string): Promise<string | null> {
-  const bundleId = extractBundleId(skillMd);
+  // Try the cheap path first: literal bundle id mentioned in the SKILL.md.
+  let bundleId = extractBundleId(skillMd);
+  if (!bundleId) {
+    // Fallback: match a running/installed app's NAME against the SKILL.md.
+    // The compile step doesn't always include the bundle id (Claude may write
+    // "Calculator" without `com.apple.calculator`). list_apps gives us the
+    // mapping we need.
+    bundleId = await guessBundleIdByAppName(skillMd);
+  }
   if (!bundleId) {
     console.warn(
-      "[showme] no bundle_id found in SKILL.md; skipping pre-discovery",
+      "[showme] no bundle_id found in SKILL.md and no app name matched a running/installed app; skipping pre-discovery",
     );
     return null;
   }
@@ -389,8 +397,61 @@ function extractBundleId(skillMd: string): string | null {
   return m?.[1] ?? null;
 }
 
+// `cua-driver call list_apps` line format:
+//   - AppName (pid 1234) [com.example.app]   ← running
+//   - AppName [com.example.app]              ← installed but not running
+const APP_LINE_RE =
+  /^-\s+(.+?)\s+(?:\(pid\s+\d+\)\s+)?\[([a-zA-Z0-9._-]+)\]\s*$/;
+
+interface AppEntry {
+  name: string;
+  bundleId: string;
+}
+
+function parseListAppsOutput(stdout: string): AppEntry[] {
+  const apps: AppEntry[] = [];
+  for (const line of stdout.split("\n")) {
+    const m = line.match(APP_LINE_RE);
+    if (m?.[1] && m[2]) apps.push({ name: m[1].trim(), bundleId: m[2] });
+  }
+  return apps;
+}
+
+/**
+ * Given a SKILL.md and a list of apps cua-driver knows about, pick the bundle
+ * id whose app NAME appears EARLIEST in the SKILL.md text. The earliest match
+ * wins because compiled SKILL.md files typically name the target app in the
+ * title or the first sentence (e.g. "# Calculator: 17 × 23"); other app names
+ * mentioned later (Finder, Safari) are usually decoration.
+ */
+function pickBundleIdByEarliestMention(
+  skillMd: string,
+  apps: AppEntry[],
+): string | null {
+  const lower = skillMd.toLowerCase();
+  let best: { app: AppEntry; position: number } | null = null;
+  for (const app of apps) {
+    const idx = lower.indexOf(app.name.toLowerCase());
+    if (idx < 0) continue;
+    if (best === null || idx < best.position) best = { app, position: idx };
+  }
+  return best?.app.bundleId ?? null;
+}
+
+async function guessBundleIdByAppName(skillMd: string): Promise<string | null> {
+  const out = await runCuaDriverCapture(["call", "list_apps"]);
+  if (!out.ok) return null;
+  const apps = parseListAppsOutput(out.stdout);
+  if (apps.length === 0) return null;
+  return pickBundleIdByEarliestMention(skillMd, apps);
+}
+
 // Exported for tests.
-export const _internals = { extractBundleId };
+export const _internals = {
+  extractBundleId,
+  parseListAppsOutput,
+  pickBundleIdByEarliestMention,
+};
 
 function buildSystemPrompt(skillMd: string): string {
   return `You are an agent executing a recorded skill on the user's macOS via cua-driver.
