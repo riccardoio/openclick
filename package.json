@@ -1,0 +1,23 @@
+{
+  "name": "showme",
+  "version": "0.1.0",
+  "description": "Record a task once, replay it on macOS via cua-driver.",
+  "type": "module",
+  "bin": { "showme": "./bin/showme" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests",
+    "format": "biome format --write src tests"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

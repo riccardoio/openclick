@@ -1,0 +1,5 @@
+{
+  "step_count_min": 2,
+  "step_count_max": 6,
+  "intent_must_mention": ["calculator"]
+}

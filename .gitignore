@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+.bun/
+dist/
+recorder/.build/
+recorder/.swiftpm/
+*.log

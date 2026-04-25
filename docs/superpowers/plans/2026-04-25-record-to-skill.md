@@ -25,7 +25,7 @@
 - Agent SDK entry: `import { query } from "@anthropic-ai/claude-agent-sdk"` — async iterable of messages. Options include `mcpServers`, `allowedTools`, `hooks` (PreToolUse for our preview/dry-run), `permissionMode`.
 - `cua-driver` is installed on this machine at `/usr/local/bin/cua-driver` (symlink to `/Applications/CuaDriver.app/Contents/MacOS/cua-driver`).
 
-**Project root:** `/Users/riccardo/Desktop/interface/showme`. All paths in this plan are relative to this root unless noted.
+**Project root:** `/Users/riccardo/Desktop/interface/rclick`. All paths in this plan are relative to this root unless noted.
 
 ## Prerequisites (set up before Task 0)
 

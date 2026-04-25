@@ -1,0 +1,64 @@
+name: Release
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build per-arch and lipo into a universal binary
+        run: |
+          cd recorder
+          swift build -c release --arch arm64
+          swift build -c release --arch x86_64
+          mkdir -p .build/release
+          lipo -create \
+            .build/arm64-apple-macosx/release/showme-recorder \
+            .build/x86_64-apple-macosx/release/showme-recorder \
+            -output .build/release/showme-recorder
+          lipo -info .build/release/showme-recorder
+
+      - name: Codesign
+        env:
+          DEV_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          P12: ${{ secrets.APPLE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+        run: |
+          # Decode + import the Developer ID Application cert into a temp keychain.
+          echo "$P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          # Keep the keychain unlocked for the rest of the job (6 hours).
+          security set-keychain-settings -lut 21600 build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+          codesign --sign "$DEV_ID" --options runtime --timestamp recorder/.build/release/showme-recorder
+          codesign --verify --verbose recorder/.build/release/showme-recorder
+
+      - name: Notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          mkdir -p dmg-staging
+          cp recorder/.build/release/showme-recorder dmg-staging/
+          hdiutil create -volname "showme" -srcfolder dmg-staging -ov -format UDZO showme.dmg
+          xcrun notarytool submit showme.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple showme.dmg
+
+      - name: Attach DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: showme.dmg
