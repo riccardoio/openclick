@@ -13,6 +13,7 @@ import {
   generatePlan,
 } from "./planner.ts";
 import {
+  type SkillIntent,
   readIntent,
   readTargetMetadata,
   renderIntentForPrompt,
@@ -381,12 +382,20 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
         stopWhen: plan.stopWhen,
         pid: lastResult.lastContext.pid,
         windowId: lastResult.lastContext.windowId,
+        intent: intent ?? undefined,
+        executedStepPurposes: plan.steps
+          .slice(0, lastResult.stepsExecuted)
+          .map((s) => s.purpose),
       });
-      if (!ok.success) {
+      if (ok.verdict === "no") {
         console.error(
           `[showme] stopWhen verification FAILED: ${ok.explanation}`,
         );
         process.exitCode = 3;
+      } else if (ok.verdict === "unknown") {
+        console.warn(
+          `[showme] stopWhen verifier couldn't tell from the screenshot/AX (${ok.explanation}). All steps completed without errors — treating as success.`,
+        );
       } else {
         console.log(`[showme] stopWhen verified: ${ok.explanation}`);
       }
@@ -559,6 +568,20 @@ export async function verifyStopWhen(args: {
   stopWhen: string;
   pid: number;
   windowId: number;
+  /**
+   * Full skill intent (goal + success_signals). When present, we ground the
+   * verifier in the user's WHAT (not just the planner's stopWhen sentinel).
+   * Browser/web apps don't expose web view content in AX, so the AX tree
+   * alone falsely says "menu bar only"; goal + screenshot together unstick
+   * that case.
+   */
+  intent?: SkillIntent;
+  /**
+   * Plan steps that ran (purpose strings). Adds "what did we actually do"
+   * context so the verifier knows e.g. "we typed claude code and pressed
+   * return" even if the AX tree is sparse.
+   */
+  executedStepPurposes?: string[];
   snapshot?: (
     pid: number,
     windowId: number,
@@ -568,26 +591,60 @@ export async function verifyStopWhen(args: {
    * Tests inject a no-op so they don't shell out.
    */
   captureScreenshot?: (windowId: number) => Promise<string | undefined>;
-}): Promise<{ success: boolean; explanation: string }> {
+  /**
+   * Settle delay (ms) before snapshotting + screenshotting. Pages render and
+   * navigations resolve in real time — a 0ms gap captures pre-render. Tests
+   * inject 0 to skip the wait. Default ~1500ms.
+   */
+  settleMs?: number;
+}): Promise<{ verdict: "yes" | "no" | "unknown"; explanation: string }> {
+  const settleMs = args.settleMs ?? 1500;
+  if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
   const snapshotFn = args.snapshot ?? defaultSnapshot;
   const snap = await snapshotFn(args.pid, args.windowId);
   if (!snap.ok)
     return {
-      success: false,
+      verdict: "unknown",
       explanation: `couldn't snapshot window for verification: ${snap.error ?? "unknown"}`,
     };
   const trimmed = snap.stdout.slice(0, 12_000);
-  const prompt = `You are verifying that a recorded macOS skill succeeded.
 
-Skill stopWhen: ${args.stopWhen}
-
-Live AX tree of the focused window (truncated):
-${trimmed}
-
-Did the skill succeed? Reply on a single line in this exact shape:
-  YES — <one-sentence explanation>
-  NO — <one-sentence explanation>
-Nothing else.`;
+  const sections: string[] = [
+    "You are verifying that a macOS task succeeded. You have THREE pieces of context: the goal, the steps that just ran, and a screenshot + AX tree of the focused window.",
+    "",
+    "The SCREENSHOT is your PRIMARY evidence. The AX tree is supplementary and is often sparse for browser web views, full-screen file viewers, video players, and any app that renders content outside the AX hierarchy. When the screenshot clearly shows the goal completed, answer YES even if the AX tree only shows a menu bar or chrome.",
+    "",
+    "Three possible verdicts:",
+    "  YES — the screenshot (primary) or the AX tree (supplementary) shows clear evidence the goal was met.",
+    "  NO — there is positive evidence of FAILURE (an error dialog, a captcha block, the wrong app in front, a known-bad state).",
+    "  UNKNOWN — neither source contains enough information to tell. Sparse evidence is NOT failure — answer UNKNOWN.",
+    "",
+    "Default to UNKNOWN over NO when evidence is missing or ambiguous. Only answer NO when you can point to a specific contradicting signal.",
+  ];
+  if (args.intent) {
+    sections.push("", `Goal: ${args.intent.goal}`);
+    if (args.intent.successSignals.length > 0) {
+      sections.push("Success signals (any one is enough):");
+      for (const s of args.intent.successSignals) sections.push(`  - ${s}`);
+    }
+  }
+  sections.push("", `Planner stopWhen: ${args.stopWhen}`);
+  if (args.executedStepPurposes && args.executedStepPurposes.length > 0) {
+    sections.push("", "Steps that just ran (all returned exit-code 0):");
+    for (const p of args.executedStepPurposes) sections.push(`  - ${p}`);
+  }
+  sections.push(
+    "",
+    "Live AX tree of the focused window (supplementary, may be incomplete):",
+    trimmed,
+    "",
+    "Reply on a single line in this exact shape:",
+    "  YES — <one-sentence explanation grounded in what you SEE>",
+    "  NO — <one-sentence explanation citing the specific contradicting signal>",
+    "  UNKNOWN — <one-sentence explanation of why evidence is sparse>",
+    "Nothing else.",
+  );
+  const prompt = sections.join("\n");
   // Best-effort: attach a screenshot too. Falsy from the capture hook (tests,
   // failed grant) just degrades to text-only, same as planning.
   const captureFn = args.captureScreenshot ?? captureFocusedWindowScreenshot;
@@ -595,20 +652,26 @@ Nothing else.`;
   const imagePaths = shotPath ? [shotPath] : [];
   const reply = await args.plannerClient.generatePlanText(prompt, imagePaths);
   const trimmedReply = reply.trim();
+  const unknownMatch = trimmedReply.match(/^UNKNOWN\b\s*[—:-]?\s*(.*)$/i);
+  if (unknownMatch)
+    return {
+      verdict: "unknown",
+      explanation: unknownMatch[1]?.trim() || "evidence sparse",
+    };
   const yesMatch = trimmedReply.match(/^YES\b\s*[—:-]?\s*(.*)$/i);
   if (yesMatch)
     return {
-      success: true,
+      verdict: "yes",
       explanation: yesMatch[1]?.trim() || "skill complete",
     };
   const noMatch = trimmedReply.match(/^NO\b\s*[—:-]?\s*(.*)$/i);
   if (noMatch)
     return {
-      success: false,
+      verdict: "no",
       explanation: noMatch[1]?.trim() || "model returned NO without detail",
     };
   return {
-    success: false,
+    verdict: "unknown",
     explanation: `verifier returned an unparseable reply: ${trimmedReply.slice(0, 200)}`,
   };
 }
