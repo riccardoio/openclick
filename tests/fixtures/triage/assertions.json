@@ -1,0 +1,6 @@
+{
+  "must_contain_step_with": ["labels", "issue"],
+  "must_contain_anchor_with_role": "AXButton",
+  "step_count_min": 3,
+  "step_count_max": 12
+}
