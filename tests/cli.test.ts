@@ -47,10 +47,13 @@ describe("cli", () => {
     );
   });
 
-  test("compile and run still print stubs (until Tasks 12+13)", async () => {
-    await main(["compile"]);
-    expect(text()).toBe("(compile not implemented yet)");
-    captured = [];
+  test("compile without skill-name throws", async () => {
+    await expect(main(["compile"])).rejects.toThrow(
+      /compile requires <skill-name>/,
+    );
+  });
+
+  test("run still prints stub (until Task 13)", async () => {
     await main(["run"]);
     expect(text()).toBe("(run not implemented yet)");
   });

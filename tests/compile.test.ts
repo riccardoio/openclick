@@ -1,0 +1,81 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { compileSkillMd } from "../src/compile.ts";
+
+const tmpOut = (): string => mkdtempSync(join(tmpdir(), "showme-compile-"));
+
+describe("compile", () => {
+  test("produces a valid SKILL.md from a trajectory", async () => {
+    const trajectoryDir = join(import.meta.dir, "fixtures/calc/trajectory");
+    const fakeClaude = {
+      callsMade: 0,
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      async generate(_args: any) {
+        this.callsMade++;
+        return `---
+name: calc
+description: Use Calculator to compute 17 times 23.
+---
+
+# Calculator: 17 × 23
+
+## Goal
+Open Calculator and compute 17 × 23.
+
+## Steps
+1. Open Calculator.
+2. Type 17.
+3. Type *.
+4. Type 23.
+5. Press =.
+
+## Anchors
+- Calculator buttons are AXButton.
+
+## Stop conditions
+- The display shows the result.
+`;
+      },
+    };
+
+    const result = await compileSkillMd({
+      trajectoryDir,
+      skillName: "calc-test-1",
+      claudeClient: fakeClaude,
+      outputDir: tmpOut(),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.skillMd).toContain("name: calc");
+    expect(fakeClaude.callsMade).toBe(1);
+  });
+
+  test("re-prompts Claude once when first output is invalid", async () => {
+    const trajectoryDir = join(import.meta.dir, "fixtures/calc/trajectory");
+    const fakeClaude = {
+      callsMade: 0,
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      async generate(_args: any) {
+        this.callsMade++;
+        if (this.callsMade === 1) return "no frontmatter at all";
+        return `---
+name: calc
+description: ok now.
+---
+# C
+## Steps
+1. ok
+`;
+      },
+    };
+    const result = await compileSkillMd({
+      trajectoryDir,
+      skillName: "calc-test-2",
+      claudeClient: fakeClaude,
+      outputDir: tmpOut(),
+    });
+    expect(result.valid).toBe(true);
+    expect(fakeClaude.callsMade).toBe(2);
+  });
+});

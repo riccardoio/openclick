@@ -31,7 +31,27 @@ export async function main(args: string[]): Promise<void> {
       await recordCommand({ skillName, description });
       return;
     }
-    case "compile":
+    case "compile": {
+      const skillName = args[1];
+      if (!skillName) throw new Error("compile requires <skill-name>");
+      const { compileSkillMd, AnthropicClaudeClient } = await import(
+        "./compile.ts"
+      );
+      const { resolveSkillTrajectoryPath } = await import("./paths.ts");
+      const result = await compileSkillMd({
+        trajectoryDir: resolveSkillTrajectoryPath(skillName),
+        skillName,
+        claudeClient: new AnthropicClaudeClient(),
+      });
+      console.log(`[showme] wrote ${result.outputPath}`);
+      if (!result.valid) {
+        console.error(
+          `[showme] WARNING: SKILL.md failed validation: ${result.errors.join(", ")}`,
+        );
+        process.exitCode = 2;
+      }
+      return;
+    }
     case "run":
       console.log(`(${cmd} not implemented yet)`);
       return;
