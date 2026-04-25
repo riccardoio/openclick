@@ -69,8 +69,10 @@ Plan schema:
 }
 
 Important:
-- pid and window_id values are not known until launch_app/list_windows runs at execute time. The local executor resolves them automatically by remembering the most recent launch_app/list_windows result and substituting "$pid" / "$window_id" placeholders. Use the literal strings "$pid" and "$window_id" in args where appropriate.
-- ALWAYS include a get_window_state step before any click that uses element_index — element indices are scoped per (pid, window_id) and the cache must be primed.
+- If the prompt contains a "Pre-discovery" block with concrete pid, window_id, and AX tree, USE THOSE EXACT VALUES IN YOUR STEPS. DO NOT emit "$pid" or "$window_id" placeholders — they're already known. DO NOT re-emit the initial launch_app or get_window_state — those already ran. Read element_index integers directly from the AX tree shown.
+- If there is NO pre-discovery block: emit launch_app first, then get_window_state, and use the literal strings "$pid" and "$window_id" in subsequent step args. The executor will substitute them at runtime from the most recent launch_app/list_windows/get_window_state result.
+- EVERY click step MUST include either a concrete element_index (from a known AX tree) OR concrete (x, y) pixel coordinates. Never emit a click step with neither — cua-driver will reject it.
+- ALWAYS include a get_window_state step before any click that uses element_index when no pre-discovery exists — element indices are scoped per (pid, window_id) and the cache must be primed.
 - Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
