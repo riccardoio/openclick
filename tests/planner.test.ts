@@ -174,6 +174,29 @@ describe("planner", () => {
     expect(lastPrompt).toMatch(/SUFFIX/i);
   });
 
+  test("system prompt advises keyboard-first execution and gives both example modes", async () => {
+    let lastPrompt = "";
+    const client: PlannerClient = {
+      async generatePlanText(prompt) {
+        lastPrompt = prompt;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    await generatePlan({
+      skillMd: SAMPLE_SKILL,
+      currentStateSummary: "",
+      claudeClient: client,
+    });
+    // Keyboard-first guidance is present.
+    expect(lastPrompt).toMatch(/keyboard-first/i);
+    // Both example modes are present.
+    expect(lastPrompt).toContain("type_text");
+    expect(lastPrompt).toContain("17*23");
+    expect(lastPrompt).toContain("Labels");
+    // Warns against press_key("*").
+    expect(lastPrompt).toMatch(/press_key.*"\*"|press_key\("\*"\)/);
+  });
+
   test("threads optional replan context (failed step + error) into the prompt", async () => {
     let lastPrompt = "";
     const client: PlannerClient = {
