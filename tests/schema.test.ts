@@ -146,13 +146,15 @@ intent:
 `;
     // y≈ position hint
     expect(
-      validateSkillMd(`${base}\nThe address bar sits around y≈47-58.\n`).errors
-        .some((e) => /position|positional/i.test(e)),
+      validateSkillMd(
+        `${base}\nThe address bar sits around y≈47-58.\n`,
+      ).errors.some((e) => /position|positional/i.test(e)),
     ).toBe(true);
     // pixel-position phrase (the leak pattern: "320px wide", "320px from")
     expect(
-      validateSkillMd(`${base}\nClick the button 320px from the top.\n`).errors
-        .some((e) => /pixel/i.test(e)),
+      validateSkillMd(
+        `${base}\nClick the button 320px from the top.\n`,
+      ).errors.some((e) => /pixel/i.test(e)),
     ).toBe(true);
     // Anchors section
     expect(
@@ -190,9 +192,9 @@ intent:
         .valid,
     ).toBe(true);
     // Algebra-style x=5 should pass (no ≈ or ~).
-    expect(validateSkillMd(`${base}\nSet x = 5 in the form field.\n`).valid).toBe(
-      true,
-    );
+    expect(
+      validateSkillMd(`${base}\nSet x = 5 in the form field.\n`).valid,
+    ).toBe(true);
     // Bare "320px" with no positional follow-up word should pass.
     expect(
       validateSkillMd(`${base}\nThe icon is rendered at 320px resolution.\n`)
