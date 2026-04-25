@@ -426,7 +426,7 @@ describe("verifyStopWhen", () => {
   // No-op screenshot capture for unit tests so we don't shell out to cua-driver.
   const noShot = async (): Promise<undefined> => undefined;
 
-  test("returns success=true when the model replies YES", async () => {
+  test("returns verdict=yes when the model replies YES", async () => {
     const planner: PlannerClient = {
       async generatePlanText() {
         return "YES — display reads 391 as expected";
@@ -437,17 +437,18 @@ describe("verifyStopWhen", () => {
       stopWhen: "display shows 391",
       pid: 1,
       windowId: 2,
+      settleMs: 0,
       snapshot: async () => ({
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
       }),
       captureScreenshot: noShot,
     });
-    expect(result.success).toBe(true);
+    expect(result.verdict).toBe("yes");
     expect(result.explanation).toMatch(/391/);
   });
 
-  test("returns success=false when the model replies NO", async () => {
+  test("returns verdict=no when the model replies NO", async () => {
     const planner: PlannerClient = {
       async generatePlanText() {
         return "NO — display still shows 0";
@@ -458,17 +459,37 @@ describe("verifyStopWhen", () => {
       stopWhen: "display shows 391",
       pid: 1,
       windowId: 2,
+      settleMs: 0,
       snapshot: async () => ({
         ok: true,
         stdout: "- [4] AXStaticText (0) id=display\n",
       }),
       captureScreenshot: noShot,
     });
-    expect(result.success).toBe(false);
+    expect(result.verdict).toBe("no");
     expect(result.explanation).toMatch(/still shows 0/);
   });
 
-  test("threads stopWhen and live AX tree into the prompt", async () => {
+  test("returns verdict=unknown when the model replies UNKNOWN (sparse evidence)", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "UNKNOWN — Safari web view content isn't in the AX tree and the screenshot only shows menu bar";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "Google results page is showing",
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXMenuBar\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+    expect(result.explanation).toMatch(/sparse|menu bar|web view/i);
+  });
+
+  test("threads stopWhen, intent, and step purposes into the prompt", async () => {
     let capturedPrompt = "";
     const planner: PlannerClient = {
       async generatePlanText(prompt) {
@@ -481,6 +502,12 @@ describe("verifyStopWhen", () => {
       stopWhen: "display shows 391",
       pid: 1,
       windowId: 2,
+      settleMs: 0,
+      intent: {
+        goal: "Compute 17 × 23",
+        successSignals: ["display reads 391"],
+      },
+      executedStepPurposes: ["press 1", "press 7", "press equals"],
       snapshot: async () => ({
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
@@ -489,9 +516,13 @@ describe("verifyStopWhen", () => {
     });
     expect(capturedPrompt).toContain("display shows 391");
     expect(capturedPrompt).toContain("AXStaticText");
+    expect(capturedPrompt).toContain("Compute 17 × 23");
+    expect(capturedPrompt).toContain("display reads 391");
+    expect(capturedPrompt).toContain("press equals");
+    expect(capturedPrompt).toMatch(/UNKNOWN/);
   });
 
-  test("returns failure with the snapshot error if get_window_state fails", async () => {
+  test("returns unknown when get_window_state fails (cannot prove failure)", async () => {
     const planner: PlannerClient = {
       async generatePlanText() {
         throw new Error("should not be called");
@@ -502,6 +533,7 @@ describe("verifyStopWhen", () => {
       stopWhen: "x",
       pid: 1,
       windowId: 2,
+      settleMs: 0,
       snapshot: async () => ({
         ok: false,
         stdout: "",
@@ -509,7 +541,7 @@ describe("verifyStopWhen", () => {
       }),
       captureScreenshot: noShot,
     });
-    expect(result.success).toBe(false);
+    expect(result.verdict).toBe("unknown");
     expect(result.explanation).toMatch(/no such window/);
   });
 
@@ -526,6 +558,7 @@ describe("verifyStopWhen", () => {
       stopWhen: "display shows 391",
       pid: 1,
       windowId: 2,
+      settleMs: 0,
       snapshot: async () => ({
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
