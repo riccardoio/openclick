@@ -19,9 +19,10 @@ afterEach(() => {
 const text = () => captured.join("\n");
 
 describe("cli", () => {
-  test("--help prints usage with all three subcommands", async () => {
+  test("--help prints usage with all four subcommands", async () => {
     await main(["--help"]);
     const t = text();
+    expect(t).toContain("doctor");
     expect(t).toContain("record");
     expect(t).toContain("compile");
     expect(t).toContain("run");
