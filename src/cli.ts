@@ -3,7 +3,8 @@ const VERSION = "0.0.1";
 const USAGE = `Usage: showme <command> [options]
 
 Commands:
-  doctor                 Check prereqs (cua-driver, permissions, API key)
+  doctor [--fix]         Check prereqs (cua-driver, permissions, API key).
+                         --fix auto-starts the cua-driver daemon if down.
   record <task-name>     Record a task by demonstration
   compile <skill-name>   Compile a recording into a SKILL.md
   run <skill-name>       Run a compiled skill (default: --dry-run)
@@ -27,10 +28,30 @@ export async function main(args: string[]): Promise<void> {
   const cmd = args[0];
   switch (cmd) {
     case "doctor": {
-      const { runDoctor, formatDoctorReport, RealSystemProbe } = await import(
-        "./doctor.ts"
-      );
-      const report = await runDoctor(new RealSystemProbe());
+      const {
+        runDoctor,
+        formatDoctorReport,
+        RealSystemProbe,
+        tryAutoStartDaemon,
+      } = await import("./doctor.ts");
+      const probe = new RealSystemProbe();
+      const fix = args.includes("--fix");
+
+      let report = await runDoctor(probe);
+
+      if (fix) {
+        const daemon = report.results.find(
+          (r) => r.name === "cua-driver daemon",
+        );
+        if (daemon?.status === "fail") {
+          const result = await tryAutoStartDaemon(probe);
+          console.log(result.message);
+          // Re-run the full doctor checks so the user sees the post-fix state
+          // (Screen Recording, etc., depend on daemonRunning).
+          report = await runDoctor(probe);
+        }
+      }
+
       console.log(formatDoctorReport(report));
       if (!report.allOk) process.exitCode = 1;
       return;

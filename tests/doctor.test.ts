@@ -3,6 +3,7 @@ import {
   type SystemProbe,
   formatDoctorReport,
   runDoctor,
+  tryAutoStartDaemon,
 } from "../src/doctor.ts";
 
 function makeProbe(overrides: Partial<SystemProbe> = {}): SystemProbe {
@@ -82,6 +83,72 @@ describe("doctor", () => {
     const text = formatDoctorReport(report);
     expect(text).toContain("All set");
     expect(text).toContain("showme record");
+  });
+
+  test("--fix path: tryAutoStartDaemon flips daemon ok on rerun", async () => {
+    // The user's pain point: every fresh shell, the daemon is down. With
+    // --fix, we spawn `open -n -g -a CuaDriver --args serve` and poll the
+    // status command. Here we fake the transition: the first two probe
+    // calls (the doctor's pre-fix check + the autostart's early-return
+    // check) report false; subsequent polls report true, simulating the
+    // daemon coming up after `open` was invoked.
+    let probeCalls = 0;
+    const probe = makeProbe({
+      cuaDriverDaemonRunning: async () => {
+        probeCalls++;
+        // calls 1 (doctor pre-fix) and 2 (autostart guard) → false.
+        // calls ≥3 (polling after spawn) → true.
+        return probeCalls >= 3;
+      },
+      // Pre-fix: daemon down implies SR check is skipped → also false; once
+      // daemon is up, SR is reported as granted.
+      screenRecordingGranted: async () => probeCalls >= 3,
+    });
+
+    // First doctor pass — daemon not yet up.
+    const before = await runDoctor(probe);
+    const daemonBefore = before.results.find(
+      (r) => r.name === "cua-driver daemon",
+    );
+    expect(daemonBefore?.status).toBe("fail");
+
+    // Run the auto-start. This will fire `open` (fire-and-forget) and poll
+    // — our fake reports true from poll 1 onward, so this resolves started=true.
+    const result = await tryAutoStartDaemon(probe);
+    expect(result.started).toBe(true);
+    expect(result.message).toContain("up");
+
+    // Second doctor pass — daemon now reported as ok.
+    const after = await runDoctor(probe);
+    const daemonAfter = after.results.find(
+      (r) => r.name === "cua-driver daemon",
+    );
+    expect(daemonAfter?.status).toBe("ok");
+    expect(daemonAfter?.detail).toBe("running");
+  });
+
+  test("--fix path: tryAutoStartDaemon is a no-op when daemon already running", async () => {
+    let calls = 0;
+    const probe = makeProbe({
+      cuaDriverDaemonRunning: async () => {
+        calls++;
+        return true;
+      },
+    });
+    const result = await tryAutoStartDaemon(probe);
+    expect(result.started).toBe(false);
+    expect(result.message).toContain("already running");
+    // Only the initial probe; we should NOT have entered the polling loop.
+    expect(calls).toBe(1);
+  });
+
+  test("daemon-down fix-hint mentions --fix as an option", async () => {
+    const report = await runDoctor(
+      makeProbe({ cuaDriverDaemonRunning: async () => false }),
+    );
+    const daemon = report.results.find((r) => r.name === "cua-driver daemon");
+    expect(daemon?.status).toBe("fail");
+    expect(daemon?.fixHint).toContain("--fix");
   });
 
   test("Screen Recording parser handles cua-driver title-case + JSON formats (regression)", () => {
