@@ -235,6 +235,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
     // is only revealed by get_window_state).
     let stateSummary = opts.userPrompt ? `User asked: ${opts.userPrompt}` : "";
     let initialContext: ExecutorContext | undefined;
+    let discoveryScreenshot: string | undefined;
     if (opts.live) {
       const discovered = await preDiscoverAppState(skillMd);
       if (discovered) {
@@ -244,8 +245,11 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           windowId: discovered.windowId,
           axIndex: discovered.axIndex,
         };
+        discoveryScreenshot = discovered.screenshotPath;
         console.log(
-          `[showme] pre-discovered app state for planner (pid=${discovered.pid}, window=${discovered.windowId}, ax-entries=${discovered.axIndex.length})`,
+          `[showme] pre-discovered app state for planner (pid=${discovered.pid}, window=${discovered.windowId}, ax-entries=${discovered.axIndex.length}${
+            discoveryScreenshot ? ", screenshot attached" : ""
+          })`,
         );
       }
     }
@@ -254,6 +258,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       skillMd,
       currentStateSummary: stateSummary,
       claudeClient: plannerClient,
+      imagePaths: discoveryScreenshot ? [discoveryScreenshot] : [],
     });
     console.log(`[showme] plan: ${plan.steps.length} step(s)`);
 
@@ -297,6 +302,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       // actual on-screen state, not the stale pre-discovery dump. Best-effort:
       // if we can't snapshot, fall back to no liveAxTree.
       let liveAxTree: string | undefined;
+      let replanScreenshot: string | undefined;
       const ctxAtFailure = result.lastContext;
       if (
         opts.live &&
@@ -312,6 +318,10 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           }),
         ]);
         if (snap.ok) liveAxTree = snap.stdout.slice(0, 12_000);
+        // Fresh screenshot too — pre-discovery's PNG is now stale.
+        replanScreenshot = await captureFocusedWindowScreenshot(
+          ctxAtFailure.windowId,
+        );
       }
       // Steps that completed successfully before the failure. The planner
       // is told not to re-emit these.
@@ -329,6 +339,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           executedSteps,
           liveAxTree,
         },
+        imagePaths: replanScreenshot ? [replanScreenshot] : [],
       });
       console.log(`[showme] replan: ${plan.steps.length} step(s)`);
     }
@@ -533,6 +544,11 @@ export async function verifyStopWhen(args: {
     pid: number,
     windowId: number,
   ) => Promise<{ ok: boolean; stdout: string; error?: string }>;
+  /**
+   * Optional screenshot capture hook. Defaults to a real cua-driver call.
+   * Tests inject a no-op so they don't shell out.
+   */
+  captureScreenshot?: (windowId: number) => Promise<string | undefined>;
 }): Promise<{ success: boolean; explanation: string }> {
   const snapshotFn = args.snapshot ?? defaultSnapshot;
   const snap = await snapshotFn(args.pid, args.windowId);
@@ -553,7 +569,12 @@ Did the skill succeed? Reply on a single line in this exact shape:
   YES — <one-sentence explanation>
   NO — <one-sentence explanation>
 Nothing else.`;
-  const reply = await args.plannerClient.generatePlanText(prompt);
+  // Best-effort: attach a screenshot too. Falsy from the capture hook (tests,
+  // failed grant) just degrades to text-only, same as planning.
+  const captureFn = args.captureScreenshot ?? captureFocusedWindowScreenshot;
+  const shotPath = await captureFn(args.windowId);
+  const imagePaths = shotPath ? [shotPath] : [];
+  const reply = await args.plannerClient.generatePlanText(prompt, imagePaths);
   const trimmedReply = reply.trim();
   const yesMatch = trimmedReply.match(/^YES\b\s*[—:-]?\s*(.*)$/i);
   if (yesMatch)
@@ -596,6 +617,14 @@ export interface DiscoveryResult {
   axIndex: import("./executor.ts").AxIndexEntry[];
   /** Pretty-printed AX tree + ids to thread into the planner prompt. */
   promptText: string;
+  /**
+   * Filesystem path to a PNG screenshot of the focused window, captured
+   * during pre-discovery. The planner attaches this as a vision block so
+   * Sonnet can read off-screen affordances the AX tree omits (icons,
+   * dialogs, color cues). Undefined when the screenshot subprocess failed —
+   * the planner falls back to text-only.
+   */
+  screenshotPath?: string;
 }
 
 /**
@@ -676,6 +705,11 @@ async function preDiscoverAppState(
   const axTreeTrim = state.stdout.slice(0, 12_000);
   const axIndex = parseAxTreeIndex(state.stdout);
 
+  // Best-effort: capture a PNG of the focused window and stash it under /tmp
+  // for the planner. Failure (TCC not granted, daemon flake) just drops the
+  // screenshot — the rest of pre-discovery still proceeds.
+  const screenshotPath = await captureFocusedWindowScreenshot(windowId);
+
   const promptText = [
     "Pre-discovery (already executed; the executor's context already holds pid, window_id, and the AX index — do NOT re-emit launch_app or get_window_state at the start of the plan):",
     `  bundle_id: ${bundleId}`,
@@ -687,7 +721,34 @@ async function preDiscoverAppState(
     axTreeTrim,
   ].join("\n");
 
-  return { pid, windowId, axIndex, promptText };
+  return { pid, windowId, axIndex, promptText, screenshotPath };
+}
+
+/**
+ * Best-effort: shell out to `cua-driver call screenshot ... --image-out` and
+ * return the path to the resulting PNG. Returns undefined on any failure so
+ * callers can degrade to text-only planning.
+ *
+ * Uses /tmp + a random suffix to avoid collisions across concurrent runs.
+ */
+async function captureFocusedWindowScreenshot(
+  windowId: number,
+): Promise<string | undefined> {
+  const path = `/tmp/showme-discovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+  const out = await runCuaDriverCapture([
+    "call",
+    "screenshot",
+    JSON.stringify({ window_id: windowId }),
+    "--image-out",
+    path,
+  ]);
+  if (!out.ok) {
+    console.warn(
+      `[showme] screenshot capture failed (continuing text-only): ${out.stderr.trim() || "(no stderr)"}`,
+    );
+    return undefined;
+  }
+  return path;
 }
 
 const BUNDLE_ID_RE =

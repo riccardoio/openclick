@@ -258,4 +258,38 @@ describe("planner", () => {
     // Should mention the failure index so the model knows where to resume.
     expect(lastPrompt).toMatch(/step 3|step #3|step index 3/i);
   });
+
+  test("forwards image paths to the planner client when provided", async () => {
+    let receivedImages: string[] | undefined;
+    const client: PlannerClient = {
+      async generatePlanText(_prompt, imagePaths) {
+        receivedImages = imagePaths;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    await generatePlan({
+      skillMd: SAMPLE_SKILL,
+      currentStateSummary: "",
+      claudeClient: client,
+      imagePaths: ["/tmp/showme-discovery-abc.png"],
+    });
+    expect(receivedImages).toEqual(["/tmp/showme-discovery-abc.png"]);
+  });
+
+  test("works without image paths (text-only fallback)", async () => {
+    let receivedImages: string[] | undefined;
+    const client: PlannerClient = {
+      async generatePlanText(_prompt, imagePaths) {
+        receivedImages = imagePaths;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    await generatePlan({
+      skillMd: SAMPLE_SKILL,
+      currentStateSummary: "",
+      claudeClient: client,
+    });
+    // Default to empty array so production planner doesn't have to guard.
+    expect(receivedImages).toEqual([]);
+  });
 });
