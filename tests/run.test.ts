@@ -340,6 +340,60 @@ describe("run --fast", () => {
     expect(runnerCalls).toBe(3);
   });
 
+  test("--fast threads SKILL.md intent block into the planner prompt", async () => {
+    const dir = join(
+      "/tmp",
+      `showme-test-intent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      `---
+name: intent-test
+description: test
+target:
+  bundle_id: com.example.fake
+  app_name: Fake
+intent:
+  goal: do the special thing
+  subgoals:
+    - phase alpha
+    - phase omega
+  success_signals:
+    - the special thing is done
+---
+# t
+## Steps
+1. s
+`,
+    );
+
+    let lastPrompt = "";
+    const planner: PlannerClient = {
+      async generatePlanText(prompt) {
+        lastPrompt = prompt;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    const runner: StepRunner = async () => ({ ok: true });
+
+    await runSkill({
+      skillRoot: dir,
+      userPrompt: "x",
+      // Dry-run skips pre-discovery (avoiding cua-driver) but still threads
+      // the intent block into the planner prompt.
+      live: false,
+      maxSteps: 50,
+      fast: true,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(lastPrompt).toContain("Goal: do the special thing");
+    expect(lastPrompt).toContain("phase alpha");
+    expect(lastPrompt).toContain("the special thing is done");
+  });
+
   test("--fast --cursor toggles the overlay on/off around the run", async () => {
     const dir = makeFakeSkill("fast4");
     const toggles: boolean[] = [];

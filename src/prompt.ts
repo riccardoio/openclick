@@ -28,7 +28,7 @@ The SKILL.md output must satisfy BOTH formats:
 - cua's format (https://cua.ai/docs — "Demonstration-Guided Skills")
 - agentskills format (https://agentskills.io/specification)
 
-Both expect YAML frontmatter and a body with a title and steps. We extend the standard frontmatter with structured app-metadata so the runtime doesn't have to guess the target app from prose:
+Both expect YAML frontmatter and a body with a title and steps. We extend the standard frontmatter with structured app-metadata AND an \`intent:\` block so the runtime planner can reason about the goal — not just replay clicks:
 
   ---
   name: <kebab-case slug>
@@ -37,9 +37,27 @@ Both expect YAML frontmatter and a body with a title and steps. We extend the st
     bundle_id: <reverse-DNS bundle id, e.g. com.apple.calculator>
     app_name: <human-readable name, e.g. "Calculator">
   keyboard_addressable: <true | false>
+  intent:
+    goal: <one-sentence description of what the user is trying to accomplish>
+    inputs:                          # OPTIONAL — key/value of user-supplied inputs
+      <key>: <value>
+    subgoals:                        # 2-5 high-level phases
+      - <phase 1>
+      - <phase 2>
+    success_signals:                 # observable conditions that mean "done"
+      - <signal 1>
+    observed_input_modes:            # primitives the user used in the recording
+      - click | type_text | press_key | hotkey | scroll | other
   ---
 
-\`target.bundle_id\` and \`target.app_name\` are REQUIRED. Pull the bundle id from the recording's events (each event has a pid → app mapping). Set \`keyboard_addressable: true\` when the app accepts keystrokes for its primary input (Calculator, text editors, browsers, terminals); set \`false\` for AX-click-only UIs.
+\`target.bundle_id\`, \`target.app_name\`, \`intent.goal\`, and \`intent.success_signals\` (non-empty) are REQUIRED. Pull the bundle id from the recording's events (each event has a pid → app mapping). Set \`keyboard_addressable: true\` when the app accepts keystrokes for its primary input (Calculator, text editors, browsers, terminals); set \`false\` for AX-click-only UIs.
+
+\`intent\` describes WHAT the user wanted, NOT how they typed it. The downstream planner uses it to choose the shortest path from the live state — the recording is context, not a literal script.
+- \`goal\`: a single sentence. e.g. "Compute 17 × 23 in Calculator".
+- \`inputs\`: only when the user typed/picked specific values (search query, file name, expression operands). Omit when there are no inputs.
+- \`subgoals\`: 2-5 phases. Describe semantically — "clear current state", "enter the expression", "evaluate" — NOT button-by-button.
+- \`success_signals\`: at least one. Observable conditions like "the result display reads 391" or "a new reminder row appears in Today's list".
+- \`observed_input_modes\`: the cua-driver primitives the recording used. Helps the planner prefer the same modality.
 
 TASK NAME: ${input.taskName}
 TASK DESCRIPTION: ${input.taskDescription}
@@ -53,7 +71,7 @@ ${input.truncatedAxTrees.map((t) => JSON.stringify(t, null, 2)).join("\n\n")}
 You will see ${input.sampledScreenshotPaths.length} representative screenshots inline.
 
 Produce a SKILL.md that:
-1. Has frontmatter with \`name\` (kebab-case), \`description\` (one sentence), \`target.bundle_id\`, \`target.app_name\`, and \`keyboard_addressable\` as described above.
+1. Has frontmatter with \`name\` (kebab-case), \`description\` (one sentence), \`target.bundle_id\`, \`target.app_name\`, \`keyboard_addressable\`, and the full \`intent:\` block as described above.
 2. Has a top-level \`# <Title>\` heading.
 3. Has a \`## Goal\` section with one paragraph explaining intent.
 4. Has a \`## Steps\` section with a numbered list of high-level actions, NOT pixel coordinates.

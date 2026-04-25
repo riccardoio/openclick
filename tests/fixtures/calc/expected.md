@@ -5,6 +5,19 @@ target:
   bundle_id: com.apple.calculator
   app_name: Calculator
 keyboard_addressable: true
+intent:
+  goal: Compute 17 × 23 in Calculator and leave the result on screen.
+  inputs:
+    a: 17
+    b: 23
+  subgoals:
+    - Open Calculator
+    - Enter the expression 17 × 23
+    - Evaluate the expression
+  success_signals:
+    - The result display reads "391".
+  observed_input_modes:
+    - click
 ---
 
 # Calculator: 17 × 23

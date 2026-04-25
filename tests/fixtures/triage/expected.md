@@ -5,6 +5,18 @@ target:
   bundle_id: com.google.Chrome
   app_name: Google Chrome
 keyboard_addressable: true
+intent:
+  goal: Apply a label (and close-as-duplicate when applicable) to each open issue in a GitHub repo.
+  subgoals:
+    - Open the issues list
+    - For each issue, read its title and body
+    - Apply the appropriate label
+    - Close as duplicate when the body matches an earlier issue
+  success_signals:
+    - All visible issues have a label.
+  observed_input_modes:
+    - click
+    - hotkey
 ---
 
 # Triage GitHub Issues

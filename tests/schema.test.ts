@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readTargetMetadata, validateSkillMd } from "../src/schema.ts";
+import {
+  readIntent,
+  readTargetMetadata,
+  renderIntentForPrompt,
+  validateSkillMd,
+} from "../src/schema.ts";
 
 const fx = (name: string) =>
   readFileSync(join(import.meta.dir, "fixtures/skills", name), "utf-8");
@@ -67,6 +72,146 @@ target:
 `);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => /app_name/.test(e))).toBe(true);
+  });
+
+  test("missing intent block fails", () => {
+    const result = validateSkillMd(`---
+name: ok
+description: missing intent
+target:
+  bundle_id: com.example.app
+  app_name: Example
+---
+# Title
+## Steps
+1. step
+`);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => /intent/.test(e))).toBe(true);
+  });
+
+  test("missing intent.goal fails with specific error", () => {
+    const result = validateSkillMd(`---
+name: ok
+description: no goal
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  success_signals:
+    - x
+---
+# Title
+## Steps
+1. step
+`);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => /intent\.goal/.test(e))).toBe(true);
+  });
+
+  test("empty intent.success_signals fails", () => {
+    const result = validateSkillMd(`---
+name: ok
+description: empty signals
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  goal: do a thing
+  success_signals: []
+---
+# Title
+## Steps
+1. step
+`);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => /success_signals/.test(e))).toBe(true);
+  });
+
+  test("intent block with goal + non-empty success_signals validates", () => {
+    const result = validateSkillMd(`---
+name: ok
+description: full intent
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  goal: do the thing
+  success_signals:
+    - the thing is done
+---
+# Title
+## Steps
+1. step
+`);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+});
+
+describe("readIntent", () => {
+  test("returns full intent when present", () => {
+    const md = `---
+name: x
+description: y
+target:
+  bundle_id: com.example
+  app_name: Example
+intent:
+  goal: do the thing
+  inputs:
+    a: 17
+    b: 23
+  subgoals:
+    - phase one
+    - phase two
+  success_signals:
+    - it is done
+  observed_input_modes:
+    - click
+    - type_text
+---
+# t
+## Steps
+1. s
+`;
+    const intent = readIntent(md);
+    expect(intent).not.toBeNull();
+    expect(intent?.goal).toBe("do the thing");
+    expect(intent?.inputs).toEqual({ a: 17, b: 23 });
+    expect(intent?.subgoals).toEqual(["phase one", "phase two"]);
+    expect(intent?.successSignals).toEqual(["it is done"]);
+    expect(intent?.observedInputModes).toEqual(["click", "type_text"]);
+  });
+
+  test("returns null when intent is missing", () => {
+    const md = `---
+name: x
+description: y
+target:
+  bundle_id: com.x
+  app_name: X
+---
+# t
+## Steps
+1. s
+`;
+    expect(readIntent(md)).toBeNull();
+  });
+
+  test("renderIntentForPrompt produces a stable plain-text block", () => {
+    const text = renderIntentForPrompt({
+      goal: "compute 17 × 23",
+      successSignals: ['display reads "391"'],
+      subgoals: ["enter expression", "evaluate"],
+      observedInputModes: ["click"],
+    });
+    expect(text).toContain("Intent:");
+    expect(text).toContain("Goal: compute 17 × 23");
+    expect(text).toContain("Subgoals:");
+    expect(text).toContain("- enter expression");
+    expect(text).toContain('display reads "391"');
+    expect(text).toContain("Observed input modes: click");
   });
 });
 

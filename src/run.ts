@@ -12,7 +12,11 @@ import {
   type PlannerClient,
   generatePlan,
 } from "./planner.ts";
-import { readTargetMetadata } from "./schema.ts";
+import {
+  readIntent,
+  readTargetMetadata,
+  renderIntentForPrompt,
+} from "./schema.ts";
 
 export interface RunOptions {
   skillRoot: string;
@@ -233,7 +237,18 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
     // already populated. Without this, Sonnet has no way to know which
     // AXButton corresponds to "1" (element_index varies per app launch and
     // is only revealed by get_window_state).
-    let stateSummary = opts.userPrompt ? `User asked: ${opts.userPrompt}` : "";
+    // Pull the structured `intent:` block out of SKILL.md frontmatter and
+    // render it as a plain-text prelude. The planner system prompt already
+    // tells Sonnet to read `intent:`; this is what it actually sees.
+    const intent = readIntent(skillMd);
+    const intentBlock = intent ? renderIntentForPrompt(intent) : "";
+
+    let stateSummary = [
+      intentBlock,
+      opts.userPrompt ? `User asked: ${opts.userPrompt}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     let initialContext: ExecutorContext | undefined;
     let discoveryScreenshot: string | undefined;
     if (opts.live) {
@@ -326,11 +341,15 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       // Steps that completed successfully before the failure. The planner
       // is told not to re-emit these.
       const executedSteps = plan.steps.slice(0, result.failedStepIndex ?? 0);
+      const replanSummary = [
+        intentBlock,
+        opts.userPrompt ? `User asked: ${opts.userPrompt}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       plan = await generatePlan({
         skillMd,
-        currentStateSummary: opts.userPrompt
-          ? `User asked: ${opts.userPrompt}`
-          : "",
+        currentStateSummary: replanSummary,
         claudeClient: plannerClient,
         replanContext: {
           failedStepIndex: result.failedStepIndex ?? 0,
