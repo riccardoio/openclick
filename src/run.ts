@@ -1,5 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { type StepRunner, executePlan } from "./executor.ts";
+import {
+  AnthropicPlannerClient,
+  type Plan,
+  type PlannerClient,
+  generatePlan,
+} from "./planner.ts";
 
 export interface RunOptions {
   skillRoot: string;
@@ -13,10 +20,21 @@ export interface RunOptions {
    * jarring). Restored to its previous state when the run ends.
    */
   cursor?: boolean;
+  /**
+   * Skip per-step LLM round-trips: ask Sonnet once for a complete plan, then
+   * walk it locally. Replans on a step failure (capped at maxReplans).
+   */
+  fast?: boolean;
+  /** Cap on automatic replans after a step failure. Default: 2. */
+  maxReplans?: number;
   /** Injectable for tests. In production, leave unset to load the real SDK. */
   queryFn?: QueryFn;
   /** Injectable for tests. Toggles cua-driver's agent cursor overlay. */
   cursorToggleFn?: (enabled: boolean) => Promise<void>;
+  /** Injectable for tests / production override of the Sonnet planner client. */
+  plannerClient?: PlannerClient;
+  /** Injectable for tests. In production, leave unset to shell out to cua-driver. */
+  stepRunner?: StepRunner;
 }
 
 export type QueryFn = (input: {
@@ -25,6 +43,14 @@ export type QueryFn = (input: {
 }) => AsyncIterable<unknown>;
 
 export async function runSkill(opts: RunOptions): Promise<void> {
+  if (opts.fast) {
+    await runSkillFast(opts);
+    return;
+  }
+  await runSkillAgent(opts);
+}
+
+async function runSkillAgent(opts: RunOptions): Promise<void> {
   const skillMd = readFileSync(join(opts.skillRoot, "SKILL.md"), "utf-8");
   const systemPrompt = buildSystemPrompt(skillMd);
 
@@ -116,6 +142,114 @@ export async function runSkill(opts: RunOptions): Promise<void> {
     }
   }
   console.log(`[showme] done. ${stepCount} tool calls.`);
+}
+
+/**
+ * --fast path: one Sonnet call → local plan execution → replan-on-error.
+ *
+ * Trades the per-step Agent SDK round-trip for a single up-front planner
+ * call. For a 7-click skill that drops wall-clock from ~25-35s to ~5-10s
+ * because the bulk of the budget was LLM latency.
+ */
+async function runSkillFast(opts: RunOptions): Promise<void> {
+  const skillMd = readFileSync(join(opts.skillRoot, "SKILL.md"), "utf-8");
+  if (!opts.live) {
+    console.log(
+      "[showme] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
+    );
+  }
+  console.log("[showme] press Ctrl-C to abort.");
+  console.log("[showme] mode: --fast (single planner call, local executor)");
+
+  let aborted = false;
+  const onSigint = (): void => {
+    aborted = true;
+    console.log("\n[showme] aborted by user.");
+    process.exit(130);
+  };
+  process.on("SIGINT", onSigint);
+
+  const plannerClient =
+    opts.plannerClient ?? (opts.live ? new AnthropicPlannerClient() : null);
+  if (!plannerClient) {
+    // Allow --fast --dry-run with no API key for tests, but with no client
+    // we cannot generate a plan. In practice cli.ts always pairs --fast with
+    // a real key when --live; this branch only exists to make the "no
+    // network in dry-run" property explicit.
+    throw new Error(
+      "--fast requires either --live (real Anthropic client) or an injected plannerClient",
+    );
+  }
+  const toggleCursor = opts.cursorToggleFn ?? defaultCursorToggle;
+  const maxReplans = opts.maxReplans ?? 2;
+
+  if (opts.cursor && opts.live) {
+    try {
+      await toggleCursor(true);
+      console.log("[showme] agent cursor overlay: ON");
+    } catch (e) {
+      console.warn(`[showme] couldn't enable agent cursor: ${e}`);
+    }
+  }
+
+  let totalExecuted = 0;
+  try {
+    let plan: Plan = await generatePlan({
+      skillMd,
+      currentStateSummary: opts.userPrompt
+        ? `User asked: ${opts.userPrompt}`
+        : "",
+      claudeClient: plannerClient,
+    });
+    console.log(`[showme] plan: ${plan.steps.length} step(s)`);
+
+    let replansUsed = 0;
+    while (!aborted) {
+      const result = await executePlan(plan, {
+        stepRunner: opts.stepRunner,
+        dryRun: !opts.live,
+        confirm: opts.confirm,
+      });
+      totalExecuted += result.stepsExecuted;
+      if (result.error === undefined) break;
+      if (replansUsed >= maxReplans) {
+        console.error(
+          `[showme] step ${result.failedStepIndex} failed after ${replansUsed} replan(s): ${result.error}`,
+        );
+        break;
+      }
+      replansUsed++;
+      console.log(
+        `[showme] step ${result.failedStepIndex} failed: ${result.error}`,
+      );
+      console.log(`[showme] replanning (${replansUsed}/${maxReplans})...`);
+      const failedStep = plan.steps[result.failedStepIndex ?? 0];
+      if (!failedStep) break;
+      plan = await generatePlan({
+        skillMd,
+        currentStateSummary: opts.userPrompt
+          ? `User asked: ${opts.userPrompt}`
+          : "",
+        claudeClient: plannerClient,
+        replanContext: {
+          failedStepIndex: result.failedStepIndex ?? 0,
+          failedStep,
+          errorMessage: result.error,
+        },
+      });
+      console.log(`[showme] replan: ${plan.steps.length} step(s)`);
+    }
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    if (opts.cursor && opts.live) {
+      try {
+        await toggleCursor(false);
+      } catch {
+        // Best-effort restore.
+      }
+    }
+  }
+  console.log(`[showme] done. ${totalExecuted} tool calls.`);
 }
 
 /**

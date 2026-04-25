@@ -57,4 +57,9 @@ describe("cli", () => {
   test("run without skill-name throws", async () => {
     await expect(main(["run"])).rejects.toThrow(/run requires <skill-name>/);
   });
+
+  test("--help mentions --fast", async () => {
+    await main(["--help"]);
+    expect(text()).toContain("--fast");
+  });
 });
