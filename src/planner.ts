@@ -36,6 +36,17 @@ export interface ReplanContext {
   failedStepIndex: number;
   failedStep: PlanStep;
   errorMessage: string;
+  /**
+   * Steps from the previous plan that DID complete before the failure. The
+   * planner should treat these as already-applied and produce only the
+   * suffix needed to finish the skill — not a fresh start-from-scratch plan.
+   */
+  executedSteps?: PlanStep[];
+  /**
+   * Live AX tree snapshot at the failure point. Lets the planner ground its
+   * recovery against actual on-screen state instead of guessing from prose.
+   */
+  liveAxTree?: string;
 }
 
 export interface GeneratePlanOptions {
@@ -93,7 +104,8 @@ Important:
 - Keep "purpose" terse and action-oriented: "press 1", "open Calculator", "submit equals".
 - After important state changes (pressing equals on a calculator, submitting a form, navigating to a new view), prefer to emit an \`assert\` step that confirms the post-condition. Example:
     { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
-  This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".`;
+  This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".
+- When a REPLAN block appears with "Already-executed steps", produce only the SUFFIX needed to finish the skill from the live state shown — do NOT restart from step 0. The side effects of the listed steps are already on screen; if you re-emit them you will double-apply (e.g. type "17" twice yielding "1717"). Use the live AX tree to ground your recovery.`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
@@ -116,12 +128,35 @@ function buildPlannerPrompt(opts: GeneratePlanOptions): string {
     sections.push("", "Current screen state:", opts.currentStateSummary);
   }
   if (opts.replanContext) {
-    const { failedStepIndex, failedStep, errorMessage } = opts.replanContext;
+    const {
+      failedStepIndex,
+      failedStep,
+      errorMessage,
+      executedSteps,
+      liveAxTree,
+    } = opts.replanContext;
     sections.push(
       "",
       `REPLAN: the previous plan failed at step ${failedStepIndex} (purpose: "${failedStep.purpose}").`,
       `Error: ${errorMessage}`,
-      "Produce a new plan that recovers from this state and completes the skill.",
+    );
+    if (executedSteps && executedSteps.length > 0) {
+      sections.push(
+        "",
+        "Already-executed steps (do NOT repeat these — the side effects are already applied):",
+        ...executedSteps.map((s, i) => `  ${i}. ${s.tool} — ${s.purpose}`),
+      );
+    }
+    if (liveAxTree && liveAxTree.trim().length > 0) {
+      sections.push(
+        "",
+        "Live AX tree at the failure point (use the actual on-screen state, not the abstract SKILL.md text):",
+        liveAxTree.slice(0, 12_000),
+      );
+    }
+    sections.push(
+      "",
+      "Produce a SUFFIX plan that recovers from the failure and completes the remaining work. Skip steps that already executed.",
     );
   } else {
     sections.push("", "Produce the plan.");
