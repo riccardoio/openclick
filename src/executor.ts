@@ -28,6 +28,14 @@ export interface ExecutePlanOptions {
   confirm?: boolean;
   /** Log sink (default: console.log). */
   log?: (line: string) => void;
+  /**
+   * Seed the executor context with values discovered before plan execution.
+   * Pre-discovery (see `preDiscoverAppState`) populates pid + window_id + the
+   * AX index map BEFORE the planner ever runs, so the first click step can
+   * resolve `__title` / `__ax_id` / `__selector` without an in-plan
+   * `get_window_state`.
+   */
+  initialContext?: ExecutorContext;
 }
 
 export interface ExecutePlanResult {
@@ -92,7 +100,15 @@ export async function executePlan(
 ): Promise<ExecutePlanResult> {
   const log = opts.log ?? ((line) => console.log(line));
   const runner = opts.stepRunner ?? defaultStepRunner;
-  const ctx: ExecutorContext = {};
+  // Start with the caller-provided context (typically pre-discovery output).
+  // Make a shallow copy so we don't mutate the caller's object.
+  const ctx: ExecutorContext = opts.initialContext
+    ? {
+        pid: opts.initialContext.pid,
+        windowId: opts.initialContext.windowId,
+        axIndex: opts.initialContext.axIndex,
+      }
+    : {};
 
   let executed = 0;
   for (let i = 0; i < plan.steps.length; i++) {

@@ -178,6 +178,55 @@ describe("executor", () => {
   });
 });
 
+describe("executor initialContext (pre-discovery)", () => {
+  test("seeds pid/windowId/axIndex so the first click resolves without a get_window_state step", async () => {
+    let capturedClickArgs: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", __title: "5" },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      capturedClickArgs = step.args;
+      return { ok: true };
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 4242,
+        windowId: 9001,
+        axIndex: new Map<string, number>([
+          ["5", 12],
+          ["five", 12],
+        ]),
+      },
+    });
+    expect(result.stepsExecuted).toBe(1);
+    expect(capturedClickArgs.pid).toBe(4242);
+    expect(capturedClickArgs.window_id).toBe(9001);
+    expect(capturedClickArgs.element_index).toBe(12);
+  });
+
+  test("does not mutate the caller's initialContext object", async () => {
+    const original = {
+      pid: 1,
+      windowId: 2,
+      axIndex: new Map<string, number>([["x", 3]]),
+    };
+    const plan: Plan = { steps: [], stopWhen: "done" };
+    const runner: StepRunner = async () => ({ ok: true });
+    await executePlan(plan, { stepRunner: runner, initialContext: original });
+    expect(original.pid).toBe(1);
+    expect(original.windowId).toBe(2);
+    expect(original.axIndex.get("x")).toBe(3);
+  });
+});
+
 describe("parseAxTreeIndex", () => {
   test("parses real Calculator AX tree output", () => {
     const stdout = `✅ Calculator — 42 elements, turn 6 + screenshot
