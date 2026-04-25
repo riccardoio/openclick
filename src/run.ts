@@ -118,16 +118,41 @@ export async function runSkill(opts: RunOptions): Promise<void> {
   console.log(`[showme] done. ${stepCount} tool calls.`);
 }
 
+/**
+ * cua-driver ships slow cinematic cursor defaults (glide=750ms + dwell=400ms)
+ * so background agents are easy to glance at. For a focused replay demo the
+ * user is *watching*, that animation budget dominates. We tune to a snappier
+ * preset on enable. The motion settings persist in cua-driver's config, so
+ * we keep these values across runs (no need to restore — they're saner than
+ * the defaults for users running showme).
+ */
+const CURSOR_MOTION_PRESET = {
+  glide_duration_ms: 250,
+  dwell_after_click_ms: 80,
+};
+
 async function defaultCursorToggle(enabled: boolean): Promise<void> {
-  const proc = Bun.spawn(
-    ["cua-driver", "set_agent_cursor_enabled", JSON.stringify({ enabled })],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  if (enabled) {
+    // Tune motion BEFORE enabling so the very first click animates with the
+    // snappy preset rather than the slow defaults.
+    await runCuaDriver([
+      "set_agent_cursor_motion",
+      JSON.stringify(CURSOR_MOTION_PRESET),
+    ]);
+  }
+  await runCuaDriver(["set_agent_cursor_enabled", JSON.stringify({ enabled })]);
+}
+
+async function runCuaDriver(args: string[]): Promise<void> {
+  const proc = Bun.spawn(["cua-driver", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   await proc.exited;
   if (proc.exitCode !== 0) {
     const err = await new Response(proc.stderr).text();
     throw new Error(
-      `cua-driver set_agent_cursor_enabled exited ${proc.exitCode}: ${err.trim()}`,
+      `cua-driver ${args[0]} exited ${proc.exitCode}: ${err.trim()}`,
     );
   }
 }
