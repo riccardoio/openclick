@@ -18,7 +18,29 @@
 - `/Users/riccardo/Desktop/interface/agentskills/skills-ref/` — Python reference SDK; SKILL.md schema source of truth.
 - `/Users/riccardo/Desktop/interface/cua-driver-docs/` — CLI reference + MCP tool schemas.
 
+**Verified facts (don't re-verify during execution):**
+- `@anthropic-ai/claude-agent-sdk` exists on npm. Latest: 0.2.119. Pin `^0.2.119`. Opus 4.7 requires ≥0.2.111 (per Anthropic docs).
+- `@anthropic-ai/sdk` latest: 0.91.1. Pin `^0.91.1`.
+- Model ID: `claude-opus-4-7` (Opus 4.7) is the correct identifier per Anthropic docs.
+- Agent SDK entry: `import { query } from "@anthropic-ai/claude-agent-sdk"` — async iterable of messages. Options include `mcpServers`, `allowedTools`, `hooks` (PreToolUse for our preview/dry-run), `permissionMode`.
+- `cua-driver` is installed on this machine at `/usr/local/bin/cua-driver` (symlink to `/Applications/CuaDriver.app/Contents/MacOS/cua-driver`).
+
 **Project root:** `/Users/riccardo/Desktop/interface/showme`. All paths in this plan are relative to this root unless noted.
+
+## Prerequisites (set up before Task 0)
+
+These are external accounts and one-time setups the dev must complete before the build can finish. Do them up front, not buried in Task 19.
+
+- [ ] **`bun` installed** (`curl -fsSL https://bun.sh/install | bash` if missing). Verify: `bun --version`.
+- [ ] **Xcode CLI tools installed.** Verify: `xcode-select -p` returns a path. Otherwise `xcode-select --install`.
+- [ ] **`cua-driver` installed and granted Accessibility + Screen Recording permissions.** Verify: `cua-driver check_permissions` reports both granted.
+- [ ] **`ANTHROPIC_API_KEY` exported** in shell (or saved to `.envrc` / `~/.zshrc`). Used by `compile`, `run`, and live eval tests.
+- [ ] **Apple Developer Program membership active** — required for notarization. ~24-48hr lead time if signing up new. https://developer.apple.com/programs/
+- [ ] **Apple Developer ID Application certificate created** in Xcode (or via developer.apple.com → Certificates). Export as `.p12`.
+- [ ] **App-specific password generated** at https://appleid.apple.com (used by `xcrun notarytool`).
+- [ ] **Apple Team ID** noted (find at https://developer.apple.com/account → Membership).
+
+If you don't have the Apple Developer pieces yet: scaffold + build (Tasks 0–18) work without them. They become blocking only at Task 19 (release the notarized DMG). Source-distribution path works without them at any time.
 
 ---
 
@@ -124,8 +146,8 @@ recorder/.swiftpm/
     "format": "biome format --write src tests"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.0",
-    "@anthropic-ai/claude-agent-sdk": "^0.10.0",
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
@@ -135,7 +157,7 @@ recorder/.swiftpm/
   }
 }
 ```
-**Note:** verify exact `@anthropic-ai/claude-agent-sdk` version with `bun add @anthropic-ai/claude-agent-sdk` during Task 17 — if the package isn't published under that name, fall back to building the loop on `@anthropic-ai/sdk` directly (this is a known fallback per the eng review).
+**Versions verified during planning (npm view).** No deferred verification needed.
 
 - [ ] **Step 3: Create `tsconfig.json`**
 ```json
@@ -565,7 +587,7 @@ public enum CuaDriver {
 
   private static func run(_ args: [String]) throws -> Data {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/local/bin/cua-driver")
+    process.executableURL = URL(fileURLWithPath: try resolveBinary())
     process.arguments = args
     let stdout = Pipe()
     let stderr = Pipe()
@@ -579,6 +601,21 @@ public enum CuaDriver {
       throw CuaDriverError.nonZeroExit(process.terminationStatus, err)
     }
     return data
+  }
+
+  private static func resolveBinary() throws -> String {
+    if let env = ProcessInfo.processInfo.environment["CUA_DRIVER"], FileManager.default.isExecutableFile(atPath: env) {
+      return env
+    }
+    let candidates = [
+      "/usr/local/bin/cua-driver",
+      "/opt/homebrew/bin/cua-driver",
+      "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+    ]
+    for path in candidates {
+      if FileManager.default.isExecutableFile(atPath: path) { return path }
+    }
+    throw CuaDriverError.binaryNotFound
   }
 }
 ```
@@ -1019,7 +1056,48 @@ git commit -m "feat(recorder): periodic screenshot timer via cua-driver"
 **Files:**
 - Modify: `recorder/Sources/Recorder/main.swift`
 
-- [ ] **Step 1: Replace `main.swift` with full implementation**
+**Counter ownership:** the screenshotter owns `nextScreenshotName()` calls. main.swift never calls it directly — it gets the name back from `captureNow()` synchronously. This avoids the off-by-one between what's written to events.jsonl and what's on disk.
+
+**Window resolution:** factored out of main.swift into `RecorderCore/CuaDriver.swift` so it has a stable test surface (covered by Task 5 once we add the `listWindows` test).
+
+- [ ] **Step 1: Add `listWindows` to `RecorderCore/CuaDriver.swift`**
+
+Append to the `CuaDriver` enum:
+```swift
+public struct WindowInfo: Codable, Equatable {
+  public let pid: Int32
+  public let windowId: Int
+  enum CodingKeys: String, CodingKey { case pid; case windowId = "window_id" }
+}
+
+public static func listWindows(pid: Int32) throws -> [WindowInfo] {
+  let args = "{\"pid\":\(pid)}"
+  let data = try run(["list_windows", args])
+  struct Resp: Codable { let windows: [WindowInfo] }
+  return try JSONDecoder().decode(Resp.self, from: data).windows
+}
+```
+
+- [ ] **Step 2: Make `Screenshotter.captureNow()` return the name it wrote (or nil)**
+
+Replace the body of `captureNow()` in `Screenshotter.swift`:
+```swift
+public func captureNow() -> String? {
+  guard let target = currentTarget else { return nil }
+  let name = writer.nextScreenshotName()
+  let url = writer.screenshotURL(name: name)
+  do {
+    try CuaDriver.screenshot(pid: target.pid, windowId: target.windowId, outPath: url.path)
+    return name
+  } catch {
+    FileHandle.standardError.write("screenshot failed: \(error)\n".data(using: .utf8)!)
+    return nil
+  }
+}
+```
+(The periodic `tick()` continues to use `nextScreenshotName()` directly since it doesn't need to surface the name to a caller.)
+
+- [ ] **Step 3: Replace `main.swift` with the full implementation**
 ```swift
 import Foundation
 import RecorderCore
@@ -1056,36 +1134,30 @@ let writer = try TrajectoryWriter(
 let screenshotter = Screenshotter(writer: writer)
 
 let tap = EventTap { event in
-  // Get focused window via cua-driver list_windows (cheap; called once per event)
-  // Then snapshot AX state for that window.
   let pid: Int32
   switch event {
   case .click(let e): pid = e.pid
   case .key(let e): pid = e.pid
   case .scroll(let e): pid = e.pid
   }
-  // Best-effort AX snapshot. windowId is unknown here; cua-driver returns the
-  // top-level layer-0 window for the pid via list_windows. Failures are tolerated.
+
   var axNode: AXNode? = nil
   if pid > 0 {
-    let listJson = "{\"pid\":\(pid)}"
-    if let listOut = try? Process.runCapture(
-      "/usr/local/bin/cua-driver", ["list_windows", listJson]),
-       let parsed = try? JSONSerialization.jsonObject(with: listOut) as? [String: Any],
-       let windows = parsed["windows"] as? [[String: Any]],
-       let first = windows.first,
-       let windowId = first["window_id"] as? Int {
-      screenshotter.setTarget(pid: pid, windowId: windowId)
-      if let state = try? CuaDriver.getWindowState(pid: pid, windowId: windowId) {
+    if let windows = try? CuaDriver.listWindows(pid: pid), let first = windows.first {
+      screenshotter.setTarget(pid: pid, windowId: first.windowId)
+      if let state = try? CuaDriver.getWindowState(pid: pid, windowId: first.windowId) {
         axNode = state.axTree
       }
     }
   }
-  let screenshotName = writer.nextScreenshotName()
-  // Trigger a screenshot for this event specifically.
-  screenshotter.captureNow()
+
+  // Single source of truth for the screenshot name: captureNow() writes the file
+  // AND returns the name. If it fails or there's no target, screenshotRef is nil
+  // and the LLM can correlate frames by timestamp.
+  let screenshotRef = screenshotter.captureNow()
+
   do {
-    try writer.appendEvent(event, axTree: axNode, screenshotRef: screenshotName)
+    try writer.appendEvent(event, axTree: axNode, screenshotRef: screenshotRef)
   } catch {
     FileHandle.standardError.write("append failed: \(error)\n".data(using: .utf8)!)
   }
@@ -1109,20 +1181,9 @@ sigSrc.resume()
 print("[showme-recorder] recording → \(outURL.path)")
 print("[showme-recorder] perform your task. Ctrl-C when done.")
 CFRunLoopRun()
-
-// Helper extension
-extension Process {
-  static func runCapture(_ path: String, _ args: [String]) throws -> Data {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: path)
-    p.arguments = args
-    let out = Pipe(); p.standardOutput = out
-    let err = Pipe(); p.standardError = err
-    try p.run(); p.waitUntilExit()
-    return out.fileHandleForReading.readDataToEndOfFile()
-  }
-}
 ```
+
+**Note on `pid > 0` degradation:** listen-only `CGEventTap`s sometimes return pid=0 for synthesized events or specific app states. When pid=0, ax_tree falls back to null and the LLM correlates from screenshots alone. Add an assertion in Task 17's iteration loop: at least 60% of events should have a non-null `ax_tree` on a clean recording. If not, investigate why the foreground pid isn't propagating.
 
 - [ ] **Step 2: E2E smoke test**
 
@@ -2010,43 +2071,94 @@ Safety controls (from design doc + eng review):
 
 **Note on Claude Agent SDK:** confirm package name during execution. If `@anthropic-ai/claude-agent-sdk` isn't published, fall back to `@anthropic-ai/sdk` with a hand-rolled tool-use loop wrapping cua-driver MCP. The test contract below is SDK-agnostic.
 
-- [ ] **Step 1: Failing test (mocked SDK)**
+- [ ] **Step 1: Failing test (mocked Agent SDK query function)**
 ```ts
 // tests/run.test.ts
 import { describe, expect, test } from "bun:test";
-import { runSkill } from "../src/run.ts";
+import { runSkill, type QueryFn } from "../src/run.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 describe("run", () => {
-  test("--dry-run does not call MCP tools", async () => {
+  test("--dry-run blocks tool execution via PreToolUse hook", async () => {
     const dir = makeFakeSkill("test1");
-    const fakeAgent = {
-      mcpCalls: [] as string[],
-      previews: [] as string[],
-      async run(_args: any) {
-        // simulate the agent deciding to click
-        this.previews.push("about to: click 'Submit' button");
-        // dry-run mode does NOT actually issue cua-driver tool calls
-      },
+    const recorded: { hookCalled: boolean; decision: string | undefined } = {
+      hookCalled: false, decision: undefined,
     };
+
+    const fakeQuery: QueryFn = async function* (input) {
+      // Simulate the SDK invoking the user-supplied PreToolUse hook for one tool call.
+      const hooks = (input.options as any).hooks?.PreToolUse;
+      const hook = hooks?.[0]?.hooks?.[0];
+      if (hook) {
+        recorded.hookCalled = true;
+        const result = await hook({ tool_name: "mcp__cua-driver__click", tool_input: { element_index: 1 } });
+        recorded.decision = result?.decision;
+      }
+      yield { type: "result", result: "done" };
+    };
+
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "do it",
-      agent: fakeAgent,
-      live: false,
-      maxSteps: 50,
+      skillRoot: dir, userPrompt: "do it",
+      live: false, maxSteps: 50, queryFn: fakeQuery,
     });
-    expect(fakeAgent.mcpCalls.length).toBe(0);
-    expect(fakeAgent.previews.length).toBeGreaterThan(0);
+    expect(recorded.hookCalled).toBe(true);
+    expect(recorded.decision).toBe("block");
   });
 
-  test("max-steps cap is propagated to the agent", async () => {
+  test("--live does not block (hook returns empty)", async () => {
     const dir = makeFakeSkill("test2");
-    let receivedMaxSteps = -1;
-    const fakeAgent = { async run(args: any) { receivedMaxSteps = args.maxSteps; } };
-    await runSkill({ skillRoot: dir, userPrompt: "x", agent: fakeAgent, live: true, maxSteps: 7 });
-    expect(receivedMaxSteps).toBe(7);
+    let blockedCount = 0;
+
+    const fakeQuery: QueryFn = async function* (input) {
+      const hooks = (input.options as any).hooks?.PreToolUse;
+      const hook = hooks?.[0]?.hooks?.[0];
+      if (hook) {
+        const result = await hook({ tool_name: "mcp__cua-driver__click", tool_input: {} });
+        if (result?.decision === "block") blockedCount++;
+      }
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir, userPrompt: "do it",
+      live: true, maxSteps: 50, queryFn: fakeQuery,
+    });
+    expect(blockedCount).toBe(0);
+  });
+
+  test("max-steps is propagated as maxTurns to the SDK", async () => {
+    const dir = makeFakeSkill("test3");
+    let receivedMaxTurns = -1;
+
+    const fakeQuery: QueryFn = async function* (input) {
+      receivedMaxTurns = (input.options as any).maxTurns;
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir, userPrompt: "x",
+      live: true, maxSteps: 7, queryFn: fakeQuery,
+    });
+    expect(receivedMaxTurns).toBe(7);
+  });
+
+  test("cua-driver MCP server is registered in SDK options", async () => {
+    const dir = makeFakeSkill("test4");
+    let registered: any = null;
+
+    const fakeQuery: QueryFn = async function* (input) {
+      registered = (input.options as any).mcpServers;
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir, userPrompt: "x",
+      live: true, maxSteps: 50, queryFn: fakeQuery,
+    });
+    expect(registered).toHaveProperty("cua-driver");
+    expect(registered["cua-driver"].command).toBe("cua-driver");
+    expect(registered["cua-driver"].args).toEqual(["mcp"]);
   });
 });
 
@@ -2067,43 +2179,46 @@ description: test
 
 - [ ] **Step 2: Implement `src/run.ts`**
 
+The actual Claude Agent SDK API (verified at planning time):
 ```ts
+import { query } from "@anthropic-ai/claude-agent-sdk";
+for await (const message of query({
+  prompt: "...",
+  options: {
+    mcpServers: { "cua-driver": { command: "cua-driver", args: ["mcp"] } },
+    hooks: { PreToolUse: [{ matcher: ".*", hooks: [previewOrBlock] }] },
+    maxTurns: 50,
+  },
+})) { /* messages: tool_use, tool_result, text, etc. */ }
+```
+
+Hooks intercept tool calls. We use `PreToolUse` to:
+- print the preview ("about to: click Labels button")
+- when `dryRun`, return a synthetic blocked result so the tool never executes
+
+```ts
+// src/run.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
-export interface AgentRunArgs {
-  systemPrompt: string;
-  userPrompt: string;
-  maxSteps: number;
-  dryRun: boolean;
-  onPreview?: (msg: string) => void;
-}
-
-export interface Agent {
-  run(args: AgentRunArgs): Promise<void>;
-}
 
 export interface RunOptions {
   skillRoot: string;
   userPrompt: string;
-  agent: Agent;
   live: boolean;
   maxSteps: number;
   confirm?: boolean;
+  // Injectable for tests. In production, pass `realQuery`.
+  queryFn?: QueryFn;
 }
+
+export type QueryFn = (input: {
+  prompt: string;
+  options: Record<string, unknown>;
+}) => AsyncIterable<unknown>;
 
 export async function runSkill(opts: RunOptions): Promise<void> {
   const skillMd = readFileSync(join(opts.skillRoot, "SKILL.md"), "utf-8");
-  const systemPrompt = `You are an agent that executes the following skill on the user's macOS.
-
-You have access to cua-driver MCP tools (click, type_text, get_window_state, screenshot, etc.).
-
-Before each tool call, briefly state the action ("about to click the Labels button"). Use the printPreview MCP tool to do this — the user is watching.
-
-Stop when the skill's stop conditions are met OR you cannot proceed.
-
-Skill:
-${skillMd}`;
+  const systemPrompt = buildSystemPrompt(skillMd);
 
   if (!opts.live) {
     console.log("[showme] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.");
@@ -2118,36 +2233,87 @@ ${skillMd}`;
   };
   process.on("SIGINT", onSigint);
 
+  const previewHook = async (input: any) => {
+    const tool = input.tool_name ?? "<unknown>";
+    const args = input.tool_input ?? {};
+    const summary = summarizeToolCall(tool, args);
+    console.log(`[showme] about to: ${summary}`);
+    if (!opts.live) {
+      // Block execution by returning a "denied" decision.
+      return { decision: "block", reason: "dry-run mode" };
+    }
+    if (opts.confirm) {
+      const ok = await promptYesNo("execute? [y/N]: ");
+      if (!ok) return { decision: "block", reason: "user declined" };
+    }
+    return {};
+  };
+
+  const queryFn = opts.queryFn ?? (await loadRealQuery());
+
+  let stepCount = 0;
   try {
-    await opts.agent.run({
-      systemPrompt,
-      userPrompt: opts.userPrompt,
-      maxSteps: opts.maxSteps,
-      dryRun: !opts.live,
-      onPreview: (msg) => { if (!aborted) console.log(`[showme] ${msg}`); },
-    });
+    for await (const message of queryFn({
+      prompt: opts.userPrompt,
+      options: {
+        systemPrompt,
+        mcpServers: { "cua-driver": { command: "cua-driver", args: ["mcp"] } },
+        allowedTools: ["mcp__cua-driver__click", "mcp__cua-driver__type_text",
+                       "mcp__cua-driver__get_window_state", "mcp__cua-driver__screenshot",
+                       "mcp__cua-driver__press_key", "mcp__cua-driver__hotkey",
+                       "mcp__cua-driver__list_apps", "mcp__cua-driver__list_windows",
+                       "mcp__cua-driver__launch_app", "mcp__cua-driver__scroll"],
+        hooks: { PreToolUse: [{ matcher: ".*", hooks: [previewHook] }] },
+        maxTurns: opts.maxSteps,
+      },
+    })) {
+      if (aborted) break;
+      const msg = message as any;
+      if (msg.type === "tool_use") stepCount++;
+      if (msg.type === "result" && "result" in msg) {
+        console.log(`[showme] ${msg.result}`);
+      }
+    }
   } finally {
     process.removeListener("SIGINT", onSigint);
   }
+  console.log(`[showme] done. ${stepCount} tool calls.`);
 }
 
-// Production agent backed by Claude Agent SDK.
-// IMPORTANT: confirm @anthropic-ai/claude-agent-sdk's actual API during execution.
-// If unavailable, fall back to @anthropic-ai/sdk + hand-rolled tool-use loop here.
-export class ClaudeAgentSdkAgent implements Agent {
-  async run(args: AgentRunArgs): Promise<void> {
-    const sdk = await import("@anthropic-ai/claude-agent-sdk").catch(() => null);
-    if (!sdk) {
-      throw new Error(
-        "@anthropic-ai/claude-agent-sdk not installed. Install or wire the fallback loop on @anthropic-ai/sdk."
-      );
-    }
-    // Pseudocode for the SDK's actual entry. Fill in once verified during execution.
-    // Expected shape: pass MCP server config { name: "cua-driver", command: "cua-driver", args: ["mcp"] },
-    // pass system prompt + user prompt, set max steps, intercept tool-use messages for preview,
-    // skip executing tools when args.dryRun is true.
-    throw new Error("ClaudeAgentSdkAgent: complete the wiring against the live SDK during execution.");
-  }
+function buildSystemPrompt(skillMd: string): string {
+  return `You are an agent executing a recorded skill on the user's macOS via cua-driver.
+
+You have access to cua-driver MCP tools: click, type_text, get_window_state, screenshot, press_key, hotkey, list_apps, list_windows, launch_app, scroll.
+
+Before each tool call, the system will preview your intended action to the user. Be concise and intentional.
+
+Stop when the skill's stop conditions are met OR you cannot proceed (e.g., unrecognized modal, stuck state).
+
+SKILL:
+${skillMd}`;
+}
+
+function summarizeToolCall(tool: string, args: Record<string, unknown>): string {
+  if (tool.endsWith("click")) return `click element ${(args.element_index as number) ?? `${args.x},${args.y}`}`;
+  if (tool.endsWith("type_text")) return `type ${JSON.stringify(args.text)}`;
+  if (tool.endsWith("press_key")) return `press ${args.key}`;
+  if (tool.endsWith("hotkey")) return `hotkey ${(args.modifiers as string[])?.join("+")}`;
+  if (tool.endsWith("launch_app")) return `launch ${args.bundle_id}`;
+  if (tool.endsWith("get_window_state")) return `snapshot window ${args.window_id}`;
+  return `${tool}(${JSON.stringify(args)})`;
+}
+
+async function promptYesNo(prompt: string): Promise<boolean> {
+  process.stdout.write(prompt);
+  const buf = await new Promise<string>((resolve) => {
+    process.stdin.once("data", (d) => resolve(d.toString().trim()));
+  });
+  return buf.toLowerCase() === "y" || buf.toLowerCase() === "yes";
+}
+
+async function loadRealQuery(): Promise<QueryFn> {
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  return (input) => sdk.query(input as any) as AsyncIterable<unknown>;
 }
 ```
 
@@ -2165,12 +2331,11 @@ case "run": {
     ? (args[userPromptIdx + 1] ?? "now do the task")
     : "now do the task";
 
-  const { runSkill, ClaudeAgentSdkAgent } = await import("./run.ts");
+  const { runSkill } = await import("./run.ts");
   const { resolveSkillRoot } = await import("./paths.ts");
   await runSkill({
     skillRoot: resolveSkillRoot(skillName),
     userPrompt,
-    agent: new ClaudeAgentSdkAgent(),
     live, confirm, maxSteps,
   });
   return;
@@ -2182,11 +2347,35 @@ case "run": {
 Run: `bun test tests/run.test.ts`
 Expected: 2 tests pass.
 
-- [ ] **Step 5: Verify the full SDK wiring against live cua-driver**
+- [ ] **Step 5: Live integration smoke (must pass before Task 14)**
 
-Manual: install `@anthropic-ai/claude-agent-sdk` (or update `package.json` if the package name differs). Read the SDK README. Wire `ClaudeAgentSdkAgent.run` to actually call the SDK with cua-driver MCP. The tests above already cover the contract; this step is the integration.
+```bash
+# Ensure ANTHROPIC_API_KEY is exported and cua-driver daemon is running.
+open -n -g -a CuaDriver --args serve
 
-If the SDK is unavailable: implement a hand-rolled loop on `@anthropic-ai/sdk` instead. Same contract.
+# Drop a hand-written SKILL.md for sanity check.
+mkdir -p ~/.cua/skills/hello
+cat > ~/.cua/skills/hello/SKILL.md <<'EOF'
+---
+name: hello
+description: Take a screenshot of the frontmost window.
+---
+# Hello
+## Steps
+1. Use list_windows to get the frontmost pid + window_id.
+2. Call get_window_state on that window. Print its title.
+EOF
+
+# Dry run first
+bun bin/showme run hello --prompt "do it"
+# Expected: prints "about to: ..." for each tool call. No actual execution.
+
+# Live run
+bun bin/showme run hello --live --prompt "do it"
+# Expected: cua-driver tools execute. Title of frontmost window printed.
+```
+
+If this smoke fails, the rest of the plan is blocked. Debug here; do not proceed to Task 14 with a broken `run`.
 
 - [ ] **Step 6: Commit**
 ```bash
@@ -2202,6 +2391,8 @@ Goal: eval suite, CI, README, hero gif, notarized DMG, tweet.
 
 ### Task 14: Eval suite (3 golden fixtures)
 
+**Ordering:** This task depends on Task 16 (Calculator E2E smoke) AND Task 17 (triage iteration) producing real recordings. **Do Task 16 and Task 17 first**, then come back to Task 14. The plan is numbered 14 → 15 → 16 → 17 for narrative flow but the dependency is: 13 → 16 → 17 → 14 → 15 → 18+.
+
 **Files:**
 - Create: `tests/eval.test.ts`
 - Augment: `tests/fixtures/calc/`, `tests/fixtures/triage/`, `tests/fixtures/todo/`
@@ -2211,18 +2402,16 @@ Each fixture has:
 - `expected.md` — a canonical valid SKILL.md to compare structure against
 - `assertions.json` — specific structural assertions
 
-- [ ] **Step 1: Build the triage and todo fixtures by recording real tasks**
+- [ ] **Step 1: Copy real trajectories from Task 16 and 17 into fixtures**
 
-Manual:
 ```bash
-bun bin/showme record triage-issues "triage 3 issues in farzaa/clicky"
-# do the task
-# Ctrl-C
+# After Tasks 16 + 17 have run the recorder for calc, triage, and a third task:
+mkdir -p tests/fixtures/triage tests/fixtures/todo
+cp -r ~/.cua/skills/calc/trajectory tests/fixtures/calc/      # if not already there from Task 9
 cp -r ~/.cua/skills/triage-issues/trajectory tests/fixtures/triage/
 
+# Pick a third task — record it now if you don't have one
 bun bin/showme record todo "add a checkbox task in Reminders"
-# do the task
-# Ctrl-C
 cp -r ~/.cua/skills/todo/trajectory tests/fixtures/todo/
 ```
 
@@ -2341,7 +2530,18 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - run: cd recorder && swift build -c release --arch arm64 --arch x86_64
+      - name: Build per-arch and lipo into a universal binary
+        run: |
+          cd recorder
+          swift build -c release --arch arm64
+          swift build -c release --arch x86_64
+          # Each invocation produces a separate binary under .build/<arch>-apple-macosx/release/
+          mkdir -p .build/release
+          lipo -create \
+            .build/arm64-apple-macosx/release/showme-recorder \
+            .build/x86_64-apple-macosx/release/showme-recorder \
+            -output .build/release/showme-recorder
+          lipo -info .build/release/showme-recorder  # verify
       - name: Codesign
         env:
           DEV_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
