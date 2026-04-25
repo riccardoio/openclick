@@ -7,9 +7,13 @@ Commands:
                                        --fix auto-starts the daemon if down.
   record <task-name>                   Record a task by demonstration
   compile <skill-name>                 Compile a recording into a SKILL.md
-  run <skill-name> [--live] [--cursor] Run a compiled skill (default: --dry-run).
+  run <skill-name> [--live] [--cursor] [--fast]
+                                       Run a compiled skill (default: --dry-run).
                                        --cursor shows the agent cursor moving on
                                        screen while it works.
+                                       --fast plans once with Sonnet then
+                                       executes locally (no per-step LLM
+                                       round-trips). Replans on failure.
 
 Options:
   --help, -h             Show this help
@@ -117,6 +121,7 @@ export async function main(args: string[]): Promise<void> {
       const live = args.includes("--live");
       const confirm = args.includes("--confirm");
       const cursor = args.includes("--cursor");
+      const fast = args.includes("--fast");
       const maxStepsIdx = args.indexOf("--max-steps");
       const maxSteps = maxStepsIdx >= 0 ? Number(args[maxStepsIdx + 1]) : 50;
       const userPromptIdx = args.indexOf("--prompt");
@@ -133,6 +138,7 @@ export async function main(args: string[]): Promise<void> {
         live,
         confirm,
         cursor,
+        fast,
         maxSteps,
       });
       return;
