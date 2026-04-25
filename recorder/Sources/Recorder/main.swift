@@ -14,6 +14,11 @@ func usage() -> Never {
 let args = CommandLine.arguments
 if args.contains("--version") { print("showme-recorder 0.0.1"); exit(0) }
 if args.contains("--help") { usage() }
+// Lightweight self-probe used by `showme doctor` to ask the recorder binary
+// whether Accessibility is granted to ITS cdhash. Exits 0 if granted, 1 if not.
+if args.contains("--check-accessibility") {
+  exit(Permissions.hasAccessibility() ? 0 : 1)
+}
 
 func arg(_ flag: String) -> String? {
   guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
