@@ -161,6 +161,15 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
   console.log("[showme] press Ctrl-C to abort.");
   console.log("[showme] mode: --fast (single planner call, local executor)");
 
+  // CRITICAL: the daemon MUST be running before any element-indexed click,
+  // because the AX state cache only persists across CLI calls when those calls
+  // route through the daemon. Without it, get_window_state populates a cache
+  // in subprocess A, then click runs in subprocess B with an empty cache and
+  // fails with "No cached AX state for pid <X>". Auto-start if needed.
+  if (opts.live) {
+    await ensureDaemonRunning();
+  }
+
   let aborted = false;
   const onSigint = (): void => {
     aborted = true;
@@ -300,6 +309,48 @@ async function runCuaDriver(args: string[]): Promise<void> {
       `cua-driver ${args[0]} exited ${proc.exitCode}: ${err.trim()}`,
     );
   }
+}
+
+/**
+ * Verifies the cua-driver daemon is up. If not, launches it via LaunchServices
+ * (`open -n -g -a CuaDriver --args serve`) and polls `cua-driver status` until
+ * the socket appears. Throws if the daemon doesn't come up within ~6 seconds —
+ * that's an environment problem the user has to fix.
+ *
+ * Why this matters: element-indexed clicks read an AX cache populated by
+ * `get_window_state`. The cache lives in the daemon process. If the daemon
+ * isn't running, each `cua-driver call` runs in-process, the cache dies with
+ * each invocation, and clicks fail with "No cached AX state for pid <X>".
+ */
+async function ensureDaemonRunning(): Promise<void> {
+  if (await isDaemonRunning()) return;
+  console.log("[showme] cua-driver daemon not running; auto-starting...");
+  // Fire-and-forget. `open -n -g` is non-blocking — daemon starts in the
+  // background while open exits immediately.
+  Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const deadline = Date.now() + 6_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (await isDaemonRunning()) {
+      console.log("[showme] daemon up");
+      return;
+    }
+  }
+  throw new Error(
+    "cua-driver daemon failed to start within 6s. Try `open -n -g -a CuaDriver --args serve` manually, then re-run.",
+  );
+}
+
+async function isDaemonRunning(): Promise<boolean> {
+  const proc = Bun.spawn(["cua-driver", "status"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await proc.exited;
+  return proc.exitCode === 0;
 }
 
 async function runCuaDriverCapture(
