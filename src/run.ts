@@ -327,8 +327,12 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       let liveAxTree: string | undefined;
       let replanScreenshot: string | undefined;
       const ctxAtFailure = result.lastContext;
+      // Same gate as preDiscoverAppState: when a stepRunner is injected, this
+      // shell-out would fail in CI without cua-driver. The injected runner
+      // already produced lastContext, so we can replan from text-only.
       if (
         opts.live &&
+        !opts.stepRunner &&
         ctxAtFailure.pid !== undefined &&
         ctxAtFailure.windowId !== undefined
       ) {
@@ -376,9 +380,14 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
     // Sonnet call: snapshot the live AX state, ask the model whether the
     // skill actually succeeded. Catches the "every step exit-coded 0 but
     // the result display still says 0" case Codex flagged.
+    // Skip post-run verification when a stepRunner is injected — verifyStopWhen
+    // shells out to cua-driver via defaultSnapshot, which fails on CI without
+    // cua-driver installed. Test harnesses that want to exercise the verifier
+    // call it directly.
     if (
       runSucceeded &&
       opts.live &&
+      !opts.stepRunner &&
       plan &&
       plan.stopWhen.trim().length > 0 &&
       lastResult?.lastContext.pid !== undefined &&
