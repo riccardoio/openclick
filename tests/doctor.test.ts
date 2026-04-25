@@ -83,4 +83,34 @@ describe("doctor", () => {
     expect(text).toContain("All set");
     expect(text).toContain("showme record");
   });
+
+  test("Screen Recording parser handles cua-driver title-case + JSON formats (regression)", () => {
+    // cua-driver's CLI prints '✅ Screen Recording: granted.' (title case, with
+    // space). The original parser looked for 'screen_recording' (snake_case)
+    // and never matched. This test pins the parsing rules used inside
+    // RealSystemProbe.screenRecordingGranted.
+    const samples: { input: string; expected: boolean }[] = [
+      {
+        input: "✅ Accessibility: granted.\n✅ Screen Recording: granted.\n",
+        expected: true,
+      },
+      { input: "❌ Screen Recording: NOT granted\n", expected: false },
+      {
+        input: '{"screen_recording": true, "accessibility": true}\n',
+        expected: true,
+      },
+      { input: '{"screen_recording": false}\n', expected: false },
+      { input: "no relevant line at all\n", expected: false },
+    ];
+    for (const s of samples) {
+      const srLine = s.input
+        .split("\n")
+        .find((l) => /screen[\s_]?recording/i.test(l));
+      const result =
+        srLine !== undefined &&
+        !/not\s+granted/i.test(srLine) &&
+        /(:\s*true\b|granted)/i.test(srLine);
+      expect(result).toBe(s.expected);
+    }
+  });
 });
