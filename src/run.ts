@@ -241,7 +241,7 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           axIndex: discovered.axIndex,
         };
         console.log(
-          `[showme] pre-discovered app state for planner (pid=${discovered.pid}, window=${discovered.windowId}, ax-entries=${discovered.axIndex.size})`,
+          `[showme] pre-discovered app state for planner (pid=${discovered.pid}, window=${discovered.windowId}, ax-entries=${discovered.axIndex.length})`,
         );
       }
     }
@@ -454,8 +454,8 @@ async function runCuaDriverCapture(
 export interface DiscoveryResult {
   pid: number;
   windowId: number;
-  /** Lowercased title|id → element_index map of the focused window. */
-  axIndex: Map<string, number>;
+  /** Structured AX entries from the focused window. */
+  axIndex: import("./executor.ts").AxIndexEntry[];
   /** Pretty-printed AX tree + ids to thread into the planner prompt. */
   promptText: string;
 }

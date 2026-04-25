@@ -3,6 +3,7 @@ import {
   type StepRunner,
   executePlan,
   parseAxTreeIndex,
+  resolveSelector,
 } from "../src/executor.ts";
 import type { Plan } from "../src/planner.ts";
 
@@ -200,10 +201,7 @@ describe("executor initialContext (pre-discovery)", () => {
       initialContext: {
         pid: 4242,
         windowId: 9001,
-        axIndex: new Map<string, number>([
-          ["5", 12],
-          ["five", 12],
-        ]),
+        axIndex: parseAxTreeIndex("- [12] AXButton (5) id=Five\n"),
       },
     });
     expect(result.stepsExecuted).toBe(1);
@@ -216,19 +214,20 @@ describe("executor initialContext (pre-discovery)", () => {
     const original = {
       pid: 1,
       windowId: 2,
-      axIndex: new Map<string, number>([["x", 3]]),
+      axIndex: parseAxTreeIndex("- [3] AXButton (X) id=x\n"),
     };
+    const before = original.axIndex.length;
     const plan: Plan = { steps: [], stopWhen: "done" };
     const runner: StepRunner = async () => ({ ok: true });
     await executePlan(plan, { stepRunner: runner, initialContext: original });
     expect(original.pid).toBe(1);
     expect(original.windowId).toBe(2);
-    expect(original.axIndex.get("x")).toBe(3);
+    expect(original.axIndex.length).toBe(before);
   });
 });
 
 describe("parseAxTreeIndex", () => {
-  test("parses real Calculator AX tree output", () => {
+  test("parses real Calculator AX tree output into structured entries", () => {
     const stdout = `✅ Calculator — 42 elements, turn 6 + screenshot
 
 - AXApplication "Calculator"
@@ -240,32 +239,145 @@ describe("parseAxTreeIndex", () => {
             - [20] AXButton (0) id=Zero
             - [22] AXButton (Equals) id=Equals
 `;
-    const idx = parseAxTreeIndex(stdout);
-    // Title-based lookup
-    expect(idx.get("5")).toBe(12);
-    expect(idx.get("0")).toBe(20);
-    expect(idx.get("equals")).toBe(22);
-    // ID-based lookup
-    expect(idx.get("five")).toBe(12);
-    expect(idx.get("zero")).toBe(20);
-    expect(idx.get("allclear")).toBe(4);
+    const entries = parseAxTreeIndex(stdout);
+    const byIndex = new Map(entries.map((e) => [e.index, e]));
+    expect(byIndex.get(12)?.title).toBe("5");
+    expect(byIndex.get(12)?.id).toBe("Five");
+    expect(byIndex.get(12)?.role).toBe("AXButton");
+    expect(byIndex.get(20)?.title).toBe("0");
+    expect(byIndex.get(22)?.id).toBe("Equals");
+    expect(byIndex.get(4)?.title).toBe("All Clear");
+    // Ancestor path is built from the indentation chain of role-only ancestors.
+    expect(byIndex.get(12)?.ancestorPath.length).toBeGreaterThan(0);
   });
 
-  test("indexes lowercased to be tolerant of case mismatches", () => {
-    const stdout = "- [10] AXButton (Multiply) id=Multiply\n";
-    const idx = parseAxTreeIndex(stdout);
-    expect(idx.get("multiply")).toBe(10); // lowercase title
-    expect(idx.get("Multiply")).toBeUndefined(); // case-sensitive lookup fails
+  test("entries with no title and no id are still kept (with ancestry + ordinal)", () => {
+    const stdout = "- [26] AXButton\n- [27] AXButton\n";
+    const entries = parseAxTreeIndex(stdout);
+    expect(entries.length).toBe(2);
+    expect(entries[0]?.ordinal).toBe(0);
+    expect(entries[1]?.ordinal).toBe(1);
   });
 
-  test("handles entries with no title and no id", () => {
-    const stdout = "- [26] AXButton\n- [27] AXButton DISABLED\n";
-    const idx = parseAxTreeIndex(stdout);
-    expect(idx.size).toBe(0);
+  test("returns empty array on empty input", () => {
+    expect(parseAxTreeIndex("").length).toBe(0);
+    expect(parseAxTreeIndex("not a tree").length).toBe(0);
   });
 
-  test("returns empty map on empty input", () => {
-    expect(parseAxTreeIndex("").size).toBe(0);
-    expect(parseAxTreeIndex("not a tree").size).toBe(0);
+  test("ordinal increments for entries with the same (role, title)", () => {
+    const stdout = `
+- [1] AXButton (OK) id=ok1
+- [2] AXButton (OK) id=ok2
+- [3] AXButton (OK) id=ok3
+`;
+    const entries = parseAxTreeIndex(stdout);
+    expect(entries.map((e) => e.ordinal)).toEqual([0, 1, 2]);
+  });
+});
+
+describe("resolveSelector", () => {
+  const stdout = `
+- [1] AXButton (OK) id=ok1
+- [2] AXButton (OK) id=ok2
+- [3] AXButton (Cancel) id=cancel
+- [4] AXStaticText (391) id=display
+`;
+  const entries = parseAxTreeIndex(stdout);
+
+  test("ax_id resolves uniquely (case-insensitive)", () => {
+    expect(resolveSelector(entries, { ax_id: "ok1" })).toBe(1);
+    expect(resolveSelector(entries, { ax_id: "OK2" })).toBe(2);
+    expect(resolveSelector(entries, { ax_id: "Display" })).toBe(4);
+  });
+
+  test("title alone is ambiguous when multiple entries match → null", () => {
+    expect(resolveSelector(entries, { title: "OK" })).toBeNull();
+  });
+
+  test("title + ordinal disambiguates", () => {
+    expect(resolveSelector(entries, { title: "OK", ordinal: 0 })).toBe(1);
+    expect(resolveSelector(entries, { title: "OK", ordinal: 1 })).toBe(2);
+  });
+
+  test("title + role narrows match", () => {
+    // Cancel only has one button; the static-text has none.
+    expect(
+      resolveSelector(entries, { title: "Cancel", role: "AXButton" }),
+    ).toBe(3);
+    expect(
+      resolveSelector(entries, { title: "391", role: "AXStaticText" }),
+    ).toBe(4);
+  });
+
+  test("returns null when nothing matches", () => {
+    expect(resolveSelector(entries, { ax_id: "doesnotexist" })).toBeNull();
+    expect(resolveSelector(entries, { title: "doesnotexist" })).toBeNull();
+  });
+});
+
+describe("__selector synthetic key", () => {
+  test("__selector with ax_id resolves to element_index", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            __selector: { ax_id: "Five" },
+          },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [12] AXButton (5) id=Five\n"),
+      },
+    });
+    expect(captured.element_index).toBe(12);
+    expect(captured.__selector).toBeUndefined();
+  });
+
+  test("__selector with title + role + ordinal picks the right OK", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: {
+            pid: 1,
+            window_id: 1,
+            __selector: { title: "OK", role: "AXButton", ordinal: 1 },
+          },
+          purpose: "second OK",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 1,
+        axIndex: parseAxTreeIndex(
+          "- [1] AXButton (OK) id=ok1\n- [2] AXButton (OK) id=ok2\n",
+        ),
+      },
+    });
+    expect(captured.element_index).toBe(2);
   });
 });
