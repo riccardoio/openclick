@@ -223,13 +223,22 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
     });
     console.log(`[showme] plan: ${plan.steps.length} step(s)`);
 
+    // Wrap an explicit catch around the loop so any mid-loop throw surfaces
+    // a clear message rather than terminating the process silently after a
+    // partial trace (which is impossible to debug from the user side).
     let replansUsed = 0;
     while (!aborted) {
-      const result = await executePlan(plan, {
-        stepRunner: opts.stepRunner,
-        dryRun: !opts.live,
-        confirm: opts.confirm,
-      });
+      let result: Awaited<ReturnType<typeof executePlan>>;
+      try {
+        result = await executePlan(plan, {
+          stepRunner: opts.stepRunner ?? verboseStepRunner,
+          dryRun: !opts.live,
+          confirm: opts.confirm,
+        });
+      } catch (e) {
+        console.error(`[showme] executor crashed: ${e}`);
+        throw e;
+      }
       totalExecuted += result.stepsExecuted;
       if (result.error === undefined) break;
       if (replansUsed >= maxReplans) {
@@ -352,6 +361,46 @@ async function isDaemonRunning(): Promise<boolean> {
   await proc.exited;
   return proc.exitCode === 0;
 }
+
+/**
+ * Wraps the default cua-driver subprocess runner with extra logging so we can
+ * see the actual stdout / stderr per step. Currently surfaces:
+ *   - exit code
+ *   - first 200 chars of stdout (typically a JSON summary)
+ *   - any stderr (cua-driver writes warnings + AX failure detail here)
+ *
+ * Without this, a step that "succeeded" per exit code but didn't actually
+ * register a UI press (wrong element_index, click sent to a hidden element,
+ * etc.) is invisible — cua-driver returns 0 either way.
+ */
+const verboseStepRunner: import("./executor.ts").StepRunner = async (step) => {
+  const proc = Bun.spawn(
+    ["cua-driver", "call", step.tool, JSON.stringify(step.args)],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  const trim = (s: string, n = 200): string =>
+    s.length <= n ? s.trim() : `${s.slice(0, n).trim()}…`;
+  if (proc.exitCode !== 0) {
+    console.log(
+      `[showme]   ✗ cua-driver exit=${proc.exitCode} stderr=${trim(stderr)}`,
+    );
+    return {
+      ok: false,
+      error: `cua-driver ${step.tool} exited ${proc.exitCode}: ${stderr.trim() || stdout.trim()}`,
+      stdout,
+    };
+  }
+  if (stderr.trim()) {
+    console.log(`[showme]   ! cua-driver stderr (non-fatal): ${trim(stderr)}`);
+  }
+  console.log(`[showme]   ✓ ${trim(stdout, 160)}`);
+  return { ok: true, stdout };
+};
 
 async function runCuaDriverCapture(
   args: string[],
