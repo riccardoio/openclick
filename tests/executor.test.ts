@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { type StepRunner, executePlan } from "../src/executor.ts";
+import {
+  type StepRunner,
+  executePlan,
+  parseAxTreeIndex,
+} from "../src/executor.ts";
 import type { Plan } from "../src/planner.ts";
 
 const SIMPLE_PLAN: Plan = {
@@ -88,5 +92,131 @@ describe("executor", () => {
       true,
     );
     expect(lines.some((l) => l.includes("about to: press 1"))).toBe(true);
+  });
+
+  test("__title resolves to element_index from prior get_window_state", async () => {
+    let capturedClickArgs: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 1234, window_id: 9876 },
+          purpose: "prime AX cache",
+        },
+        {
+          tool: "click",
+          args: { pid: 1234, window_id: 9876, __title: "5" },
+          purpose: "press 5",
+        },
+        {
+          tool: "click",
+          args: { pid: 1234, window_id: 9876, __ax_id: "Equals" },
+          purpose: "press =",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: `✅ Calculator — 6 elements
+- AXApplication "Calculator"
+  - [0] AXWindow "Calculator"
+    - [4] AXButton (All Clear) id=AllClear
+    - [12] AXButton (5) id=Five
+    - [20] AXButton (0) id=Zero
+    - [22] AXButton (Equals) id=Equals
+`,
+        };
+      }
+      capturedClickArgs = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, { stepRunner: runner });
+    // Note: the LAST captured click is "press =", so element_index should be 22.
+    expect(capturedClickArgs.element_index).toBe(22);
+    expect(capturedClickArgs.__title).toBeUndefined();
+    expect(capturedClickArgs.__ax_id).toBeUndefined();
+    expect(capturedClickArgs.pid).toBe(1234);
+    expect(capturedClickArgs.window_id).toBe(9876);
+  });
+
+  test("__title resolves correctly when planner mistakes title for index", async () => {
+    // This is the regression test for the user's calc bug: the planner
+    // emitted element_index: 20 thinking that was "5", but [20] is "0".
+    // With __title: "5" the executor reads the AX tree and resolves to [12].
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 1, window_id: 1 },
+          purpose: "prime",
+        },
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 1, __title: "5" },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: "- [12] AXButton (5) id=Five\n- [20] AXButton (0) id=Zero\n",
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, { stepRunner: runner });
+    expect(captured.element_index).toBe(12); // not 20 — that's "0", not "5"
+  });
+});
+
+describe("parseAxTreeIndex", () => {
+  test("parses real Calculator AX tree output", () => {
+    const stdout = `✅ Calculator — 42 elements, turn 6 + screenshot
+
+- AXApplication "Calculator"
+  - [0] AXWindow "Calculator" id=main actions=[AXRaise]
+    - AXGroup
+      - AXSplitGroup id=main
+            - [4] AXButton (All Clear) id=AllClear
+            - [12] AXButton (5) id=Five
+            - [20] AXButton (0) id=Zero
+            - [22] AXButton (Equals) id=Equals
+`;
+    const idx = parseAxTreeIndex(stdout);
+    // Title-based lookup
+    expect(idx.get("5")).toBe(12);
+    expect(idx.get("0")).toBe(20);
+    expect(idx.get("equals")).toBe(22);
+    // ID-based lookup
+    expect(idx.get("five")).toBe(12);
+    expect(idx.get("zero")).toBe(20);
+    expect(idx.get("allclear")).toBe(4);
+  });
+
+  test("indexes lowercased to be tolerant of case mismatches", () => {
+    const stdout = "- [10] AXButton (Multiply) id=Multiply\n";
+    const idx = parseAxTreeIndex(stdout);
+    expect(idx.get("multiply")).toBe(10); // lowercase title
+    expect(idx.get("Multiply")).toBeUndefined(); // case-sensitive lookup fails
+  });
+
+  test("handles entries with no title and no id", () => {
+    const stdout = "- [26] AXButton\n- [27] AXButton DISABLED\n";
+    const idx = parseAxTreeIndex(stdout);
+    expect(idx.size).toBe(0);
+  });
+
+  test("returns empty map on empty input", () => {
+    expect(parseAxTreeIndex("").size).toBe(0);
+    expect(parseAxTreeIndex("not a tree").size).toBe(0);
   });
 });
