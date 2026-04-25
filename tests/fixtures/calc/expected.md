@@ -26,16 +26,14 @@ intent:
 Open Calculator and compute 17 × 23.
 
 ## Steps
-1. Launch Calculator (bundle id `com.apple.calculator`).
-2. Click the AXButton titled "1".
-3. Click the AXButton titled "7".
-4. Click the AXButton titled "×" (multiply).
-5. Click the AXButton titled "2".
-6. Click the AXButton titled "3".
-7. Click the AXButton titled "=" (equals).
+1. Open Calculator and bring its main window to the front.
+2. Clear any pending state on the display.
+3. Enter the expression 17 × 23.
+4. Evaluate the expression.
 
 ## Anchors
 - All number/operator buttons are AXButton inside Calculator's main window.
+- The result display is an AXStaticText inside Calculator's main window.
 
 ## Stop conditions
 - The result display reads "391".

@@ -27,24 +27,18 @@ For each open issue in the repo's issues page, read the title and body, decide a
 close as duplicate.
 
 ## Steps
-1. Open Chrome to `https://github.com/<repo>/issues?q=is:issue+is:open` via launch_app.
-2. Snapshot the window state. The issue list is an AXList with AXLink children.
-3. For each unread issue in the list:
-   1. Click the issue link.
-   2. Snapshot to read the title and body.
-   3. Decide a label: "bug" if reporting broken behavior, "enhancement" if requesting
-      new behavior, "question" if asking how something works.
-   4. Click the AXButton titled "Labels" in the right sidebar.
-   5. Click the matching label in the popover.
-   6. Click outside the popover to dismiss.
-   7. If the body matches an earlier issue's intent, click "Close issue" with
-      reason "duplicate".
-   8. Hotkey cmd+[ to return to the list.
-4. Stop when no unread issues remain.
+1. Open the issues list for the target repo.
+2. For each unread issue, read its title and body and decide a label
+   (bug / enhancement / question).
+3. Apply the chosen label.
+4. If the issue duplicates an earlier one, close it as a duplicate.
+5. Return to the list and continue until no unread issues remain.
 
 ## Anchors
 - Labels button is `AXButton[title=Labels]` in the right toolbar.
 - Issue list items are `AXLink` under `AXList` in the main content area.
+- The "Close issue" control is an `AXButton` at the bottom of the issue
+  body, with a paired dropdown for picking a close reason.
 
 ## Stop conditions
 - All visible issues have a label.
