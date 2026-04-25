@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AxNode, truncateAxTree } from "./axtree.ts";
+import { detectImageMimeType } from "./imagemime.ts";
 import { resolveSkillRoot } from "./paths.ts";
 import { buildCompilePrompt } from "./prompt.ts";
 import { sampleScreenshots } from "./sampler.ts";
@@ -133,11 +134,15 @@ export class AnthropicClaudeClient implements ClaudeClient {
     const content: Array<unknown> = [{ type: "text", text: args.prompt }];
     for (const path of args.imagePaths) {
       const data = readFileSync(path);
+      // Sniff each image: cua-driver always writes PNG bytes regardless of
+      // the chosen file extension, while older fixtures may genuinely be JPEG.
+      // Hardcoding image/jpeg here used to 400 against the Anthropic API.
+      const mediaType = detectImageMimeType(data);
       content.push({
         type: "image",
         source: {
           type: "base64",
-          media_type: "image/jpeg",
+          media_type: mediaType,
           data: data.toString("base64"),
         },
       });

@@ -40,7 +40,12 @@ public final class TrajectoryWriter {
   public func nextScreenshotName() -> String {
     queue.sync {
       screenshotCounter += 1
-      return String(format: "step_%04d.jpg", screenshotCounter)
+      // cua-driver's `screenshot --image-out <path>` always writes PNG bytes
+      // regardless of the chosen extension, so name files honestly. The
+      // compile step sniffs magic bytes anyway, but the on-disk extension
+      // should match reality so users browsing the trajectory directory
+      // aren't misled.
+      return String(format: "step_%04d.png", screenshotCounter)
     }
   }
 
