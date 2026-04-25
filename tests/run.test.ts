@@ -86,6 +86,101 @@ describe("run", () => {
     expect(receivedMaxTurns).toBe(7);
   });
 
+  test("--cursor + --live toggles cua-driver agent cursor on, then off", async () => {
+    const dir = makeFakeSkill("cursor1");
+    const toggleCalls: boolean[] = [];
+
+    const fakeQuery: QueryFn = async function* () {
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir,
+      userPrompt: "x",
+      live: true,
+      cursor: true,
+      maxSteps: 50,
+      queryFn: fakeQuery,
+      cursorToggleFn: async (enabled) => {
+        toggleCalls.push(enabled);
+      },
+    });
+
+    expect(toggleCalls).toEqual([true, false]);
+  });
+
+  test("--cursor without --live does NOT toggle the overlay (no actions to show)", async () => {
+    const dir = makeFakeSkill("cursor2");
+    const toggleCalls: boolean[] = [];
+
+    const fakeQuery: QueryFn = async function* () {
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir,
+      userPrompt: "x",
+      live: false,
+      cursor: true,
+      maxSteps: 50,
+      queryFn: fakeQuery,
+      cursorToggleFn: async (enabled) => {
+        toggleCalls.push(enabled);
+      },
+    });
+
+    expect(toggleCalls).toEqual([]);
+  });
+
+  test("cursor disabled by default", async () => {
+    const dir = makeFakeSkill("cursor3");
+    const toggleCalls: boolean[] = [];
+
+    const fakeQuery: QueryFn = async function* () {
+      yield { type: "result", result: "done" };
+    };
+
+    await runSkill({
+      skillRoot: dir,
+      userPrompt: "x",
+      live: true,
+      maxSteps: 50,
+      queryFn: fakeQuery,
+      cursorToggleFn: async (enabled) => {
+        toggleCalls.push(enabled);
+      },
+    });
+
+    expect(toggleCalls).toEqual([]);
+  });
+
+  test("cursor restored to off even if the agent throws", async () => {
+    const dir = makeFakeSkill("cursor4");
+    const toggleCalls: boolean[] = [];
+
+    const fakeQuery: QueryFn = async function* () {
+      throw new Error("agent went sideways");
+      // biome-ignore lint/correctness/noUnreachable: yield required for async generator type
+      yield { type: "result", result: "never" };
+    };
+
+    await expect(
+      runSkill({
+        skillRoot: dir,
+        userPrompt: "x",
+        live: true,
+        cursor: true,
+        maxSteps: 50,
+        queryFn: fakeQuery,
+        cursorToggleFn: async (enabled) => {
+          toggleCalls.push(enabled);
+        },
+      }),
+    ).rejects.toThrow(/agent went sideways/);
+    // Both ON and OFF should have fired even on error.
+    expect(toggleCalls).toEqual([true, false]);
+  });
+
   test("cua-driver MCP server is registered in SDK options", async () => {
     const dir = makeFakeSkill("test4");
     // biome-ignore lint/suspicious/noExplicitAny: test fake captures opaque options
