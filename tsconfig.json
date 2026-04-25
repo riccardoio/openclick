@@ -8,6 +8,8 @@
     "noImplicitOverride": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "types": ["bun"]
   },
   "include": ["src", "bin", "tests"]

@@ -41,8 +41,17 @@ describe("cli", () => {
     expect(text()).toContain("Usage:");
   });
 
-  test("known subcommand prints stub message", async () => {
-    await main(["record"]);
-    expect(text()).toBe("(record not implemented yet)");
+  test("record without skill-name throws", async () => {
+    await expect(main(["record"])).rejects.toThrow(
+      /record requires <skill-name>/,
+    );
+  });
+
+  test("compile and run still print stubs (until Tasks 12+13)", async () => {
+    await main(["compile"]);
+    expect(text()).toBe("(compile not implemented yet)");
+    captured = [];
+    await main(["run"]);
+    expect(text()).toBe("(run not implemented yet)");
   });
 });
