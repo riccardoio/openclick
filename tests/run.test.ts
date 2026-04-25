@@ -369,6 +369,9 @@ describe("run --fast", () => {
 });
 
 describe("verifyStopWhen", () => {
+  // No-op screenshot capture for unit tests so we don't shell out to cua-driver.
+  const noShot = async (): Promise<undefined> => undefined;
+
   test("returns success=true when the model replies YES", async () => {
     const planner: PlannerClient = {
       async generatePlanText() {
@@ -384,6 +387,7 @@ describe("verifyStopWhen", () => {
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
       }),
+      captureScreenshot: noShot,
     });
     expect(result.success).toBe(true);
     expect(result.explanation).toMatch(/391/);
@@ -404,6 +408,7 @@ describe("verifyStopWhen", () => {
         ok: true,
         stdout: "- [4] AXStaticText (0) id=display\n",
       }),
+      captureScreenshot: noShot,
     });
     expect(result.success).toBe(false);
     expect(result.explanation).toMatch(/still shows 0/);
@@ -426,6 +431,7 @@ describe("verifyStopWhen", () => {
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
       }),
+      captureScreenshot: noShot,
     });
     expect(capturedPrompt).toContain("display shows 391");
     expect(capturedPrompt).toContain("AXStaticText");
@@ -447,9 +453,32 @@ describe("verifyStopWhen", () => {
         stdout: "",
         error: "no such window",
       }),
+      captureScreenshot: noShot,
     });
     expect(result.success).toBe(false);
     expect(result.explanation).toMatch(/no such window/);
+  });
+
+  test("forwards captured screenshot path to the planner client", async () => {
+    let receivedImages: string[] | undefined;
+    const planner: PlannerClient = {
+      async generatePlanText(_prompt, imagePaths) {
+        receivedImages = imagePaths;
+        return "YES — ok";
+      },
+    };
+    await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "display shows 391",
+      pid: 1,
+      windowId: 2,
+      snapshot: async () => ({
+        ok: true,
+        stdout: "- [4] AXStaticText (391) id=display\n",
+      }),
+      captureScreenshot: async () => "/tmp/showme-verify-xyz.png",
+    });
+    expect(receivedImages).toEqual(["/tmp/showme-verify-xyz.png"]);
   });
 });
 

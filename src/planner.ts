@@ -27,8 +27,14 @@ export interface PlannerClient {
    * Send the planner prompt to a Claude model and return the raw text reply.
    * Implementations are expected to use Sonnet (cheap, fast, plenty smart
    * enough for tool selection) — Opus is overkill here.
+   *
+   * `imagePaths` is optional. When provided, each path is read and attached
+   * as a vision content block alongside the text prompt. Production planner
+   * uses this to send a live screenshot of the focused window so Sonnet can
+   * see the actual on-screen state, not just the AX tree text. Tests can
+   * pass empty / omit it; multimodal is best-effort, never required.
    */
-  generatePlanText(prompt: string): Promise<string>;
+  generatePlanText(prompt: string, imagePaths?: string[]): Promise<string>;
 }
 
 export interface ReplanContext {
@@ -56,6 +62,14 @@ export interface GeneratePlanOptions {
   claudeClient: PlannerClient;
   /** When set, the planner is asked to *replan* from a failure point. */
   replanContext?: ReplanContext;
+  /**
+   * Optional image paths to attach to the planner request as vision blocks.
+   * Production passes a live screenshot of the focused window so Sonnet can
+   * see UI state directly (e.g. dialogs, error toasts) instead of inferring
+   * from AX text. Best-effort — when capture fails the planner still works
+   * text-only.
+   */
+  imagePaths?: string[];
 }
 
 const SYSTEM_GUIDANCE = `You are a planner that converts a recorded macOS skill (SKILL.md) into an executable plan of cua-driver MCP tool calls. Output ONLY a JSON object matching the Plan schema below — no prose, no markdown fences. The local executor will walk your plan step by step without consulting an LLM, so each step must be concrete and executable.
@@ -176,7 +190,10 @@ ANTI-PATTERN — do NOT do this for Calculator:
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
-  const raw = await opts.claudeClient.generatePlanText(prompt);
+  const raw = await opts.claudeClient.generatePlanText(
+    prompt,
+    opts.imagePaths ?? [],
+  );
   const json = stripFences(raw);
   let parsed: unknown;
   try {
@@ -290,13 +307,52 @@ export class AnthropicPlannerClient implements PlannerClient {
     this.model = opts.model ?? "claude-sonnet-4-6";
   }
 
-  async generatePlanText(prompt: string): Promise<string> {
+  async generatePlanText(
+    prompt: string,
+    imagePaths: string[] = [],
+  ): Promise<string> {
     const Anthropic = (await import("@anthropic-ai/sdk")).default;
     const client = new Anthropic({ apiKey: this.apiKey });
+
+    // Multimodal request: attach each image as a base64 vision block. This
+    // mirrors AnthropicClaudeClient.generate in src/compile.ts. Sonnet sees
+    // the AX tree as text AND the live screenshot as image, so it can ground
+    // its plan in actual on-screen state.
+    let userContent: unknown;
+    if (imagePaths.length === 0) {
+      userContent = prompt;
+    } else {
+      const { readFileSync } = await import("node:fs");
+      const { detectImageMimeType } = await import("./imagemime.ts");
+      const blocks: Array<unknown> = [{ type: "text", text: prompt }];
+      for (const path of imagePaths) {
+        try {
+          const data = readFileSync(path);
+          const mediaType = detectImageMimeType(data);
+          blocks.push({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mediaType,
+              data: data.toString("base64"),
+            },
+          });
+        } catch (e) {
+          // Best-effort: a missing/unreadable screenshot shouldn't block the
+          // plan. Drop the image and continue with text-only.
+          console.warn(
+            `[planner] couldn't attach image ${path}: ${(e as Error).message}`,
+          );
+        }
+      }
+      userContent = blocks;
+    }
+
     const msg = await client.messages.create({
       model: this.model,
       max_tokens: 4096,
-      messages: [{ role: "user", content: prompt }],
+      // biome-ignore lint/suspicious/noExplicitAny: SDK content union not exported cleanly
+      messages: [{ role: "user", content: userContent as any }],
     });
     // biome-ignore lint/suspicious/noExplicitAny: SDK content block union, narrowed by type tag
     const textBlock = msg.content.find((b: any) => b.type === "text") as any;
