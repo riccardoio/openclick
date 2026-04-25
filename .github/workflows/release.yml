@@ -3,6 +3,9 @@ on:
   push:
     tags: ["v*.*.*"]
 
+permissions:
+  contents: write
+
 jobs:
   build-dmg:
     runs-on: macos-14
@@ -30,9 +33,12 @@ jobs:
           # Decode + import the Developer ID Application cert into a temp keychain.
           echo "$P12" | base64 --decode > /tmp/cert.p12
           security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          # Keep the keychain unlocked for the rest of the job (6 hours).
+          security set-keychain-settings -lut 21600 build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
-          security default-keychain -s build.keychain
           codesign --sign "$DEV_ID" --options runtime --timestamp recorder/.build/release/showme-recorder
           codesign --verify --verbose recorder/.build/release/showme-recorder
 
