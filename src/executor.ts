@@ -229,22 +229,14 @@ export async function executePlan(
     const step = plan.steps[i];
     if (!step) continue; // satisfy noUncheckedIndexedAccess
 
-    // `assert` is a synthetic step type the executor handles itself — no
-    // cua-driver call. It re-snapshots and checks for the expected substring
-    // in the AX tree. Failure flows through the regular failed-step path.
+    // `assert` is a no-op. Mid-flight asserts invent failure modes we can't
+    // predict per-app (the address bar after a Safari search shows a URL,
+    // not the literal query, so an assert on the query text spuriously
+    // fails). Success is checked once at the end via stopWhen against
+    // intent.success_signals — that's the only validation we trust. Legacy
+    // plans may still contain assert steps; treat them as silent skips.
     if (step.tool === "assert") {
-      log(`[showme] about to: ${step.purpose}`);
-      if (opts.dryRun) continue;
-      const assertResult = await runAssertStep(step, ctx, runner);
-      if (!assertResult.ok) {
-        return {
-          stepsExecuted: executed,
-          totalSteps: plan.steps.length,
-          failedStepIndex: i,
-          error: assertResult.error ?? "assertion failed",
-          lastContext: ctx,
-        };
-      }
+      log(`[showme] (skip assert: ${step.purpose})`);
       executed++;
       continue;
     }
@@ -310,67 +302,6 @@ export async function executePlan(
     stepsExecuted: executed,
     totalSteps: plan.steps.length,
     lastContext: ctx,
-  };
-}
-
-/**
- * Run an `assert` step. Re-snapshots get_window_state through the runner,
- * then checks whether the expected substring appears.
- *
- * args shape:
- *   { kind: "ax_text" | "display_text", expected: string, target_role?: string }
- *
- * "ax_text" and "display_text" both currently do a substring check on the
- * AX tree text. The target_role hint is optional — if present, we narrow to
- * lines whose role matches.
- */
-async function runAssertStep(
-  step: PlanStep,
-  ctx: ExecutorContext,
-  runner: StepRunner,
-): Promise<StepResult> {
-  const args = step.args as {
-    kind?: string;
-    expected?: unknown;
-    target_role?: unknown;
-  };
-  const expected = typeof args.expected === "string" ? args.expected : "";
-  if (!expected) return { ok: false, error: "assert: missing `expected`" };
-  if (ctx.pid === undefined || ctx.windowId === undefined)
-    return {
-      ok: false,
-      error: "assert: cannot snapshot — pid/window_id not yet known",
-    };
-
-  const snapshot = await runner({
-    tool: "get_window_state",
-    args: { pid: ctx.pid, window_id: ctx.windowId },
-    purpose: "snapshot for assertion",
-  });
-  if (!snapshot.ok)
-    return {
-      ok: false,
-      error: `assert: snapshot failed: ${snapshot.error ?? "unknown"}`,
-    };
-  const stdout = snapshot.stdout ?? "";
-  // Refresh ctx.axIndex while we have a fresh snapshot.
-  absorbContext(ctx, "get_window_state", stdout);
-
-  const targetRole =
-    typeof args.target_role === "string" ? args.target_role : null;
-  let haystack = stdout;
-  if (targetRole) {
-    haystack = stdout
-      .split("\n")
-      .filter((l) => l.includes(targetRole))
-      .join("\n");
-  }
-  if (haystack.includes(expected)) return { ok: true, stdout };
-  // Pull a short hint of what we DID see — first 200 chars of relevant lines.
-  const seenSnippet = haystack.slice(0, 200).trim();
-  return {
-    ok: false,
-    error: `assertion failed: expected "${expected}" in ${targetRole ?? "AX tree"}; got "${seenSnippet}"`,
   };
 }
 
