@@ -39,9 +39,6 @@ Open Calculator and compute 17 × 23.
 4. Type 23.
 5. Press =.
 
-## Anchors
-- Calculator buttons are AXButton.
-
 ## Stop conditions
 - The display shows the result.
 `;

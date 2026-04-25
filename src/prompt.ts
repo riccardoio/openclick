@@ -75,8 +75,13 @@ Produce a SKILL.md that:
 2. Has a top-level \`# <Title>\` heading.
 3. Has a \`## Goal\` section with one paragraph explaining intent.
 4. Has a \`## Steps\` section with 2-5 SEMANTIC phases describing what the user is doing — NOT a button-by-button replay. Examples of good phase wording: "clear the calculator", "enter the expression", "evaluate the expression", "open the issues list", "decide a label and apply it". Examples of BAD phase wording (do NOT do this): "click the AXButton titled '1'", "press the 7 key", "type *". The downstream planner re-derives the literal sequence from the live screenshot + AX tree at run time; the steps here are context for it, not a script.
-5. Has an \`## Anchors\` section with the AX paths observed in the recording, marked as hints (so the planner can find the same affordances when the AX tree has changed).
-6. Has a \`## Stop conditions\` section.
+5. Has a \`## Stop conditions\` section.
+
+CRITICAL — INTENT ONLY, NO REPLAY HINTS:
+- Do NOT include any \`## Anchors\` section.
+- Do NOT include pixel coordinates, x/y values, position approximations ("around y≈47"), region descriptions ("top of the window"), or layout prose ("near the upper-left").
+- Do NOT include element_index, ax indices, or any numeric ID from the recorded AX tree — they're stale by run time.
+- The planner sees a LIVE screenshot + LIVE AX tree at execution time. It does not need (and is hurt by) frozen positional hints from the recording. Stick to intent + success signals + semantic phases.
 
 Output ONLY the SKILL.md content. No commentary.`;
 
