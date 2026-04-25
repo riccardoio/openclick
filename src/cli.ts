@@ -23,7 +23,14 @@ export async function main(args: string[]): Promise<void> {
   }
   const cmd = args[0];
   switch (cmd) {
-    case "record":
+    case "record": {
+      const skillName = args[1];
+      if (!skillName) throw new Error("record requires <skill-name>");
+      const description = args.slice(2).join(" ") || skillName;
+      const { recordCommand } = await import("./record.ts");
+      await recordCommand({ skillName, description });
+      return;
+    }
     case "compile":
     case "run":
       console.log(`(${cmd} not implemented yet)`);
