@@ -210,6 +210,35 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(capturedClickArgs.element_index).toBe(12);
   });
 
+  test("repairs hallucinated pid:0 / window_id:0 from context (planner failure mode)", async () => {
+    // Real-world failure: Sonnet emitted `pid: 0, window_id: 0` instead of the
+    // discovered integers. cua-driver receives 0 verbatim and rejects with
+    // "no cached AX state for pid 0". Defensive substitution catches it when
+    // pre-discovery has populated context.
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 0, window_id: 0, element_index: 12 },
+          purpose: "click target despite hallucinated zeros",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 14002, windowId: 3745 },
+      refreshBeforeAxClick: false,
+    });
+    expect(captured.pid).toBe(14002);
+    expect(captured.window_id).toBe(3745);
+  });
+
   test("does not mutate the caller's initialContext object", async () => {
     const original = {
       pid: 1,
