@@ -187,7 +187,11 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
   // route through the daemon. Without it, get_window_state populates a cache
   // in subprocess A, then click runs in subprocess B with an empty cache and
   // fails with "No cached AX state for pid <X>". Auto-start if needed.
-  if (opts.live) {
+  //
+  // When a custom stepRunner is injected (tests, dry-run harnesses), no real
+  // cua-driver subprocess will be spawned — skip the daemon check so CI runners
+  // without cua-driver installed can still exercise the planning logic.
+  if (opts.live && !opts.stepRunner) {
     await ensureDaemonRunning();
   }
 
