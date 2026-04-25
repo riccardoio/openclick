@@ -1,20 +1,35 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { main } from "../src/cli.ts";
+
+let originalLog: typeof console.log;
+let captured: string[];
+
+beforeEach(() => {
+  originalLog = console.log;
+  captured = [];
+  console.log = (...args: unknown[]) => {
+    captured.push(args.map(String).join(" "));
+  };
+});
+
+afterEach(() => {
+  console.log = originalLog;
+});
+
+const text = () => captured.join("\n");
 
 describe("cli", () => {
   test("--help prints usage with all three subcommands", async () => {
-    const log = captureLog();
     await main(["--help"]);
-    const text = log.text();
-    expect(text).toContain("record");
-    expect(text).toContain("compile");
-    expect(text).toContain("run");
+    const t = text();
+    expect(t).toContain("record");
+    expect(t).toContain("compile");
+    expect(t).toContain("run");
   });
 
   test("--version prints version", async () => {
-    const log = captureLog();
     await main(["--version"]);
-    expect(log.text()).toMatch(/^showme \d+\.\d+\.\d+/);
+    expect(text()).toMatch(/^showme \d+\.\d+\.\d+/);
   });
 
   test("unknown subcommand throws", async () => {
@@ -22,28 +37,12 @@ describe("cli", () => {
   });
 
   test("no args prints help", async () => {
-    const log = captureLog();
     await main([]);
-    expect(log.text()).toContain("Usage:");
+    expect(text()).toContain("Usage:");
   });
 
-  test("known subcommands report 'not implemented yet' before wiring", async () => {
-    for (const cmd of ["record", "compile", "run"]) {
-      const log = captureLog();
-      await main([cmd]);
-      expect(log.text()).toContain(cmd);
-    }
+  test("known subcommand prints stub message", async () => {
+    await main(["record"]);
+    expect(text()).toBe("(record not implemented yet)");
   });
 });
-
-function captureLog() {
-  const lines: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
-  return {
-    text: () => {
-      console.log = original;
-      return lines.join("\n");
-    },
-  };
-}
