@@ -107,34 +107,72 @@ Important:
   This is the only way the executor can tell the difference between "the click succeeded" and "the click did the right thing".
 - When a REPLAN block appears with "Already-executed steps", produce only the SUFFIX needed to finish the skill from the live state shown — do NOT restart from step 0. The side effects of the listed steps are already on screen; if you re-emit them you will double-apply (e.g. type "17" twice yielding "1717"). Use the live AX tree to ground your recovery.
 
-Keyboard-first principle:
-- When the target app accepts keyboard input (Calculator, text editors, browsers, terminals, anything calculator-style for numeric entry), PREFER:
-    type_text({ pid, text: "<chars>" })            for sequences of characters
-    press_key({ pid, key: "<key-name>" })          for single keys
-    hotkey({ pid, keys: [...] })                   for combinations
-  Reserve \`click\` for buttons that have NO keyboard equivalent (the Labels button on GitHub, OK in dialogs, toolbar items). For Calculator specifically: use \`type_text\` to enter expressions like "17*23" and \`press_key("return")\` for equals — clicking the AXButtons works but is slower and races with rerenders.
-- press_key wants key NAMES, not literal characters. Digit names: "0".."9". Named keys: "return", "space", "delete", "tab", "escape". Modifiers: "cmd", "shift", "option", "control". Do NOT emit \`press_key("*")\` — emit \`type_text("*")\` or \`hotkey({ keys: ["shift", "8"] })\`.
+Choosing the right primitive:
+- \`type_text({ pid, text })\` writes via AXSelectedText into the FOCUSED ELEMENT. It only works when the focused element is a text-input field — \`AXTextField\`, \`AXTextArea\`, \`AXTextEdit\`, \`AXComboBox\`, or similar. If the focused element is an AXButton, AXWindow, or AXStaticText, type_text reports success but the characters go NOWHERE useful. **Look at the AX tree before emitting type_text. If you don't see a text-input role, do NOT use type_text.**
+- \`press_key({ pid, key })\` sends a key event scoped to the pid. Works for any keyboard-driven UI (text fields, browsers, terminals, AND apps that bind keys to actions like Calculator's "1".."9", "return", "escape").
+- \`hotkey({ pid, keys: [...] })\` for combinations like cmd+c.
+- \`click({ pid, window_id, __selector: {...} })\` for buttons. Works for any AXButton regardless of keyboard-addressability. **Default to clicks for button-grid apps** (Calculator, the macOS chess app, dialogs). Calculator has NO text input; its display is read-only AXStaticText. The only way to enter a digit is to click the digit AXButton OR press_key the matching key name (e.g. press_key("1")).
+- press_key wants key NAMES, not literal characters. Digit names: "0".."9". Named keys: "return", "space", "delete", "tab", "escape". Modifiers: "cmd", "shift", "option", "control". For "*" use \`hotkey({ keys: ["shift", "8"] })\`. For "+" use \`hotkey({ keys: ["shift", "equals"] })\`. NEVER \`press_key("*")\` — cua-driver rejects it as "Unknown key name".
+
+Decision rule for a SINGLE expression to enter (Calculator-style):
+  1. If the AX tree shows AXTextField/AXTextArea: use \`type_text\` (one call).
+  2. Else, if every char maps to a known key name: emit one \`press_key\` per char + the \`hotkey\` form for shifted symbols.
+  3. Else, click the AXButtons via \`__selector\`.
 
 Examples (good plans):
 
-A) Calculator 17 × 23 — keyboard-first (preferred when app accepts keyboard input):
+A) Calculator 17 × 23 via clicks (RECOMMENDED for macOS Calculator — no text input):
 {
   "steps": [
-    { "tool": "type_text", "args": { "pid": "$pid", "text": "17*23" }, "purpose": "enter expression" },
-    { "tool": "press_key", "args": { "pid": "$pid", "key": "return" }, "purpose": "submit" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "AllClear" } }, "purpose": "clear" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "One" } }, "purpose": "press 1" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Seven" } }, "purpose": "press 7" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Multiply" } }, "purpose": "press ×" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Two" } }, "purpose": "press 2" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Three" } }, "purpose": "press 3" },
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "ax_id": "Equals" } }, "purpose": "press =" },
     { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
   ],
   "stopWhen": "the result display reads 391"
 }
 
-B) GitHub triage — AX-click for buttons with no keyboard shortcut:
+B) Calculator 17 × 23 via press_key (also works — Calculator binds digit keys):
+{
+  "steps": [
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "1" }, "purpose": "press 1" },
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "7" }, "purpose": "press 7" },
+    { "tool": "hotkey", "args": { "pid": "$pid", "keys": ["shift", "8"] }, "purpose": "press *" },
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "2" }, "purpose": "press 2" },
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "3" }, "purpose": "press 3" },
+    { "tool": "press_key", "args": { "pid": "$pid", "key": "return" }, "purpose": "press =" },
+    { "tool": "assert", "args": { "kind": "display_text", "expected": "391", "target_role": "AXStaticText" }, "purpose": "verify result is 391" }
+  ],
+  "stopWhen": "the result display reads 391"
+}
+
+C) Web form fill — type_text WORKS here because the focus is an AXTextField:
+{
+  "steps": [
+    { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "Email", "role": "AXTextField" } }, "purpose": "focus email field" },
+    { "tool": "type_text", "args": { "pid": "$pid", "text": "user@example.com" }, "purpose": "enter email" }
+  ],
+  "stopWhen": "the email field shows user@example.com"
+}
+
+D) GitHub triage — AX-click for buttons with no keyboard shortcut:
 {
   "steps": [
     { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "Labels", "role": "AXButton" } }, "purpose": "open Labels dropdown" },
     { "tool": "click", "args": { "pid": "$pid", "window_id": "$window_id", "__selector": { "title": "bug", "role": "AXMenuItem" } }, "purpose": "apply bug label" }
   ],
   "stopWhen": "the issue shows the bug label"
-}`;
+}
+
+ANTI-PATTERN — do NOT do this for Calculator:
+{ "tool": "type_text", "args": { "pid": "$pid", "text": "17*23" } }
+  ↳ The focused element will be an AXButton with no editable AXSelectedText.
+    cua-driver will report "Inserted 3 char(s) into focused AXButton" but Calculator
+    will never see them. The display will still read "0".`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
@@ -186,6 +224,8 @@ function buildPlannerPrompt(opts: GeneratePlanOptions): string {
     sections.push(
       "",
       "Produce a SUFFIX plan that recovers from the failure and completes the remaining work. Skip steps that already executed.",
+      "",
+      "CRITICAL: if the previous attempt's failed step used `type_text` and the assertion failed, the focused element was NOT a text input — type_text inserted into an AXButton or similar non-editable element. DO NOT retry with type_text. Switch primitive: emit individual `click` steps via __selector OR individual `press_key` steps. Same rule for any primitive that already failed: changing the args or the description is not enough; switch the tool.",
     );
   } else {
     sections.push("", "Produce the plan.");

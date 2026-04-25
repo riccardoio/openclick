@@ -174,7 +174,7 @@ describe("planner", () => {
     expect(lastPrompt).toMatch(/SUFFIX/i);
   });
 
-  test("system prompt advises keyboard-first execution and gives both example modes", async () => {
+  test("system prompt picks primitive based on focused element, NOT 'always keyboard'", async () => {
     let lastPrompt = "";
     const client: PlannerClient = {
       async generatePlanText(prompt) {
@@ -187,14 +187,48 @@ describe("planner", () => {
       currentStateSummary: "",
       claudeClient: client,
     });
-    // Keyboard-first guidance is present.
-    expect(lastPrompt).toMatch(/keyboard-first/i);
-    // Both example modes are present.
+    // Primitive-selection guidance present (renamed from "keyboard-first" —
+    // the original framing pushed type_text on apps like Calculator that
+    // have no text input. Now the rule is "look at the AX tree first".)
+    expect(lastPrompt).toMatch(/Choosing the right primitive/i);
+    // The anti-pattern callout names the exact failure mode the user hit.
+    expect(lastPrompt).toContain("ANTI-PATTERN");
+    expect(lastPrompt).toMatch(/Inserted .* char/);
+    // Both interaction modes appear in the examples: type_text for text
+    // fields (form fill) AND clicks for button-grid apps (Calculator).
     expect(lastPrompt).toContain("type_text");
-    expect(lastPrompt).toContain("17*23");
+    expect(lastPrompt).toContain("__selector");
     expect(lastPrompt).toContain("Labels");
     // Warns against press_key("*").
     expect(lastPrompt).toMatch(/press_key.*"\*"|press_key\("\*"\)/);
+  });
+
+  test("replan context tells the planner to switch primitive on retry", async () => {
+    let lastPrompt = "";
+    const client: PlannerClient = {
+      async generatePlanText(prompt) {
+        lastPrompt = prompt;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    await generatePlan({
+      skillMd: SAMPLE_SKILL,
+      currentStateSummary: "",
+      claudeClient: client,
+      replanContext: {
+        failedStepIndex: 1,
+        failedStep: {
+          tool: "type_text",
+          args: { pid: 1, text: "5*2" },
+          purpose: "enter expression",
+        },
+        errorMessage: "assertion failed: expected '10' got '0'",
+      },
+    });
+    // The replan section should explicitly instruct switching primitive
+    // (otherwise Sonnet retries the same broken type_text + assert loop).
+    expect(lastPrompt).toMatch(/switch.*tool|switch primitive/i);
+    expect(lastPrompt).toMatch(/type_text/i);
   });
 
   test("threads optional replan context (failed step + error) into the prompt", async () => {
