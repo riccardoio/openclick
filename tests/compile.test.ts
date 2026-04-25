@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileSkillMd } from "../src/compile.ts";
+import { CompileValidationError, compileSkillMd } from "../src/compile.ts";
 
 const tmpOut = (): string => mkdtempSync(join(tmpdir(), "showme-compile-"));
 
@@ -77,5 +77,29 @@ description: ok now.
     });
     expect(result.valid).toBe(true);
     expect(fakeClaude.callsMade).toBe(2);
+  });
+
+  test("throws CompileValidationError if both attempts are invalid (no file written)", async () => {
+    const trajectoryDir = join(import.meta.dir, "fixtures/calc/trajectory");
+    const out = tmpOut();
+    const fakeClaude = {
+      callsMade: 0,
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      async generate(_args: any) {
+        this.callsMade++;
+        return "still no frontmatter";
+      },
+    };
+    await expect(
+      compileSkillMd({
+        trajectoryDir,
+        skillName: "calc-bad",
+        claudeClient: fakeClaude,
+        outputDir: out,
+      }),
+    ).rejects.toBeInstanceOf(CompileValidationError);
+    expect(fakeClaude.callsMade).toBe(2);
+    // No SKILL.md should have been written.
+    expect(existsSync(join(out, "SKILL.md"))).toBe(false);
   });
 });

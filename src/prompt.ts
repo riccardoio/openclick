@@ -1,8 +1,12 @@
 import type { AxNode } from "./axtree.ts";
 import type { TrajectoryEvent } from "./trajectory.ts";
 
+/** Hard cap on total input tokens we'll send to Claude per compile call. */
 export const TOKEN_HARD_CAP = 80_000;
-const CHARS_PER_TOKEN = 4; // conservative estimate
+/** Conservative chars-per-token estimate for the prompt text. */
+const CHARS_PER_TOKEN = 4;
+/** Per-image token cost (Claude vision images are roughly this for 768px). */
+const TOKENS_PER_IMAGE = 1500;
 
 export interface CompilePromptInput {
   taskName: string;
@@ -48,9 +52,14 @@ Produce a SKILL.md that:
 
 Output ONLY the SKILL.md content. No commentary.`;
 
-  if (text.length / CHARS_PER_TOKEN > TOKEN_HARD_CAP) {
+  // Reserve token budget for inline images. Anthropic vision images aren't
+  // counted in the text-token estimate, but they still consume context.
+  const imageTokens = input.sampledScreenshotPaths.length * TOKENS_PER_IMAGE;
+  const textBudget = TOKEN_HARD_CAP - imageTokens;
+  const estimatedTextTokens = text.length / CHARS_PER_TOKEN;
+  if (estimatedTextTokens > textBudget) {
     throw new Error(
-      `recording too long: prompt would exceed ${TOKEN_HARD_CAP} tokens. Try a shorter task or fewer events.`,
+      `recording too long: prompt text would use ~${Math.round(estimatedTextTokens)} tokens, budget is ${textBudget} (${TOKEN_HARD_CAP} cap minus ${imageTokens} reserved for ${input.sampledScreenshotPaths.length} images). Try a shorter task or fewer events.`,
     );
   }
 

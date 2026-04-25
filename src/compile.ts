@@ -38,15 +38,18 @@ export async function compileSkillMd(
     (name) => join(opts.trajectoryDir, name),
   );
 
+  // Dedupe AX trees by (pid, role, title). Title-only collapses two distinct
+  // apps that happen to share a window title (e.g. two "Untitled" docs).
   const uniqueAxTrees: AxNode[] = [];
   const seen = new Set<string>();
   for (const e of trajectory.events) {
     if (!e.ax_tree) continue;
-    const key = JSON.stringify((e.ax_tree as AxNode).title);
+    const ax = e.ax_tree as AxNode;
+    const key = `${e.pid ?? "?"}|${ax.role}|${ax.title ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     uniqueAxTrees.push(
-      truncateAxTree(e.ax_tree as AxNode, {
+      truncateAxTree(ax, {
         maxNodes: AX_MAX_NODES,
         maxDepth: AX_MAX_DEPTH,
       }),
@@ -77,6 +80,13 @@ export async function compileSkillMd(
     validation = validateSkillMd(skillMd);
   }
 
+  // Don't write a known-invalid SKILL.md to the canonical path — `run` would
+  // load it later and fail in confusing ways. Surface the bad output in the
+  // error so the user can iterate, but keep the skill directory clean.
+  if (!validation.valid) {
+    throw new CompileValidationError(skillMd, validation.errors);
+  }
+
   const root = opts.outputDir ?? resolveSkillRoot(opts.skillName);
   mkdirSync(root, { recursive: true });
   const outputPath = join(root, "SKILL.md");
@@ -88,6 +98,20 @@ export async function compileSkillMd(
     outputPath,
     errors: validation.errors,
   };
+}
+
+/** Thrown when both compile attempts produce a SKILL.md that fails validation. */
+export class CompileValidationError extends Error {
+  public readonly skillMd: string;
+  public readonly validationErrors: string[];
+  constructor(skillMd: string, validationErrors: string[]) {
+    super(
+      `compile produced an invalid SKILL.md after 1 retry: ${validationErrors.join("; ")}`,
+    );
+    this.name = "CompileValidationError";
+    this.skillMd = skillMd;
+    this.validationErrors = validationErrors;
+  }
 }
 
 // Production Claude client wrapper.
