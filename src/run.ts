@@ -7,8 +7,16 @@ export interface RunOptions {
   live: boolean;
   maxSteps: number;
   confirm?: boolean;
+  /**
+   * Enable cua-driver's agent cursor overlay for the duration of the run so
+   * the user can SEE the cursor move + click. Off by default (faster, less
+   * jarring). Restored to its previous state when the run ends.
+   */
+  cursor?: boolean;
   /** Injectable for tests. In production, leave unset to load the real SDK. */
   queryFn?: QueryFn;
+  /** Injectable for tests. Toggles cua-driver's agent cursor overlay. */
+  cursorToggleFn?: (enabled: boolean) => Promise<void>;
 }
 
 export type QueryFn = (input: {
@@ -53,6 +61,18 @@ export async function runSkill(opts: RunOptions): Promise<void> {
   };
 
   const queryFn = opts.queryFn ?? (await loadRealQuery());
+  const toggleCursor = opts.cursorToggleFn ?? defaultCursorToggle;
+
+  // Enable the overlay before the agent starts so the very first cua-driver
+  // tool call already animates. Only when --live (otherwise no actions fire).
+  if (opts.cursor && opts.live) {
+    try {
+      await toggleCursor(true);
+      console.log("[showme] agent cursor overlay: ON");
+    } catch (e) {
+      console.warn(`[showme] couldn't enable agent cursor: ${e}`);
+    }
+  }
 
   let stepCount = 0;
   try {
@@ -87,8 +107,29 @@ export async function runSkill(opts: RunOptions): Promise<void> {
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
+    if (opts.cursor && opts.live) {
+      try {
+        await toggleCursor(false);
+      } catch {
+        // Best-effort restore; don't crash the run report on cleanup failure.
+      }
+    }
   }
   console.log(`[showme] done. ${stepCount} tool calls.`);
+}
+
+async function defaultCursorToggle(enabled: boolean): Promise<void> {
+  const proc = Bun.spawn(
+    ["cua-driver", "set_agent_cursor_enabled", JSON.stringify({ enabled })],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  await proc.exited;
+  if (proc.exitCode !== 0) {
+    const err = await new Response(proc.stderr).text();
+    throw new Error(
+      `cua-driver set_agent_cursor_enabled exited ${proc.exitCode}: ${err.trim()}`,
+    );
+  }
 }
 
 function buildSystemPrompt(skillMd: string): string {
