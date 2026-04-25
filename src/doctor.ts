@@ -55,6 +55,7 @@ export class RealSystemProbe implements SystemProbe {
     const path = this.cuaDriverPath();
     if (!path) return false;
     const proc = Bun.spawn([path, "status"], {
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -66,6 +67,7 @@ export class RealSystemProbe implements SystemProbe {
     const path = this.cuaDriverPath();
     if (!path) return false;
     const proc = Bun.spawn([path, "check_permissions"], {
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -94,6 +96,7 @@ export class RealSystemProbe implements SystemProbe {
     const bin = resolveRecorderBinary();
     if (!existsSync(bin)) return false;
     const proc = Bun.spawn([bin, "--check-accessibility"], {
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
