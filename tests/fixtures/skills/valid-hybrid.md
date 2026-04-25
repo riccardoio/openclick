@@ -1,6 +1,10 @@
 ---
 name: triage-issues
 description: Triage open issues in a GitHub repo by applying labels.
+target:
+  bundle_id: com.github.GitHubClient
+  app_name: GitHub Desktop
+keyboard_addressable: false
 ---
 
 # Triage GitHub Issues

@@ -16,6 +16,21 @@ describe("prompt", () => {
     expect(prompt.imageReferences).toEqual(["/tmp/step_0001.jpg"]);
   });
 
+  test("requires structured target.bundle_id + target.app_name in the output", () => {
+    const prompt = buildCompilePrompt({
+      taskName: "x",
+      taskDescription: "y",
+      events: [],
+      sampledScreenshotPaths: [],
+      truncatedAxTrees: [],
+    });
+    // The compile prompt explicitly tells the model these fields are required.
+    expect(prompt.text).toContain("target");
+    expect(prompt.text).toContain("bundle_id");
+    expect(prompt.text).toContain("app_name");
+    expect(prompt.text).toContain("keyboard_addressable");
+  });
+
   test("throws over token cap", () => {
     const huge = "x".repeat(TOKEN_HARD_CAP * 5);
     expect(() =>

@@ -1,6 +1,10 @@
 ---
 name: calc
 description: Use Calculator to compute 17 times 23.
+target:
+  bundle_id: com.apple.calculator
+  app_name: Calculator
+keyboard_addressable: true
 ---
 
 # Calculator: 17 × 23

@@ -1,6 +1,10 @@
 ---
 name: add-todo
 description: Add a checkbox-style task to Reminders for today.
+target:
+  bundle_id: com.apple.reminders
+  app_name: Reminders
+keyboard_addressable: true
 ---
 
 # Add Todo to Reminders

@@ -1,6 +1,10 @@
 ---
 name: triage-issues
 description: Triage open issues in a public GitHub repo by applying labels and closing duplicates.
+target:
+  bundle_id: com.google.Chrome
+  app_name: Google Chrome
+keyboard_addressable: true
 ---
 
 # Triage GitHub Issues
