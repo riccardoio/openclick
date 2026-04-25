@@ -52,9 +52,30 @@ export async function main(args: string[]): Promise<void> {
       }
       return;
     }
-    case "run":
-      console.log(`(${cmd} not implemented yet)`);
+    case "run": {
+      const skillName = args[1];
+      if (!skillName) throw new Error("run requires <skill-name>");
+      const live = args.includes("--live");
+      const confirm = args.includes("--confirm");
+      const maxStepsIdx = args.indexOf("--max-steps");
+      const maxSteps = maxStepsIdx >= 0 ? Number(args[maxStepsIdx + 1]) : 50;
+      const userPromptIdx = args.indexOf("--prompt");
+      const userPrompt =
+        userPromptIdx >= 0
+          ? (args[userPromptIdx + 1] ?? "now do the task")
+          : "now do the task";
+
+      const { runSkill } = await import("./run.ts");
+      const { resolveSkillRoot } = await import("./paths.ts");
+      await runSkill({
+        skillRoot: resolveSkillRoot(skillName),
+        userPrompt,
+        live,
+        confirm,
+        maxSteps,
+      });
       return;
+    }
     default:
       throw new Error(`unknown subcommand: ${cmd}`);
   }
