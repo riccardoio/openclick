@@ -17,6 +17,10 @@ describe("compile", () => {
         return `---
 name: calc
 description: Use Calculator to compute 17 times 23.
+target:
+  bundle_id: com.apple.calculator
+  app_name: Calculator
+keyboard_addressable: true
 ---
 
 # Calculator: 17 × 23
@@ -62,6 +66,9 @@ Open Calculator and compute 17 × 23.
         return `---
 name: calc
 description: ok now.
+target:
+  bundle_id: com.apple.calculator
+  app_name: Calculator
 ---
 # C
 ## Steps

@@ -28,7 +28,18 @@ The SKILL.md output must satisfy BOTH formats:
 - cua's format (https://cua.ai/docs — "Demonstration-Guided Skills")
 - agentskills format (https://agentskills.io/specification)
 
-Both expect frontmatter with at least \`name\` and \`description\`, and a body with a title and steps.
+Both expect YAML frontmatter and a body with a title and steps. We extend the standard frontmatter with structured app-metadata so the runtime doesn't have to guess the target app from prose:
+
+  ---
+  name: <kebab-case slug>
+  description: <one sentence>
+  target:
+    bundle_id: <reverse-DNS bundle id, e.g. com.apple.calculator>
+    app_name: <human-readable name, e.g. "Calculator">
+  keyboard_addressable: <true | false>
+  ---
+
+\`target.bundle_id\` and \`target.app_name\` are REQUIRED. Pull the bundle id from the recording's events (each event has a pid → app mapping). Set \`keyboard_addressable: true\` when the app accepts keystrokes for its primary input (Calculator, text editors, browsers, terminals); set \`false\` for AX-click-only UIs.
 
 TASK NAME: ${input.taskName}
 TASK DESCRIPTION: ${input.taskDescription}
@@ -42,7 +53,7 @@ ${input.truncatedAxTrees.map((t) => JSON.stringify(t, null, 2)).join("\n\n")}
 You will see ${input.sampledScreenshotPaths.length} representative screenshots inline.
 
 Produce a SKILL.md that:
-1. Has frontmatter with \`name\` (kebab-case) and \`description\` (one sentence).
+1. Has frontmatter with \`name\` (kebab-case), \`description\` (one sentence), \`target.bundle_id\`, \`target.app_name\`, and \`keyboard_addressable\` as described above.
 2. Has a top-level \`# <Title>\` heading.
 3. Has a \`## Goal\` section with one paragraph explaining intent.
 4. Has a \`## Steps\` section with a numbered list of high-level actions, NOT pixel coordinates.

@@ -12,6 +12,7 @@ import {
   type PlannerClient,
   generatePlan,
 } from "./planner.ts";
+import { readTargetMetadata } from "./schema.ts";
 
 export interface RunOptions {
   skillRoot: string;
@@ -611,14 +612,25 @@ export interface DiscoveryResult {
 async function preDiscoverAppState(
   skillMd: string,
 ): Promise<DiscoveryResult | null> {
-  // Try the cheap path first: literal bundle id mentioned in the SKILL.md.
-  let bundleId = extractBundleId(skillMd);
+  // PRIMARY path: structured `target.bundle_id` from frontmatter (Fix #8).
+  const target = readTargetMetadata(skillMd);
+  let bundleId: string | null = target?.bundleId ?? null;
+  // Legacy fallback for SKILL.md files written before structured target
+  // metadata was required. Deprecated — leave in place so older skills keep
+  // working but the warning gives the user a path to fix it.
   if (!bundleId) {
-    // Fallback: match a running/installed app's NAME against the SKILL.md.
-    // The compile step doesn't always include the bundle id (Claude may write
-    // "Calculator" without `com.apple.calculator`). list_apps gives us the
-    // mapping we need.
-    bundleId = await guessBundleIdByAppName(skillMd);
+    bundleId = extractBundleId(skillMd);
+    if (!bundleId) {
+      // Deprecated heuristic: match a running/installed app NAME against the
+      // SKILL.md prose. Codex flagged this as fragile — Fix #8 makes compile
+      // emit the bundle id directly so we don't need to guess.
+      bundleId = await guessBundleIdByAppName(skillMd);
+    }
+    if (bundleId) {
+      console.warn(
+        "[showme] SKILL.md is missing structured `target.bundle_id` frontmatter; falling back to prose scan (deprecated). Re-run `showme compile` to regenerate.",
+      );
+    }
   }
   if (!bundleId) {
     console.warn(
