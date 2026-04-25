@@ -84,13 +84,15 @@ Available tools (cua-driver MCP):
 - type_text — args { pid, text }; ONLY use when the focused element is an editable role (AXTextField, AXTextArea, AXTextEdit, AXComboBox)
 - press_key — args { pid, key }; key NAMES not characters ("1", "return", "space", "shift")
 - hotkey — args { pid, keys: ["modifier", "key"] } for shifted symbols and shortcuts
-- assert — args { kind: "ax_text", expected: "...", target_role?: "..." }; synthetic, the executor verifies against a fresh AX snapshot. Emit liberally after material state changes.
 
 Principles:
 - Prefer the shortest plan that satisfies the intent from the CURRENT state. The recording captures intent, not the literal sequence.
 - AX selectors when targets are addressable; (x,y) only when the screenshot shows them clearly but AX doesn't.
 - type_text requires a focused editable role. If you don't see one in the AX tree, click the buttons or press_key instead.
 - On replan, return only the SUFFIX (the remaining work). Don't restart from step 0.
+- Do NOT emit \`assert\` steps. Mid-flight verification is the executor's job and is checked once at the end against the SKILL.md success_signals. Just produce the action sequence.
+
+OUTPUT FORMAT IS STRICT: emit ONLY the JSON object — no leading prose, no thinking, no "Looking at the tree…", no markdown, no commentary. The first character of your response must be \`{\` and the last must be \`}\`. The executor parses with JSON.parse and crashes on anything else.
 
 Concrete pid + window_id come from pre-discovery and appear in the state block as integers (e.g. \`pid: 14002\`, \`window_id: 3745\`). Use those exact integers in step args. NEVER emit \`pid: 0\` or \`window_id: 0\` — there are no placeholder slots; cua-driver receives the integers verbatim and 0 is "no process" / "no window." Either use the discovered integer values OR the literal strings "$pid" / "$window_id" (the executor substitutes them at run time).`;
 
@@ -148,7 +150,7 @@ function buildPlannerPrompt(opts: GeneratePlanOptions): string {
       "",
       "Produce a SUFFIX plan that recovers from the failure and completes the remaining work. Skip steps that already executed.",
       "",
-      "CRITICAL: if the previous attempt's failed step used `type_text` and the assertion failed, the focused element was NOT a text input — type_text inserted into an AXButton or similar non-editable element. DO NOT retry with type_text. Switch primitive: emit individual `click` steps via __selector OR individual `press_key` steps. Same rule for any primitive that already failed: changing the args or the description is not enough; switch the tool.",
+      "CRITICAL: when retrying, switch the primitive. If type_text failed, the focused element was NOT editable — emit individual `click` steps via __selector OR individual `press_key` steps. For any primitive that already failed, changing the args or the description is not enough — switch the tool.",
     );
   } else {
     sections.push("", "Produce the plan.");
@@ -157,13 +159,19 @@ function buildPlannerPrompt(opts: GeneratePlanOptions): string {
 }
 
 /**
- * Models occasionally wrap JSON in ```json fences despite instructions. Strip
- * them so JSON.parse sees clean input.
+ * Defensively extract a JSON object from a model response. Handles three
+ * common drifts: (1) ```json fences, (2) prose preamble like "Looking at
+ * the AX tree…" before the JSON, (3) trailing prose after the JSON. We
+ * scan from the first `{` to the last `}` since plans are always objects.
  */
 function stripFences(s: string): string {
   const trimmed = s.trim();
   const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  return fenceMatch?.[1]?.trim() ?? trimmed;
+  const inner = fenceMatch?.[1]?.trim() ?? trimmed;
+  const first = inner.indexOf("{");
+  const last = inner.lastIndexOf("}");
+  if (first === -1 || last === -1 || last < first) return inner;
+  return inner.slice(first, last + 1);
 }
 
 function validatePlan(value: unknown): Plan {
