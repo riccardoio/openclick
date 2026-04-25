@@ -428,6 +428,15 @@ function substitutePlaceholders(
     if (v === "$pid" && ctx.pid !== undefined) out[k] = ctx.pid;
     else if (v === "$window_id" && ctx.windowId !== undefined)
       out[k] = ctx.windowId;
+    // Defensive: planners occasionally emit `pid: 0` / `window_id: 0` when
+    // they treat 0 as a placeholder. cua-driver receives 0 verbatim and
+    // rejects with "no process" / "no cached AX state for pid 0". When the
+    // executor has a real pid/window_id from pre-discovery or a prior step,
+    // substitute. Only triggers for the canonical pid/window_id keys to
+    // avoid stomping on legitimate 0 values in other arg fields.
+    else if (k === "pid" && v === 0 && ctx.pid !== undefined) out[k] = ctx.pid;
+    else if (k === "window_id" && v === 0 && ctx.windowId !== undefined)
+      out[k] = ctx.windowId;
     else out[k] = v;
   }
   if (pendingSelector !== null && ctx.axIndex) {

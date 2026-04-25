@@ -90,7 +90,9 @@ Principles:
 - Prefer the shortest plan that satisfies the intent from the CURRENT state. The recording captures intent, not the literal sequence.
 - AX selectors when targets are addressable; (x,y) only when the screenshot shows them clearly but AX doesn't.
 - type_text requires a focused editable role. If you don't see one in the AX tree, click the buttons or press_key instead.
-- On replan, return only the SUFFIX (the remaining work). Don't restart from step 0.`;
+- On replan, return only the SUFFIX (the remaining work). Don't restart from step 0.
+
+Concrete pid + window_id come from pre-discovery and appear in the state block as integers (e.g. \`pid: 14002\`, \`window_id: 3745\`). Use those exact integers in step args. NEVER emit \`pid: 0\` or \`window_id: 0\` — there are no placeholder slots; cua-driver receives the integers verbatim and 0 is "no process" / "no window." Either use the discovered integer values OR the literal strings "$pid" / "$window_id" (the executor substitutes them at run time).`;
 
 export async function generatePlan(opts: GeneratePlanOptions): Promise<Plan> {
   const prompt = buildPlannerPrompt(opts);
