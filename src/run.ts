@@ -194,11 +194,22 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
 
   let totalExecuted = 0;
   try {
+    // Pre-discovery: launch the target app + grab its AX tree so the planner
+    // can emit concrete element_index values. Without this, Sonnet has no way
+    // to know which AXButton corresponds to "1" (element_index varies per app
+    // launch and is only revealed by get_window_state).
+    let stateSummary = opts.userPrompt ? `User asked: ${opts.userPrompt}` : "";
+    if (opts.live) {
+      const discovered = await preDiscoverAppState(skillMd);
+      if (discovered) {
+        stateSummary = `${stateSummary}\n\n${discovered}`;
+        console.log("[showme] pre-discovered app state for planner");
+      }
+    }
+
     let plan: Plan = await generatePlan({
       skillMd,
-      currentStateSummary: opts.userPrompt
-        ? `User asked: ${opts.userPrompt}`
-        : "",
+      currentStateSummary: stateSummary,
       claudeClient: plannerClient,
     });
     console.log(`[showme] plan: ${plan.steps.length} step(s)`);
@@ -290,6 +301,96 @@ async function runCuaDriver(args: string[]): Promise<void> {
     );
   }
 }
+
+async function runCuaDriverCapture(
+  args: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(["cua-driver", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  return { ok: proc.exitCode === 0, stdout, stderr };
+}
+
+/**
+ * Reads SKILL.md, finds the first reverse-DNS bundle id (e.g. com.apple.calculator),
+ * launches that app via cua-driver, then snapshots the focused window.
+ * Returns a text block to feed the planner so it can emit concrete element_index
+ * values. Returns null if discovery isn't possible (no bundle_id in skill,
+ * cua-driver subprocess errors, etc.) — the planner falls back to placeholders.
+ */
+async function preDiscoverAppState(skillMd: string): Promise<string | null> {
+  const bundleId = extractBundleId(skillMd);
+  if (!bundleId) {
+    console.warn(
+      "[showme] no bundle_id found in SKILL.md; skipping pre-discovery",
+    );
+    return null;
+  }
+
+  // Launch (idempotent — returns existing pid if app already running).
+  const launch = await runCuaDriverCapture([
+    "call",
+    "launch_app",
+    JSON.stringify({ bundle_id: bundleId }),
+  ]);
+  if (!launch.ok) {
+    console.warn(
+      `[showme] launch_app(${bundleId}) failed: ${launch.stderr.trim() || "(no stderr)"}`,
+    );
+    return null;
+  }
+  let launchData: { pid?: number; windows?: Array<{ window_id?: number }> };
+  try {
+    launchData = JSON.parse(launch.stdout);
+  } catch {
+    return null;
+  }
+  const pid = launchData.pid;
+  const windowId = launchData.windows?.[0]?.window_id;
+  if (typeof pid !== "number" || typeof windowId !== "number") {
+    return null;
+  }
+
+  // Snapshot the focused window for the AX tree.
+  const state = await runCuaDriverCapture([
+    "call",
+    "get_window_state",
+    JSON.stringify({ pid, window_id: windowId }),
+  ]);
+  if (!state.ok) return null;
+
+  // Trim AX tree to keep the prompt small. Most useful info is in the first
+  // ~12k chars (the visible toolbar + main controls).
+  const axTreeTrim = state.stdout.slice(0, 12_000);
+
+  return [
+    "Pre-discovery (already executed; do NOT re-emit launch_app or initial get_window_state):",
+    `  bundle_id: ${bundleId}`,
+    `  pid: ${pid}`,
+    `  window_id: ${windowId}`,
+    "",
+    "AX tree of the focused window. Use the element_index values shown here in your click/type_text steps.",
+    "",
+    axTreeTrim,
+  ].join("\n");
+}
+
+const BUNDLE_ID_RE =
+  /\b((?:com|org|io|net|app|us|edu|me|co|info)\.[a-zA-Z0-9._-]{2,})\b/;
+
+function extractBundleId(skillMd: string): string | null {
+  const m = skillMd.match(BUNDLE_ID_RE);
+  return m?.[1] ?? null;
+}
+
+// Exported for tests.
+export const _internals = { extractBundleId };
 
 function buildSystemPrompt(skillMd: string): string {
   return `You are an agent executing a recorded skill on the user's macOS via cua-driver.
