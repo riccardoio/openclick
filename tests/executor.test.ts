@@ -315,6 +315,146 @@ describe("resolveSelector", () => {
   });
 });
 
+describe("refreshBeforeAxClick", () => {
+  test("re-runs get_window_state before each AX-targeted click and reflects new index", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    let snapshot = "- [12] AXButton (5) id=Five\n";
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, __title: "5" },
+          purpose: "press 5",
+        },
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, __title: "5" },
+          purpose: "press 5 again (post-rerender)",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return { ok: true, stdout: snapshot };
+      }
+      // After the first click, the rerender shifts "5" to a new index.
+      snapshot = "- [42] AXButton (5) id=Five\n";
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex(snapshot),
+      },
+    });
+    // Sequence: refresh, click(12), refresh, click(42).
+    expect(calls.map((c) => c.tool)).toEqual([
+      "get_window_state",
+      "click",
+      "get_window_state",
+      "click",
+    ]);
+    expect(calls[1]?.args.element_index).toBe(12);
+    expect(calls[3]?.args.element_index).toBe(42);
+  });
+
+  test("refreshBeforeAxClick=false disables the auto-refresh", async () => {
+    const tools: string[] = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, __title: "5" },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      tools.push(step.tool);
+      if (step.tool === "get_window_state")
+        return { ok: true, stdout: "- [12] AXButton (5) id=Five\n" };
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      refreshBeforeAxClick: false,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [12] AXButton (5) id=Five\n"),
+      },
+    });
+    // No refresh, just the click.
+    expect(tools).toEqual(["click"]);
+  });
+
+  test("skips refresh when pid/windowId aren't yet known", async () => {
+    const tools: string[] = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "launch_app",
+          args: { bundle_id: "com.x" },
+          purpose: "launch",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", __title: "5" },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      tools.push(step.tool);
+      if (step.tool === "launch_app")
+        return {
+          ok: true,
+          stdout: JSON.stringify({ pid: 1, windows: [{ window_id: 2 }] }),
+        };
+      if (step.tool === "get_window_state")
+        return { ok: true, stdout: "- [12] AXButton (5) id=Five\n" };
+      return { ok: true };
+    };
+    // No initialContext: launch_app populates pid/window mid-plan, then the
+    // refresh kicks in before the click.
+    await executePlan(plan, { stepRunner: runner });
+    expect(tools).toEqual(["launch_app", "get_window_state", "click"]);
+  });
+
+  test("does NOT refresh for steps that target by element_index (no selector keys)", async () => {
+    const tools: string[] = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, element_index: 5 },
+          purpose: "click index 5 directly",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      tools.push(step.tool);
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [5] AXButton (X) id=x\n"),
+      },
+    });
+    expect(tools).toEqual(["click"]);
+  });
+});
+
 describe("__selector synthetic key", () => {
   test("__selector with ax_id resolves to element_index", async () => {
     let captured: Record<string, unknown> = {};
