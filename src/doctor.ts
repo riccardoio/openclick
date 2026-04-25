@@ -72,10 +72,18 @@ export class RealSystemProbe implements SystemProbe {
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     if (proc.exitCode !== 0) return false;
-    // cua-driver check_permissions emits a JSON-ish object with a
-    // screen_recording field. Stay liberal in what we accept.
-    const lower = out.toLowerCase();
-    return /screen_recording[^\n]*?(true|granted|"yes")/i.test(lower);
+    // cua-driver check_permissions output formats observed:
+    //   "✅ Screen Recording: granted."           (CLI human-readable, current)
+    //   "❌ Screen Recording: NOT granted"        (negative case)
+    //   '"screen_recording": true'                (JSON-ish, older versions)
+    // Find the screen-recording line and verify it says granted but not
+    // "not granted". Match both snake_case and title-case naming.
+    const srLine = out
+      .split("\n")
+      .find((l) => /screen[\s_]?recording/i.test(l));
+    if (!srLine) return false;
+    if (/not\s+granted/i.test(srLine)) return false;
+    return /(:\s*true\b|granted)/i.test(srLine);
   }
 
   recorderBinaryExists(): boolean {
