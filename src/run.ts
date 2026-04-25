@@ -256,7 +256,10 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       .join("\n\n");
     let initialContext: ExecutorContext | undefined;
     let discoveryScreenshot: string | undefined;
-    if (opts.live) {
+    // Pre-discovery shells out to cua-driver. When a custom stepRunner is
+    // injected (test harnesses), the runner provides its own context and the
+    // shell-out would fail in CI environments without cua-driver installed.
+    if (opts.live && !opts.stepRunner) {
       const discovered = await preDiscoverAppState(skillMd);
       if (discovered) {
         stateSummary = `${stateSummary}\n\n${discovered.promptText}`;
