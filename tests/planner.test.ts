@@ -131,6 +131,49 @@ describe("planner", () => {
     ).rejects.toThrow(/args|purpose/i);
   });
 
+  test("threads executed-step history and live AX tree into the replan prompt", async () => {
+    let lastPrompt = "";
+    const client: PlannerClient = {
+      async generatePlanText(prompt) {
+        lastPrompt = prompt;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    await generatePlan({
+      skillMd: SAMPLE_SKILL,
+      currentStateSummary: "",
+      claudeClient: client,
+      replanContext: {
+        failedStepIndex: 4,
+        failedStep: {
+          tool: "click",
+          args: { __title: "=" },
+          purpose: "press equals",
+        },
+        errorMessage: "stale element_index",
+        executedSteps: [
+          {
+            tool: "click",
+            args: { __title: "1" },
+            purpose: "press 1",
+          },
+          {
+            tool: "click",
+            args: { __title: "7" },
+            purpose: "press 7",
+          },
+        ],
+        liveAxTree: "- [12] AXStaticText (17) id=display\n",
+      },
+    });
+    expect(lastPrompt).toContain("Already-executed steps");
+    expect(lastPrompt).toContain("press 1");
+    expect(lastPrompt).toContain("press 7");
+    expect(lastPrompt).toContain("Live AX tree");
+    expect(lastPrompt).toContain("AXStaticText (17)");
+    expect(lastPrompt).toMatch(/SUFFIX/i);
+  });
+
   test("threads optional replan context (failed step + error) into the prompt", async () => {
     let lastPrompt = "";
     const client: PlannerClient = {

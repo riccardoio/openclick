@@ -292,6 +292,29 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
       console.log(`[showme] replanning (${replansUsed}/${maxReplans})...`);
       const failedStep = plan.steps[result.failedStepIndex ?? 0];
       if (!failedStep) break;
+      // Snapshot the live window at the failure point so the planner sees
+      // actual on-screen state, not the stale pre-discovery dump. Best-effort:
+      // if we can't snapshot, fall back to no liveAxTree.
+      let liveAxTree: string | undefined;
+      const ctxAtFailure = result.lastContext;
+      if (
+        opts.live &&
+        ctxAtFailure.pid !== undefined &&
+        ctxAtFailure.windowId !== undefined
+      ) {
+        const snap = await runCuaDriverCapture([
+          "call",
+          "get_window_state",
+          JSON.stringify({
+            pid: ctxAtFailure.pid,
+            window_id: ctxAtFailure.windowId,
+          }),
+        ]);
+        if (snap.ok) liveAxTree = snap.stdout.slice(0, 12_000);
+      }
+      // Steps that completed successfully before the failure. The planner
+      // is told not to re-emit these.
+      const executedSteps = plan.steps.slice(0, result.failedStepIndex ?? 0);
       plan = await generatePlan({
         skillMd,
         currentStateSummary: opts.userPrompt
@@ -302,6 +325,8 @@ async function runSkillFast(opts: RunOptions): Promise<void> {
           failedStepIndex: result.failedStepIndex ?? 0,
           failedStep,
           errorMessage: result.error,
+          executedSteps,
+          liveAxTree,
         },
       });
       console.log(`[showme] replan: ${plan.steps.length} step(s)`);
