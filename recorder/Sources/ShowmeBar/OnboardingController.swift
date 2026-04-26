@@ -1,36 +1,73 @@
 import AppKit
 import Foundation
+import SwiftUI
 
-/// First-run / "Check Permissions" panel. Walks the user through the four
-/// prerequisites showme needs (Accessibility, Screen Recording, CuaDriver
-/// daemon, ANTHROPIC_API_KEY) and runs `showme doctor --json` to report
-/// current status. macOS permission grants are never promised to be automatic;
-/// we just deep-link the right System Settings pane.
+// MARK: - Liquid-glass helpers (still used by the floating chat bar window setup)
+
+private func isDarkAppearance(_ appearance: NSAppearance) -> Bool {
+  appearance.bestMatch(from: [
+    .darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua,
+  ]) != nil
+}
+
+func liquidGlassBorderColor() -> NSColor {
+  NSColor(name: nil) { appearance in
+    isDarkAppearance(appearance)
+      ? NSColor.white.withAlphaComponent(0.32)
+      : NSColor.black.withAlphaComponent(0.12)
+  }
+}
+
+/// AppKit visual effect view with the liquid-glass treatment. Still used by
+/// the ActivityLogController, which is intentionally kept in pure AppKit.
+final class GlassEffectView: NSVisualEffectView {
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setup()
+  }
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+    setup()
+  }
+  private func setup() {
+    wantsLayer = true
+    blendingMode = .behindWindow
+    state = .active
+    layer?.cornerCurve = .continuous
+    layer?.masksToBounds = true
+    layer?.borderWidth = 1.5
+    layer?.borderColor = liquidGlassBorderColor().cgColor
+  }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    layer?.borderColor = liquidGlassBorderColor().cgColor
+  }
+  override func updateLayer() {
+    super.updateLayer()
+    layer?.borderColor = liquidGlassBorderColor().cgColor
+  }
+}
+
+/// Onboarding panel — Superhuman-style dark glass surface hosted in SwiftUI.
+@MainActor
 final class OnboardingController: NSObject {
   static let hasSeenOnboardingKey = "showme.hasSeenOnboarding"
+  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.showme.bar") ?? .standard
 
   private let window: NSWindow
-  private let titleLabel = NSTextField(labelWithString: "Welcome to showme")
-  private let subtitleLabel = NSTextField(
-    wrappingLabelWithString:
-      "showme controls your Mac with natural-language prompts. Grant these four things once and you’re ready."
-  )
-  private let rowsStack = NSStackView()
-  private let footerStatusLabel = NSTextField(labelWithString: "")
-  private let runCheckButton = NSButton()
-  private let doneButton = NSButton()
-  private var rows: [PermissionRow] = []
+  private let viewModel = OnboardingViewModel()
   private var isChecking = false
 
   override init() {
     window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 580, height: 560),
-      styleMask: [.titled, .closable, .fullSizeContentView],
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 720),
+      styleMask: [.titled, .closable, .fullSizeContentView, .miniaturizable],
       backing: .buffered,
       defer: false
     )
     super.init()
-    configure()
+    configureWindow()
+    wireViewModel()
   }
 
   func show() {
@@ -42,102 +79,50 @@ final class OnboardingController: NSObject {
     runChecks()
   }
 
-  // MARK: - Layout
+  // MARK: - Window setup
 
-  private func configure() {
-    window.title = "showme · Permissions"
+  private func configureWindow() {
+    window.title = "showme"
+    window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
     window.isMovableByWindowBackground = true
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.hasShadow = true
     window.delegate = self
 
-    titleLabel.font = .systemFont(ofSize: 22, weight: .bold)
-    titleLabel.textColor = .labelColor
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-    subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
-    subtitleLabel.textColor = .secondaryLabelColor
-    subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-    subtitleLabel.maximumNumberOfLines = 3
-    subtitleLabel.preferredMaxLayoutWidth = 520
-
-    rowsStack.orientation = .vertical
-    rowsStack.alignment = .leading
-    rowsStack.distribution = .fill
-    rowsStack.spacing = 12
-    rowsStack.translatesAutoresizingMaskIntoConstraints = false
-
-    rows = [
-      PermissionRow(kind: .accessibility),
-      PermissionRow(kind: .screenRecording),
-      PermissionRow(kind: .cuaDriver),
-      PermissionRow(kind: .apiKey),
-    ]
-    for row in rows { rowsStack.addArrangedSubview(row) }
-
-    footerStatusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-    footerStatusLabel.textColor = .secondaryLabelColor
-    footerStatusLabel.translatesAutoresizingMaskIntoConstraints = false
-    footerStatusLabel.lineBreakMode = .byTruncatingTail
-
-    runCheckButton.title = "Run Check Again"
-    runCheckButton.bezelStyle = .rounded
-    runCheckButton.target = self
-    runCheckButton.action = #selector(runCheckTapped)
-    runCheckButton.translatesAutoresizingMaskIntoConstraints = false
-
-    doneButton.title = "Done"
-    doneButton.bezelStyle = .rounded
-    doneButton.keyEquivalent = "\r"
-    doneButton.target = self
-    doneButton.action = #selector(doneTapped)
-    doneButton.translatesAutoresizingMaskIntoConstraints = false
+    let host = NSHostingView(rootView: OnboardingView(viewModel: viewModel))
+    host.translatesAutoresizingMaskIntoConstraints = false
+    host.wantsLayer = true
+    host.layer?.backgroundColor = NSColor.clear.cgColor
 
     let root = NSView()
+    root.wantsLayer = true
+    root.layer?.backgroundColor = NSColor.clear.cgColor
+    root.layer?.cornerRadius = 28
+    root.layer?.cornerCurve = .continuous
+    root.layer?.masksToBounds = true
     root.translatesAutoresizingMaskIntoConstraints = false
-    [titleLabel, subtitleLabel, rowsStack, footerStatusLabel, runCheckButton, doneButton].forEach {
-      root.addSubview($0)
-    }
+    root.addSubview(host)
     window.contentView = root
 
     NSLayoutConstraint.activate([
-      titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -28),
-      titleLabel.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
-
-      subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-      subtitleLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
-      subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
-
-      rowsStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-      rowsStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-      rowsStack.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 18),
-
-      footerStatusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
-      footerStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: runCheckButton.leadingAnchor, constant: -12),
-      footerStatusLabel.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
-
-      runCheckButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -10),
-      runCheckButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -22),
-
-      doneButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-      doneButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -22),
-      doneButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 96),
+      host.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+      host.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+      host.topAnchor.constraint(equalTo: root.topAnchor),
+      host.bottomAnchor.constraint(equalTo: root.bottomAnchor),
     ])
-
-    for row in rows {
-      row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
-    }
   }
 
-  // MARK: - Actions
-
-  @objc private func runCheckTapped() {
-    runChecks()
+  private func wireViewModel() {
+    viewModel.onRunCheck = { [weak self] in self?.runChecks() }
+    viewModel.onDone = { [weak self] in self?.handleDone() }
+    viewModel.onAction = { [weak self] kind in self?.handleAction(kind: kind) }
   }
 
-  @objc private func doneTapped() {
-    UserDefaults.standard.set(true, forKey: Self.hasSeenOnboardingKey)
+  private func handleDone() {
+    Self.defaults.set(true, forKey: Self.hasSeenOnboardingKey)
     window.orderOut(nil)
   }
 
@@ -146,16 +131,19 @@ final class OnboardingController: NSObject {
   private func runChecks() {
     if isChecking { return }
     isChecking = true
-    runCheckButton.isEnabled = false
-    footerStatusLabel.stringValue = "Checking permissions…"
-    rows.forEach { $0.beginChecking() }
+    viewModel.isChecking = true
+    viewModel.footerMessage = "Checking permissions…"
+    viewModel.footerTone = .checking
+    for kind in PermissionKind.allCases {
+      viewModel.update(kind: kind, status: .checking)
+    }
 
     let env = ProcessInfo.processInfo.environment
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       let result = OnboardingController.spawnDoctorJSON(env: env)
       DispatchQueue.main.async {
         self?.isChecking = false
-        self?.runCheckButton.isEnabled = true
+        self?.viewModel.isChecking = false
         self?.applyDoctorResult(result)
       }
     }
@@ -165,29 +153,93 @@ final class OnboardingController: NSObject {
     switch result {
     case .ok(let report):
       let byName = Dictionary(uniqueKeysWithValues: report.results.map { ($0.name, $0) })
-      rows[0].applySimple(result: byName["Accessibility (recorder)"])
-      rows[1].applySimple(result: byName["Screen Recording (via cua-driver)"])
-      rows[2].applyCuaDriver(
-        installed: byName["cua-driver installed"],
-        daemon: byName["cua-driver daemon"]
-      )
-      rows[3].applySimple(result: byName["ANTHROPIC_API_KEY"])
+      applySimple(.accessibility, name: "Accessibility (recorder)", in: byName, okMessage: "Granted to the showme recorder.")
+      applySimple(.screenRecording, name: "Screen Recording (via cua-driver)", in: byName, okMessage: "Granted to CuaDriver. Screenshots will work.")
+      applyCuaDriver(installed: byName["cua-driver installed"], daemon: byName["cua-driver daemon"])
+      applySimple(.apiKey, name: "ANTHROPIC_API_KEY", in: byName, okMessage: "ANTHROPIC_API_KEY is set in your shell.")
       if report.allOk {
-        footerStatusLabel.stringValue = "All set. You can close this window."
-        footerStatusLabel.textColor = .systemGreen
+        viewModel.footerMessage = "All set. You can close this window."
+        viewModel.footerTone = .success
       } else {
         let failing = report.results.filter { $0.status == "fail" }.count
-        footerStatusLabel.stringValue = "\(failing) item\(failing == 1 ? "" : "s") still need attention."
-        footerStatusLabel.textColor = .secondaryLabelColor
+        viewModel.footerMessage = "\(failing) item\(failing == 1 ? "" : "s") still need attention."
+        viewModel.footerTone = .warning
       }
     case .launchFailure(let detail):
-      footerStatusLabel.stringValue = "Could not run `showme doctor`. \(detail)"
-      footerStatusLabel.textColor = .systemOrange
-      rows.forEach { $0.markUnknown(detail: "Could not query showme.") }
+      for kind in PermissionKind.allCases {
+        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not run `showme doctor`.")
+      }
+      viewModel.footerMessage = "Could not run `showme doctor`. \(detail)"
+      viewModel.footerTone = .warning
     case .parseFailure(let detail):
-      footerStatusLabel.stringValue = "showme doctor returned unexpected output. \(detail)"
-      footerStatusLabel.textColor = .systemOrange
-      rows.forEach { $0.markUnknown(detail: "Could not parse doctor output.") }
+      for kind in PermissionKind.allCases {
+        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not parse doctor output.")
+      }
+      viewModel.footerMessage = "showme doctor returned unexpected output. \(detail)"
+      viewModel.footerTone = .warning
+    }
+  }
+
+  private func applySimple(_ kind: PermissionKind, name: String, in byName: [String: DoctorResult], okMessage: String) {
+    guard let result = byName[name] else {
+      viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: kind.defaultDescription)
+      return
+    }
+    if result.status == "ok" {
+      viewModel.update(kind: kind, status: .ok, description: okMessage, actionTitle: kind.defaultActionTitle)
+    } else {
+      viewModel.update(kind: kind, status: .missing(reason: "Missing"), description: kind.defaultDescription, actionTitle: kind.defaultActionTitle)
+    }
+  }
+
+  private func applyCuaDriver(installed: DoctorResult?, daemon: DoctorResult?) {
+    if installed?.status != "ok" {
+      viewModel.update(
+        kind: .cuaDriver,
+        status: .missing(reason: "Not installed"),
+        description: "CuaDriver isn’t installed yet. Click Install to copy the command.",
+        actionTitle: "Copy Install Command"
+      )
+      return
+    }
+    if daemon?.status != "ok" {
+      viewModel.update(
+        kind: .cuaDriver,
+        status: .missing(reason: "Not running"),
+        description: "CuaDriver is installed but the helper isn’t running. Start it now.",
+        actionTitle: "Start Daemon"
+      )
+      return
+    }
+    viewModel.update(
+      kind: .cuaDriver,
+      status: .ok,
+      description: "CuaDriver is installed and running.",
+      actionTitle: "Restart Daemon"
+    )
+  }
+
+  // MARK: - Actions
+
+  private func handleAction(kind: PermissionKind) {
+    switch kind {
+    case .accessibility:
+      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    case .screenRecording:
+      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    case .cuaDriver:
+      // Action varies based on row state — read it back via item title.
+      if let item = viewModel.items.first(where: { $0.kind == .cuaDriver }) {
+        if item.actionTitle.lowercased().contains("install") {
+          CuaDriverActions.copyInstall()
+        } else {
+          CuaDriverActions.startDaemon()
+        }
+      } else {
+        CuaDriverActions.startDaemon()
+      }
+    case .apiKey:
+      ApiKeyActions.copyExportCommand()
     }
   }
 
@@ -199,7 +251,7 @@ final class OnboardingController: NSObject {
     case parseFailure(String)
   }
 
-  private static func spawnDoctorJSON(env: [String: String]) -> DoctorRunResult {
+  nonisolated private static func spawnDoctorJSON(env: [String: String]) -> DoctorRunResult {
     let (url, args) = showmeInvocation(env: env)
     let process = Process()
     process.executableURL = url
@@ -237,7 +289,7 @@ final class OnboardingController: NSObject {
     }
   }
 
-  private static func showmeInvocation(env: [String: String]) -> (URL, [String]) {
+  nonisolated private static func showmeInvocation(env: [String: String]) -> (URL, [String]) {
     if let bin = env["SHOWME_BIN"], !bin.isEmpty {
       return (URL(fileURLWithPath: bin), [])
     }
@@ -250,7 +302,7 @@ final class OnboardingController: NSObject {
 
 extension OnboardingController: NSWindowDelegate {
   func windowWillClose(_ notification: Notification) {
-    UserDefaults.standard.set(true, forKey: Self.hasSeenOnboardingKey)
+    Self.defaults.set(true, forKey: Self.hasSeenOnboardingKey)
   }
 }
 
@@ -266,285 +318,6 @@ struct DoctorResult: Decodable {
   let status: String
   let detail: String
   let fixHint: String?
-}
-
-// MARK: - Permission Row
-
-fileprivate enum RowTone {
-  case neutral, checking, ok, fail
-  var color: NSColor {
-    switch self {
-    case .neutral, .checking: return .secondaryLabelColor
-    case .ok: return .systemGreen
-    case .fail: return .systemOrange
-    }
-  }
-}
-
-final class PermissionRow: NSView {
-  enum Kind {
-    case accessibility
-    case screenRecording
-    case cuaDriver
-    case apiKey
-  }
-
-  let kind: Kind
-
-  private let iconView = NSImageView()
-  private let titleLabel = NSTextField(labelWithString: "")
-  private let descLabel = NSTextField(wrappingLabelWithString: "")
-  private let statusPill = StatusPill()
-  private let actionButton = NSButton()
-  private var actionHandler: (() -> Void)?
-
-  init(kind: Kind) {
-    self.kind = kind
-    super.init(frame: .zero)
-    configure()
-  }
-
-  required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
-
-  override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: 76)
-  }
-
-  // MARK: Layout
-
-  private func configure() {
-    wantsLayer = true
-    layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.55).cgColor
-    layer?.cornerRadius = 14
-    layer?.cornerCurve = .continuous
-    layer?.borderWidth = 1
-    layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
-    translatesAutoresizingMaskIntoConstraints = false
-
-    let symbol = NSImage(systemSymbolName: kind.iconName, accessibilityDescription: kind.title)
-    let config = NSImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
-    iconView.image = symbol?.withSymbolConfiguration(config)
-    iconView.contentTintColor = .controlAccentColor
-    iconView.translatesAutoresizingMaskIntoConstraints = false
-
-    titleLabel.stringValue = kind.title
-    titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-    titleLabel.textColor = .labelColor
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-    descLabel.stringValue = kind.subtitle
-    descLabel.font = .systemFont(ofSize: 11, weight: .regular)
-    descLabel.textColor = .secondaryLabelColor
-    descLabel.maximumNumberOfLines = 2
-    descLabel.translatesAutoresizingMaskIntoConstraints = false
-    descLabel.preferredMaxLayoutWidth = 360
-
-    statusPill.translatesAutoresizingMaskIntoConstraints = false
-    statusPill.set(text: "Checking…", tone: .checking)
-
-    actionButton.bezelStyle = .rounded
-    actionButton.title = kind.defaultActionLabel
-    actionButton.target = self
-    actionButton.action = #selector(performAction)
-    actionButton.translatesAutoresizingMaskIntoConstraints = false
-    actionHandler = { [weak self] in self?.kind.runDefaultAction() }
-
-    addSubview(iconView)
-    addSubview(titleLabel)
-    addSubview(descLabel)
-    addSubview(statusPill)
-    addSubview(actionButton)
-
-    NSLayoutConstraint.activate([
-      iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-      iconView.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-      iconView.widthAnchor.constraint(equalToConstant: 28),
-      iconView.heightAnchor.constraint(equalToConstant: 28),
-
-      titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-      titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusPill.leadingAnchor, constant: -10),
-
-      descLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-      descLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -10),
-      descLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-      descLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
-
-      statusPill.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -10),
-      statusPill.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-
-      actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-      actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-      actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 124),
-    ])
-  }
-
-  // MARK: State
-
-  func beginChecking() {
-    statusPill.set(text: "Checking…", tone: .checking)
-  }
-
-  func markUnknown(detail: String) {
-    statusPill.set(text: "Unknown", tone: .neutral)
-    descLabel.stringValue = detail
-  }
-
-  /// Apply a single doctor result to this row.
-  func applySimple(result: DoctorResult?) {
-    guard let result else {
-      markUnknown(detail: kind.subtitle)
-      return
-    }
-    if result.status == "ok" {
-      statusPill.set(text: "Granted", tone: .ok)
-      descLabel.stringValue = friendlyOkMessage()
-      actionButton.title = kind.okActionLabel
-    } else {
-      statusPill.set(text: "Missing", tone: .fail)
-      descLabel.stringValue = kind.subtitle
-      actionButton.title = kind.defaultActionLabel
-    }
-    actionHandler = { [weak self] in self?.kind.runDefaultAction() }
-  }
-
-  /// Apply combined cua-driver "installed" + "daemon" results.
-  func applyCuaDriver(installed: DoctorResult?, daemon: DoctorResult?) {
-    if installed?.status != "ok" {
-      statusPill.set(text: "Not installed", tone: .fail)
-      descLabel.stringValue = "CuaDriver isn’t installed yet. Click Install to copy the install command."
-      actionButton.title = "Copy Install Command"
-      actionHandler = { CuaDriverActions.copyInstall() }
-      return
-    }
-    if daemon?.status != "ok" {
-      statusPill.set(text: "Not running", tone: .fail)
-      descLabel.stringValue = "CuaDriver is installed but the helper isn’t running. Start it now."
-      actionButton.title = "Start Daemon"
-      actionHandler = { CuaDriverActions.startDaemon() }
-      return
-    }
-    statusPill.set(text: "Running", tone: .ok)
-    descLabel.stringValue = "CuaDriver is installed and the helper is running."
-    actionButton.title = "Restart Daemon"
-    actionHandler = { CuaDriverActions.startDaemon() }
-  }
-
-  // MARK: Actions
-
-  @objc private func performAction() {
-    actionHandler?()
-  }
-
-  private func friendlyOkMessage() -> String {
-    switch kind {
-    case .accessibility: return "Granted to the showme recorder. You’re good."
-    case .screenRecording: return "Granted to CuaDriver. Screenshots will work."
-    case .cuaDriver: return "CuaDriver is ready."
-    case .apiKey: return "ANTHROPIC_API_KEY is set in the launching shell."
-    }
-  }
-}
-
-// MARK: - Row Kind metadata + actions
-
-extension PermissionRow.Kind {
-  var title: String {
-    switch self {
-    case .accessibility: return "Accessibility"
-    case .screenRecording: return "Screen Recording"
-    case .cuaDriver: return "CuaDriver"
-    case .apiKey: return "Anthropic API key"
-    }
-  }
-
-  var subtitle: String {
-    switch self {
-    case .accessibility:
-      return "Lets showme click and type in the apps you ask it to control."
-    case .screenRecording:
-      return "Lets showme see your screen so it can verify each step."
-    case .cuaDriver:
-      return "Background helper that performs the actual clicks and keystrokes."
-    case .apiKey:
-      return "showme calls Claude to plan the steps. Add the key to your shell."
-    }
-  }
-
-  var iconName: String {
-    switch self {
-    case .accessibility: return "hand.tap.fill"
-    case .screenRecording: return "rectangle.dashed.badge.record"
-    case .cuaDriver: return "cpu"
-    case .apiKey: return "key.fill"
-    }
-  }
-
-  var defaultActionLabel: String {
-    switch self {
-    case .accessibility: return "Open Settings"
-    case .screenRecording: return "Open Settings"
-    case .cuaDriver: return "Start Daemon"
-    case .apiKey: return "Copy export Command"
-    }
-  }
-
-  var okActionLabel: String {
-    switch self {
-    case .accessibility, .screenRecording: return "Open Settings"
-    case .cuaDriver: return "Restart Daemon"
-    case .apiKey: return "Copy export Command"
-    }
-  }
-
-  func runDefaultAction() {
-    switch self {
-    case .accessibility:
-      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-    case .screenRecording:
-      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-    case .cuaDriver:
-      CuaDriverActions.startDaemon()
-    case .apiKey:
-      ApiKeyActions.copyExportCommand()
-    }
-  }
-}
-
-// MARK: - Status Pill
-
-final class StatusPill: NSView {
-  private let label = NSTextField(labelWithString: "")
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    configure()
-  }
-
-  required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
-
-  private func configure() {
-    wantsLayer = true
-    layer?.cornerRadius = 9
-    layer?.cornerCurve = .continuous
-    label.font = .systemFont(ofSize: 11, weight: .semibold)
-    label.textColor = .white
-    label.alignment = .center
-    label.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(label)
-    NSLayoutConstraint.activate([
-      label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-      label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-      label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
-      label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
-    ])
-  }
-
-  fileprivate func set(text: String, tone: RowTone) {
-    label.stringValue = text
-    layer?.backgroundColor = tone.color.withAlphaComponent(0.92).cgColor
-    invalidateIntrinsicContentSize()
-  }
 }
 
 // MARK: - Action helpers
