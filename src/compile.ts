@@ -31,10 +31,16 @@ const SCREENSHOT_CAP = 6;
 const AX_MAX_NODES = 200;
 const AX_MAX_DEPTH = 6;
 
+interface TargetMetadata {
+  bundleId: string;
+  appName: string;
+}
+
 export async function compileSkillMd(
   opts: CompileOptions,
 ): Promise<CompileResult> {
   const trajectory = await readTrajectory(opts.trajectoryDir);
+  const targetMetadata = resolveTargetMetadata(trajectory.events);
   const sampled = sampleScreenshots(trajectory.events, SCREENSHOT_CAP).map(
     (name) => join(opts.trajectoryDir, name),
   );
@@ -63,6 +69,7 @@ export async function compileSkillMd(
     events: trajectory.events,
     sampledScreenshotPaths: sampled,
     truncatedAxTrees: uniqueAxTrees,
+    targetMetadata,
   });
 
   let skillMd = await opts.claudeClient.generate({
@@ -99,6 +106,29 @@ export async function compileSkillMd(
     outputPath,
     errors: validation.errors,
   };
+}
+
+function resolveTargetMetadata(
+  events: Array<{ bundle_id?: string; app_name?: string }>,
+): TargetMetadata | null {
+  const counts = new Map<string, { value: TargetMetadata; count: number }>();
+  for (const event of events) {
+    const bundleId = event.bundle_id?.trim();
+    const appName = event.app_name?.trim();
+    if (!bundleId || !appName) continue;
+    const key = `${bundleId}\u0000${appName}`;
+    const existing = counts.get(key);
+    counts.set(key, {
+      value: { bundleId, appName },
+      count: (existing?.count ?? 0) + 1,
+    });
+  }
+
+  let best: { value: TargetMetadata; count: number } | null = null;
+  for (const entry of counts.values()) {
+    if (best === null || entry.count > best.count) best = entry;
+  }
+  return best?.value ?? null;
 }
 
 /** Thrown when both compile attempts produce a SKILL.md that fails validation. */

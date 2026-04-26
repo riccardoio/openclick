@@ -41,14 +41,36 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
     { stdio: "inherit" },
   );
 
-  await new Promise<void>((resolve, reject) => {
-    proc.on("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`recorder exited with code ${code}`));
-    });
-  });
+  await waitForRecorderExit(proc);
 
   console.log(`[showme] trajectory written to ${dir}`);
+}
+
+export async function waitForRecorderExit(
+  proc: RecorderProcessLike,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    proc.once("error", (error) => reject(error));
+    proc.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      if (signal) {
+        reject(new Error(`recorder exited via signal ${signal}`));
+        return;
+      }
+      reject(new Error(`recorder exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+interface RecorderProcessLike {
+  once(event: "error", listener: (error: Error) => void): unknown;
+  once(
+    event: "exit",
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): unknown;
 }
 
 function sleep(ms: number): Promise<void> {

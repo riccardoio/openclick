@@ -34,19 +34,16 @@ export function sampleScreenshots(
   const states = eventsWithFrame.map(deriveState);
 
   // Always include first and last frame.
-  const result = new Set<string>();
-  const first = frames[0];
-  const last = frames[frames.length - 1];
-  if (first !== undefined) result.add(first);
-  if (last !== undefined) result.add(last);
+  const selected = new Set<number>();
+  if (frames[0] !== undefined) selected.add(0);
+  if (frames[frames.length - 1] !== undefined) selected.add(frames.length - 1);
 
   // Key-change frames: state changed vs previous.
   for (let i = 1; i < frames.length; i++) {
-    if (result.size >= cap) break;
-    if (states[i] !== states[i - 1]) {
-      const f = frames[i];
-      if (f !== undefined) result.add(f);
-    }
+    if (selected.size >= cap) break;
+    if (states[i] !== states[i - 1] && frames[i] !== undefined) selected.add(i);
   }
-  return Array.from(result);
+  return Array.from(selected)
+    .sort((a, b) => a - b)
+    .map((idx) => frames[idx] as string);
 }

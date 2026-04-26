@@ -58,10 +58,10 @@ describe("--fast pre-discovery: parseListAppsOutput", () => {
 `;
     const apps = parseListAppsOutput(stdout);
     expect(apps).toEqual([
-      { name: "App Store", bundleId: "com.apple.AppStore" },
-      { name: "Calculator", bundleId: "com.apple.calculator" },
-      { name: "Safari", bundleId: "com.apple.Safari" },
-      { name: "Finder", bundleId: "com.apple.finder" },
+      { name: "App Store", bundleId: "com.apple.AppStore", pid: 85965 },
+      { name: "Calculator", bundleId: "com.apple.calculator", pid: 43349 },
+      { name: "Safari", bundleId: "com.apple.Safari", pid: undefined },
+      { name: "Finder", bundleId: "com.apple.finder", pid: undefined },
     ]);
   });
 
@@ -69,7 +69,7 @@ describe("--fast pre-discovery: parseListAppsOutput", () => {
     const stdout =
       "✅ Found 1 app(s): 1 running, 0 installed-not-running.\n- Calculator (pid 1) [com.apple.calculator]\n";
     expect(parseListAppsOutput(stdout)).toEqual([
-      { name: "Calculator", bundleId: "com.apple.calculator" },
+      { name: "Calculator", bundleId: "com.apple.calculator", pid: 1 },
     ]);
   });
 
