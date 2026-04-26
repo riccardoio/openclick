@@ -59,7 +59,8 @@ export async function launchChatBar(options: { detach?: boolean } = {}) {
   });
 
   const code = await proc.exited;
-  if (code !== 0) {
+  // 130 (SIGINT) and 143 (SIGTERM) mean "user closed the attached run" — not a crash.
+  if (code !== 0 && code !== 130 && code !== 143) {
     throw new Error(`showme bar exited with status ${code}`);
   }
 }

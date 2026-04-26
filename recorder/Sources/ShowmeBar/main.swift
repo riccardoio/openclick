@@ -1,7 +1,9 @@
 import AppKit
 import Carbon
 import Foundation
+import SwiftUI
 
+@MainActor
 final class ShowmeBarApp: NSObject, NSApplicationDelegate {
   private var statusController: StatusController?
   private var hotKeyController: HotKeyController?
@@ -18,7 +20,7 @@ final class ShowmeBarApp: NSObject, NSApplicationDelegate {
     hotKeyController = HotKeyController { chatBar.toggle() }
     hotKeyController?.register()
 
-    let hasSeen = UserDefaults.standard.bool(forKey: OnboardingController.hasSeenOnboardingKey)
+    let hasSeen = OnboardingController.defaults.bool(forKey: OnboardingController.hasSeenOnboardingKey)
     if hasSeen {
       chatBar.show()
     } else {
@@ -28,12 +30,15 @@ final class ShowmeBarApp: NSObject, NSApplicationDelegate {
   }
 }
 
-let app = NSApplication.shared
-let delegate = ShowmeBarApp()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+MainActor.assumeIsolated {
+  let app = NSApplication.shared
+  let delegate = ShowmeBarApp()
+  app.delegate = delegate
+  app.setActivationPolicy(.accessory)
+  app.run()
+}
 
+@MainActor
 final class StatusController: NSObject {
   private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   private let chatBar: ChatBarController
@@ -95,23 +100,19 @@ final class StatusController: NSObject {
   }
 }
 
-final class ChatBarController: NSObject, NSTextFieldDelegate {
+@MainActor
+final class ChatBarController: NSObject {
   private let window: ChatBarWindow
   private let activityLog = ActivityLogController()
-  private let promptField = NSTextField()
-  private let runButton = NSButton()
-  private let foregroundButton = NSButton()
-  private let settingsButton = NSButton()
-  private let statusLabel = NSTextField(labelWithString: "")
+  private let viewModel = CommandBarViewModel()
   private var runningProcess: Process?
   private var outputPipes: [Pipe] = []
-  private var allowForeground = false
   var openOnboarding: (() -> Void)? {
     didSet { activityLog.openOnboarding = openOnboarding }
   }
 
   override init() {
-    let size = NSSize(width: 680, height: 84)
+    let size = NSSize(width: 760, height: 132)
     window = ChatBarWindow(
       contentRect: NSRect(origin: .zero, size: size),
       styleMask: [.borderless],
@@ -122,9 +123,11 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
 
     configureWindow()
     configureContent()
-    setRunning(false)
-    updateForegroundButton()
-    statusLabel.stringValue = "Shared-seat background mode"
+    wireViewModel()
+    window.onResignKey = { [weak self] in
+      guard let self, !self.viewModel.isRunning else { return }
+      self.window.orderOut(nil)
+    }
   }
 
   func toggle() {
@@ -139,9 +142,6 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
     positionNearTopCenter()
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
-    DispatchQueue.main.async { [promptField, window] in
-      window.makeFirstResponder(promptField)
-    }
   }
 
   private func configureWindow() {
@@ -154,101 +154,35 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
   }
 
   private func configureContent() {
-    let background = NSVisualEffectView()
-    background.material = .popover
-    background.blendingMode = .behindWindow
-    background.state = .active
-    background.wantsLayer = true
-    background.layer?.cornerRadius = 22
-    background.layer?.cornerCurve = .continuous
-    background.layer?.masksToBounds = true
-    background.layer?.borderWidth = 0.5
-    background.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
-    background.translatesAutoresizingMaskIntoConstraints = false
-
-    settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Permissions")
-    settingsButton.image?.isTemplate = true
-    settingsButton.bezelStyle = .regularSquare
-    settingsButton.isBordered = false
-    settingsButton.contentTintColor = .secondaryLabelColor
-    settingsButton.toolTip = "Open the showme permissions panel."
-    settingsButton.target = self
-    settingsButton.action = #selector(openOnboardingTapped)
-    settingsButton.translatesAutoresizingMaskIntoConstraints = false
-
-    foregroundButton.image = NSImage(systemSymbolName: "exclamationmark.shield", accessibilityDescription: "Foreground control")
-    foregroundButton.image?.isTemplate = true
-    foregroundButton.bezelStyle = .regularSquare
-    foregroundButton.isBordered = false
-    foregroundButton.contentTintColor = .secondaryLabelColor
-    foregroundButton.target = self
-    foregroundButton.action = #selector(toggleForegroundMode)
-    foregroundButton.translatesAutoresizingMaskIntoConstraints = false
-
-    promptField.placeholderString = "Ask showme to do anything"
-    promptField.isBordered = false
-    promptField.drawsBackground = false
-    promptField.focusRingType = .none
-    promptField.font = .systemFont(ofSize: 16, weight: .regular)
-    promptField.textColor = .labelColor
-    promptField.delegate = self
-    promptField.target = self
-    promptField.action = #selector(submit)
-    promptField.translatesAutoresizingMaskIntoConstraints = false
-
-    runButton.bezelStyle = .regularSquare
-    runButton.isBordered = false
-    runButton.wantsLayer = true
-    runButton.layer?.cornerRadius = 16
-    runButton.layer?.cornerCurve = .continuous
-    runButton.contentTintColor = .white
-    runButton.target = self
-    runButton.action = #selector(submit)
-    runButton.translatesAutoresizingMaskIntoConstraints = false
-
-    statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-    statusLabel.textColor = .secondaryLabelColor
-    statusLabel.lineBreakMode = .byTruncatingTail
-    statusLabel.translatesAutoresizingMaskIntoConstraints = false
-
+    let host = NSHostingView(rootView: CommandBarView(viewModel: viewModel))
+    host.translatesAutoresizingMaskIntoConstraints = false
+    host.wantsLayer = true
+    host.layer?.backgroundColor = NSColor.clear.cgColor
     let root = NSView()
     root.translatesAutoresizingMaskIntoConstraints = false
-    window.contentView = root
-    root.addSubview(background)
-    [settingsButton, foregroundButton, promptField, runButton, statusLabel].forEach {
-      background.addSubview($0)
-    }
-
+    root.wantsLayer = true
+    root.layer?.backgroundColor = NSColor.clear.cgColor
+    root.addSubview(host)
     NSLayoutConstraint.activate([
-      background.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-      background.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-      background.topAnchor.constraint(equalTo: root.topAnchor),
-      background.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-
-      settingsButton.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-      settingsButton.centerYAnchor.constraint(equalTo: background.centerYAnchor, constant: -10),
-      settingsButton.widthAnchor.constraint(equalToConstant: 26),
-      settingsButton.heightAnchor.constraint(equalToConstant: 26),
-
-      foregroundButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 6),
-      foregroundButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
-      foregroundButton.widthAnchor.constraint(equalToConstant: 26),
-      foregroundButton.heightAnchor.constraint(equalToConstant: 26),
-
-      promptField.leadingAnchor.constraint(equalTo: foregroundButton.trailingAnchor, constant: 12),
-      promptField.trailingAnchor.constraint(equalTo: runButton.leadingAnchor, constant: -12),
-      promptField.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
-
-      runButton.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-      runButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
-      runButton.widthAnchor.constraint(equalToConstant: 32),
-      runButton.heightAnchor.constraint(equalToConstant: 32),
-
-      statusLabel.leadingAnchor.constraint(equalTo: foregroundButton.trailingAnchor, constant: 12),
-      statusLabel.trailingAnchor.constraint(equalTo: runButton.trailingAnchor),
-      statusLabel.topAnchor.constraint(equalTo: promptField.bottomAnchor, constant: 8),
-      statusLabel.bottomAnchor.constraint(lessThanOrEqualTo: background.bottomAnchor, constant: -10),
+      host.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+      host.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+      host.topAnchor.constraint(equalTo: root.topAnchor),
+      host.bottomAnchor.constraint(equalTo: root.bottomAnchor),
     ])
+    window.contentView = root
+  }
+
+  private func wireViewModel() {
+    viewModel.onSubmit = { [weak self] prompt in self?.startShowme(prompt: prompt) }
+    viewModel.onCancel = { [weak self] in self?.cancelCurrentRun() }
+    viewModel.onOpenOnboarding = { [weak self] in self?.openOnboarding?() }
+    viewModel.onToggleForeground = { [weak self] in
+      guard let self else { return }
+      self.viewModel.allowForeground.toggle()
+      self.viewModel.status = self.viewModel.allowForeground
+        ? "Foreground control allowed for next run"
+        : "Shared-seat background mode"
+    }
   }
 
   private func positionNearTopCenter() {
@@ -259,62 +193,14 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
     window.setFrameOrigin(NSPoint(x: x, y: y))
   }
 
-  @objc private func openOnboardingTapped() {
-    openOnboarding?()
-  }
+  // MARK: - Process pipeline (logic unchanged, only callbacks moved to viewModel)
 
-  @objc private func toggleForegroundMode() {
-    allowForeground.toggle()
-    updateForegroundButton()
-    statusLabel.stringValue = allowForeground
-      ? "Foreground control allowed for next run"
-      : "Shared-seat background mode"
-  }
-
-  private func updateForegroundButton() {
-    let symbol = allowForeground ? "exclamationmark.shield.fill" : "exclamationmark.shield"
-    foregroundButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Foreground control")
-    foregroundButton.image?.isTemplate = true
-    foregroundButton.contentTintColor = allowForeground ? .systemOrange : .secondaryLabelColor
-    foregroundButton.toolTip = allowForeground
-      ? "Foreground control is allowed for the next run. Click to return to shared-seat background mode."
-      : "Shared-seat mode is on. Click to allow foreground control for the next run."
-  }
-
-  private func setRunning(_ running: Bool) {
-    if running {
-      runButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "Stop")
-      runButton.layer?.backgroundColor = NSColor.systemRed.cgColor
-      runButton.toolTip = "Stop the running task"
-      promptField.isEnabled = false
-      promptField.alphaValue = 0.55
-      foregroundButton.isEnabled = false
-      settingsButton.isEnabled = false
-    } else {
-      runButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "Run")
-      runButton.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-      runButton.toolTip = "Run this task"
-      promptField.isEnabled = true
-      promptField.alphaValue = 1.0
-      foregroundButton.isEnabled = true
-      settingsButton.isEnabled = true
-    }
-    runButton.image?.isTemplate = true
-  }
-
-  @objc private func submit() {
-    if runningProcess != nil {
-      cancelCurrentRun()
-      return
-    }
-    let prompt = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty else { return }
-
-    setRunning(true)
-    statusLabel.stringValue = allowForeground
+  private func startShowme(prompt: String) {
+    viewModel.isRunning = true
+    viewModel.status = viewModel.allowForeground
       ? "Running with foreground control…"
       : "Running in shared-seat mode…"
-    promptField.stringValue = ""
+    viewModel.prompt = ""
     activityLog.start(prompt: prompt)
 
     let launch = showmeLaunch(prompt: prompt)
@@ -326,8 +212,8 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
     let errorPipe = Pipe()
     process.standardOutput = outputPipe
     process.standardError = errorPipe
-    stream(pipe: outputPipe, prefix: nil)
-    stream(pipe: errorPipe, prefix: nil)
+    stream(pipe: outputPipe)
+    stream(pipe: errorPipe)
     outputPipes = [outputPipe, errorPipe]
     runningProcess = process
 
@@ -335,8 +221,8 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
       DispatchQueue.main.async {
         self?.stopStreaming()
         self?.activityLog.finish(exitCode: Int(process.terminationStatus))
-        self?.setRunning(false)
-        self?.statusLabel.stringValue =
+        self?.viewModel.isRunning = false
+        self?.viewModel.status =
           process.terminationStatus == 0
           ? "Finished"
           : "showme exited with status \(process.terminationStatus)"
@@ -350,9 +236,9 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
       window.orderOut(nil)
     } catch {
       stopStreaming()
-      setRunning(false)
+      viewModel.isRunning = false
       let detail = "Could not launch showme: \(error.localizedDescription)"
-      statusLabel.stringValue = detail
+      viewModel.status = detail
       activityLog.append(detail)
       activityLog.finish(exitCode: 1)
       runningProcess = nil
@@ -363,11 +249,11 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
   private func cancelCurrentRun() {
     guard let process = runningProcess else { return }
     activityLog.append("Cancellation requested.")
-    statusLabel.stringValue = "Stopping showme..."
+    viewModel.status = "Stopping showme…"
     process.terminate()
   }
 
-  private func stream(pipe: Pipe, prefix: String?) {
+  private func stream(pipe: Pipe) {
     pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
       let data = handle.availableData
       guard !data.isEmpty else {
@@ -379,7 +265,7 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
         for rawLine in text.components(separatedBy: .newlines) {
           let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
           guard !line.isEmpty else { continue }
-          self?.activityLog.append(prefix.map { "\($0) \(line)" } ?? line)
+          self?.activityLog.append(line)
         }
       }
     }
@@ -393,7 +279,7 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
   }
 
   private func showmeLaunch(prompt: String) -> (executableURL: URL, arguments: [String]) {
-    let runArgs = ["run", prompt, "--live"] + (allowForeground ? ["--allow-foreground"] : [])
+    let runArgs = ["run", prompt, "--live"] + (viewModel.allowForeground ? ["--allow-foreground"] : [])
     if let explicit = ProcessInfo.processInfo.environment["SHOWME_BIN"], !explicit.isEmpty {
       return (URL(fileURLWithPath: explicit), runArgs)
     }
@@ -416,8 +302,15 @@ final class ChatBarController: NSObject, NSTextFieldDelegate {
 }
 
 final class ChatBarWindow: NSWindow {
+  var onResignKey: (() -> Void)?
+
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
+
+  override func resignKey() {
+    super.resignKey()
+    onResignKey?()
+  }
 }
 
 final class ActivityLogController: NSObject {
@@ -510,14 +403,9 @@ final class ActivityLogController: NSObject {
     window.isOpaque = false
     window.hasShadow = true
 
-    let background = NSVisualEffectView()
+    let background = GlassEffectView()
     background.material = .hudWindow
-    background.blendingMode = .behindWindow
-    background.state = .active
-    background.wantsLayer = true
     background.layer?.cornerRadius = 22
-    background.layer?.cornerCurve = .continuous
-    background.layer?.masksToBounds = true
     background.translatesAutoresizingMaskIntoConstraints = false
 
     spinner.style = .spinning
