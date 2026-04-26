@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolveRecorderBinary } from "./paths.ts";
+import { resolveCuaDriverBinary, resolveRecorderBinary } from "./paths.ts";
 
 export type CheckStatus = "ok" | "fail";
 
@@ -39,16 +39,7 @@ export class RealSystemProbe implements SystemProbe {
   }
 
   cuaDriverPath(): string | null {
-    const candidates = [
-      Bun.env.CUA_DRIVER,
-      "/usr/local/bin/cua-driver",
-      "/opt/homebrew/bin/cua-driver",
-      "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
-    ];
-    for (const path of candidates) {
-      if (path && existsSync(path)) return path;
-    }
-    return null;
+    return resolveCuaDriverBinary();
   }
 
   async cuaDriverDaemonRunning(): Promise<boolean> {

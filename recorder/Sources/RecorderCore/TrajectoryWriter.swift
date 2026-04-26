@@ -26,10 +26,22 @@ public final class TrajectoryWriter {
     self.eventsHandle = try FileHandle(forWritingTo: eventsURL)
   }
 
-  public func appendEvent(_ event: Event, axTree: AXNode?, screenshotRef: String?) throws {
+  public func appendEvent(
+    _ event: Event,
+    axTree: AXNode?,
+    screenshotRef: String?,
+    bundleId: String?,
+    appName: String?
+  ) throws {
     try queue.sync {
       guard !finalized else { return }
-      let envelope = EventEnvelope(event: event, axTree: axTree, screenshotRef: screenshotRef)
+      let envelope = EventEnvelope(
+        event: event,
+        axTree: axTree,
+        screenshotRef: screenshotRef,
+        bundleId: bundleId,
+        appName: appName
+      )
       let data = try JSONEncoder().encode(envelope)
       eventsHandle.write(data)
       eventsHandle.write(Data([0x0A]))  // newline
@@ -80,6 +92,8 @@ private struct EventEnvelope: Encodable {
   let event: Event
   let axTree: AXNode?
   let screenshotRef: String?
+  let bundleId: String?
+  let appName: String?
 
   func encode(to encoder: Encoder) throws {
     // Event.encode writes "kind" + the inner event's fields into the encoder's
@@ -92,6 +106,12 @@ private struct EventEnvelope: Encodable {
     }
     if let ref = screenshotRef {
       try container.encode(ref, forKey: DynamicKey(stringValue: "screenshot")!)
+    }
+    if let bundleId = bundleId {
+      try container.encode(bundleId, forKey: DynamicKey(stringValue: "bundle_id")!)
+    }
+    if let appName = appName {
+      try container.encode(appName, forKey: DynamicKey(stringValue: "app_name")!)
     }
   }
 }

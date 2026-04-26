@@ -1,19 +1,29 @@
-const VERSION = "0.0.1";
+const VERSION = "0.1.0";
 
 const USAGE = `Usage: showme <command> [options]
 
 Commands:
   doctor [--fix]                       Check prereqs (cua-driver, perms, API key).
                                        --fix auto-starts the daemon if down.
-  record <task-name>                   Record a task by demonstration
-  compile <skill-name>                 Compile a recording into a SKILL.md
-  run <skill-name> [--live] [--cursor] [--fast]
-                                       Run a compiled skill (default: --dry-run).
+  run <task> [--live] [--cursor]       Complete a macOS task from your prompt
+                                       (default: dry-run: plans but does not act).
                                        --cursor shows the agent cursor moving on
                                        screen while it works.
-                                       --fast plans once with Sonnet then
-                                       executes locally (no per-step LLM
-                                       round-trips). Replans on failure.
+                                       --criteria adds explicit success criteria
+                                       for verifier feedback/retry rounds.
+                                       --no-memory disables app-memory retrieval.
+                                       --no-learn disables writing new memories.
+                                       --allow-foreground permits tools that may
+                                       steal focus, move cursor, or touch global state.
+                                       Plans cheap small batches, executes via
+                                       cua-driver, then screenshots/replans.
+  bar [--detach]                       Launch the native macOS menu-bar prompt.
+  cancel <run-id>                      Request cancellation for a running task.
+  record <task-name>                   Legacy: record a task by demonstration
+  compile <skill-name>                 Legacy: compile a recording into SKILL.md
+  memory list                          List learned local app memories
+  memory export <file>                 Export memories to a shareable JSON bundle
+  memory import <file>                 Import a shared memory JSON bundle
 
 Options:
   --help, -h             Show this help
@@ -115,35 +125,171 @@ export async function main(args: string[]): Promise<void> {
       }
       return;
     }
+    case "memory": {
+      const action = args[1];
+      const { listAppMemories, writeMemoryBundle, importMemoryBundle } =
+        await import("./memory.ts");
+      if (action === "list") {
+        const memories = listAppMemories();
+        if (memories.length === 0) {
+          console.log("[showme] no app memories yet.");
+          return;
+        }
+        for (const memory of memories) {
+          console.log(
+            `${memory.app_name ?? memory.bundle_id} [${memory.bundle_id}] affordances=${memory.affordances.length} avoid=${memory.avoid.length} observations=${memory.observations.length}`,
+          );
+        }
+        return;
+      }
+      if (action === "export") {
+        const path = args[2];
+        if (!path) throw new Error("memory export requires <file>");
+        const bundle = writeMemoryBundle(path);
+        console.log(
+          `[showme] exported ${bundle.memories.length} app memory file(s) to ${path}`,
+        );
+        return;
+      }
+      if (action === "import") {
+        const path = args[2];
+        if (!path) throw new Error("memory import requires <file>");
+        const bundle = importMemoryBundle(path);
+        console.log(
+          `[showme] imported ${bundle.memories.length} app memory file(s) from ${path}`,
+        );
+        return;
+      }
+      throw new Error(
+        "memory requires one of: list, export <file>, import <file>",
+      );
+    }
+    case "bar": {
+      const { launchChatBar } = await import("./bar.ts");
+      await launchChatBar({ detach: args.includes("--detach") });
+      return;
+    }
+    case "cancel": {
+      const runId = args[1];
+      if (!runId) throw new Error("cancel requires <run-id>");
+      const { requestRunCancel } = await import("./trace.ts");
+      requestRunCancel(runId);
+      console.log(`[showme] cancellation requested for ${runId}`);
+      return;
+    }
     case "run": {
-      const skillName = args[1];
-      if (!skillName) throw new Error("run requires <skill-name>");
+      const runArgs = args
+        .slice(1)
+        .filter(
+          (arg, index, all) =>
+            arg !== "--live" &&
+            arg !== "--confirm" &&
+            arg !== "--cursor" &&
+            arg !== "--fast" &&
+            arg !== "--agent" &&
+            arg !== "--max-steps" &&
+            arg !== "--max-batches" &&
+            arg !== "--max-model-calls" &&
+            arg !== "--max-screenshots" &&
+            arg !== "--criteria" &&
+            arg !== "--no-memory" &&
+            arg !== "--no-learn" &&
+            arg !== "--allow-foreground" &&
+            all[index - 1] !== "--max-steps" &&
+            all[index - 1] !== "--max-batches" &&
+            all[index - 1] !== "--max-model-calls" &&
+            all[index - 1] !== "--max-screenshots" &&
+            all[index - 1] !== "--criteria",
+        );
+      const taskPrompt = runArgs.join(" ").trim();
+      if (!taskPrompt) throw new Error("run requires <task>");
       const live = args.includes("--live");
       const confirm = args.includes("--confirm");
       const cursor = args.includes("--cursor");
-      const fast = args.includes("--fast");
+      const fast = !args.includes("--agent");
+      const memory = !args.includes("--no-memory");
+      const learn = !args.includes("--no-learn");
+      const allowForeground = args.includes("--allow-foreground");
+      if (!fast) {
+        console.warn(
+          "[showme] WARNING: --agent uses the legacy higher-cost Agent SDK path and does not support the prompt-first verifier loop. Prefer the default fast path.",
+        );
+      }
       const maxStepsIdx = args.indexOf("--max-steps");
-      const maxSteps = maxStepsIdx >= 0 ? Number(args[maxStepsIdx + 1]) : 50;
-      const userPromptIdx = args.indexOf("--prompt");
-      const userPrompt =
-        userPromptIdx >= 0
-          ? (args[userPromptIdx + 1] ?? "now do the task")
-          : "now do the task";
-
-      const { runSkill } = await import("./run.ts");
-      const { resolveSkillRoot } = await import("./paths.ts");
-      await runSkill({
-        skillRoot: resolveSkillRoot(skillName),
-        userPrompt,
+      const maxBatchesIdx = args.indexOf("--max-batches");
+      const maxModelCallsIdx = args.indexOf("--max-model-calls");
+      const maxScreenshotsIdx = args.indexOf("--max-screenshots");
+      const criteriaIdx = args.indexOf("--criteria");
+      const maxSteps = parsePositiveIntFlag(
+        args,
+        maxStepsIdx,
+        "--max-steps",
+        50,
+      );
+      const maxBatches = parsePositiveIntFlag(
+        args,
+        maxBatchesIdx,
+        "--max-batches",
+        6,
+      );
+      const maxModelCalls = parsePositiveIntFlag(
+        args,
+        maxModelCallsIdx,
+        "--max-model-calls",
+        12,
+      );
+      const maxScreenshots = parsePositiveIntFlag(
+        args,
+        maxScreenshotsIdx,
+        "--max-screenshots",
+        8,
+      );
+      const criteria = parseOptionalStringFlag(args, criteriaIdx, "--criteria");
+      const { runTask } = await import("./run.ts");
+      await runTask({
+        taskPrompt,
+        criteria,
         live,
         confirm,
         cursor,
         fast,
         maxSteps,
+        maxBatches,
+        maxModelCalls,
+        maxScreenshots,
+        memory,
+        learn,
+        allowForeground,
       });
       return;
     }
     default:
       throw new Error(`unknown subcommand: ${cmd}`);
   }
+}
+
+function parseOptionalStringFlag(
+  args: string[],
+  index: number,
+  flag: string,
+): string | undefined {
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+function parsePositiveIntFlag(
+  args: string[],
+  index: number,
+  flag: string,
+  fallback: number,
+): number {
+  const parsed = index >= 0 ? Number(args[index + 1]) : fallback;
+  if (!Number.isInteger(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${flag} requires a positive integer`);
+  }
+  return parsed;
 }

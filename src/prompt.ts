@@ -14,6 +14,10 @@ export interface CompilePromptInput {
   events: TrajectoryEvent[];
   sampledScreenshotPaths: string[];
   truncatedAxTrees: AxNode[];
+  targetMetadata?: {
+    bundleId: string;
+    appName: string;
+  } | null;
 }
 
 export interface CompilePrompt {
@@ -50,7 +54,7 @@ Both expect YAML frontmatter and a body with a title and steps. We extend the st
       - click | type_text | press_key | hotkey | scroll | other
   ---
 
-\`target.bundle_id\`, \`target.app_name\`, \`intent.goal\`, and \`intent.success_signals\` (non-empty) are REQUIRED. Pull the bundle id from the recording's events (each event has a pid → app mapping). Set \`keyboard_addressable: true\` when the app accepts keystrokes for its primary input (Calculator, text editors, browsers, terminals); set \`false\` for AX-click-only UIs.
+\`target.bundle_id\`, \`target.app_name\`, \`intent.goal\`, and \`intent.success_signals\` (non-empty) are REQUIRED. Set \`keyboard_addressable: true\` when the app accepts keystrokes for its primary input (Calculator, text editors, browsers, terminals); set \`false\` for AX-click-only UIs.
 
 \`intent\` describes WHAT the user wanted, NOT how they typed it. The downstream planner uses it to choose the shortest path from the live state — the recording is context, not a literal script.
 - \`goal\`: a single sentence. e.g. "Compute 17 × 23 in Calculator".
@@ -62,6 +66,14 @@ Both expect YAML frontmatter and a body with a title and steps. We extend the st
 TASK NAME: ${input.taskName}
 TASK DESCRIPTION: ${input.taskDescription}
 
+${
+  input.targetMetadata
+    ? `RESOLVED TARGET METADATA FROM THE RECORDING (use these exact values):
+bundle_id: ${input.targetMetadata.bundleId}
+app_name: ${input.targetMetadata.appName}`
+    : "No explicit target metadata was captured in the trajectory. Infer the most likely target app from the task description, screenshots, and AX trees, and keep target.bundle_id and target.app_name internally consistent."
+}
+
 EVENTS (chronological, JSON Lines):
 ${input.events.map((e) => JSON.stringify(e)).join("\n")}
 
@@ -72,6 +84,7 @@ You will see ${input.sampledScreenshotPaths.length} representative screenshots i
 
 Produce a SKILL.md that:
 1. Has frontmatter with \`name\` (kebab-case), \`description\` (one sentence), \`target.bundle_id\`, \`target.app_name\`, \`keyboard_addressable\`, and the full \`intent:\` block as described above.
+   ${input.targetMetadata ? `Use exactly \`${input.targetMetadata.bundleId}\` for \`target.bundle_id\` and exactly \`${input.targetMetadata.appName}\` for \`target.app_name\`.` : ""}
 2. Has a top-level \`# <Title>\` heading.
 3. Has a \`## Goal\` section with one paragraph explaining intent.
 4. Has a \`## Steps\` section with 2-5 SEMANTIC phases describing what the user is doing — NOT a button-by-button replay. Examples of good phase wording: "clear the calculator", "enter the expression", "evaluate the expression", "open the issues list", "decide a label and apply it". Examples of BAD phase wording (do NOT do this): "click the AXButton titled '1'", "press the 7 key", "type *". The downstream planner re-derives the literal sequence from the live screenshot + AX tree at run time; the steps here are context for it, not a script.

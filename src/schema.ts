@@ -71,6 +71,15 @@ export function validateSkillMd(md: string): ValidationResult {
       errors.push(
         "frontmatter `intent.success_signals` must be a non-empty array",
       );
+    else if (
+      intent.success_signals.some(
+        (s) => typeof s !== "string" || s.trim().length === 0,
+      )
+    ) {
+      errors.push(
+        "frontmatter `intent.success_signals` must contain only non-empty strings",
+      );
+    }
   }
   // Body: must have a top-level # Title
   if (!/^#\s+\S/m.test(body)) {
