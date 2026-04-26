@@ -255,7 +255,7 @@ export async function tryAutoStartDaemon(
     };
   }
 
-  console.log("[doctor] starting cua-driver daemon...");
+  console.error("[doctor] starting cua-driver daemon...");
 
   const deadline = Date.now() + 5000;
   const pollMs = 250;

@@ -151,6 +151,34 @@ describe("doctor", () => {
     expect(daemon?.fixHint).toContain("--fix");
   });
 
+  test("doctor report is JSON-serializable with stable shape (consumed by Swift onboarding)", async () => {
+    const report = await runDoctor(
+      makeProbe({
+        anthropicApiKeySet: () => false,
+        cuaDriverDaemonRunning: async () => false,
+      }),
+    );
+    const round = JSON.parse(JSON.stringify(report));
+    expect(typeof round.allOk).toBe("boolean");
+    expect(round.allOk).toBe(false);
+    expect(Array.isArray(round.results)).toBe(true);
+    expect(round.results.length).toBeGreaterThan(0);
+    for (const r of round.results) {
+      expect(typeof r.name).toBe("string");
+      expect(["ok", "fail"]).toContain(r.status);
+      expect(typeof r.detail).toBe("string");
+      // fixHint is only present on failures
+      if (r.status === "fail") expect(typeof r.fixHint).toBe("string");
+    }
+    // Every check the onboarding cares about must be present by name.
+    const names = round.results.map((r: { name: string }) => r.name);
+    expect(names).toContain("cua-driver installed");
+    expect(names).toContain("cua-driver daemon");
+    expect(names).toContain("Screen Recording (via cua-driver)");
+    expect(names).toContain("Accessibility (recorder)");
+    expect(names).toContain("ANTHROPIC_API_KEY");
+  });
+
   test("Screen Recording parser handles cua-driver title-case + JSON formats (regression)", () => {
     // cua-driver's CLI prints '✅ Screen Recording: granted.' (title case, with
     // space). The original parser looked for 'screen_recording' (snake_case)

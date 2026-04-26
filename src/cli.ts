@@ -3,8 +3,10 @@ const VERSION = "0.1.0";
 const USAGE = `Usage: showme <command> [options]
 
 Commands:
-  doctor [--fix]                       Check prereqs (cua-driver, perms, API key).
+  doctor [--fix] [--json]              Check prereqs (cua-driver, perms, API key).
                                        --fix auto-starts the daemon if down.
+                                       --json prints a structured report to stdout
+                                       (status messages go to stderr).
   run <task> [--live] [--cursor]       Complete a macOS task from your prompt
                                        (default: dry-run: plans but does not act).
                                        --cursor shows the agent cursor moving on
@@ -52,6 +54,7 @@ export async function main(args: string[]): Promise<void> {
       } = await import("./doctor.ts");
       const probe = new RealSystemProbe();
       const fix = args.includes("--fix");
+      const json = args.includes("--json");
 
       let report = await runDoctor(probe);
 
@@ -61,14 +64,17 @@ export async function main(args: string[]): Promise<void> {
         );
         if (daemon?.status === "fail") {
           const result = await tryAutoStartDaemon(probe);
-          console.log(result.message);
-          // Re-run the full doctor checks so the user sees the post-fix state
-          // (Screen Recording, etc., depend on daemonRunning).
+          // Status messages on stderr so `--json` stdout stays parseable.
+          console.error(result.message);
           report = await runDoctor(probe);
         }
       }
 
-      console.log(formatDoctorReport(report));
+      if (json) {
+        console.log(JSON.stringify(report));
+      } else {
+        console.log(formatDoctorReport(report));
+      }
       if (!report.allOk) process.exitCode = 1;
       return;
     }
