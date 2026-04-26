@@ -76,6 +76,11 @@ describe("cli", () => {
     expect(text()).toContain("screenshots/replans");
   });
 
+  test("--help advertises doctor --json for the menu-bar onboarding", async () => {
+    await main(["--help"]);
+    expect(text()).toContain("--json");
+  });
+
   test("invalid --max-steps throws", async () => {
     await expect(main(["run", "skill", "--max-steps", "0"])).rejects.toThrow(
       /positive integer/i,
