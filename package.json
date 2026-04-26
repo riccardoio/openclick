@@ -1,7 +1,7 @@
 {
   "name": "showme",
   "version": "0.1.0",
-  "description": "Record a task once, replay it on macOS via cua-driver.",
+  "description": "Run macOS desktop tasks from natural-language prompts via cua-driver.",
   "type": "module",
   "bin": { "showme": "./bin/showme" },
   "scripts": {

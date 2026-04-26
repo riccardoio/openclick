@@ -1,3 +1,3 @@
-{"kind":"click","ts":"2026-04-25T10:00:01Z","pid":501,"x":100,"y":200,"modifiers":[],"screenshot":"step_0001.jpg","post_state":"calc-open"}
-{"kind":"key","ts":"2026-04-25T10:00:02Z","pid":501,"key":"1","modifiers":[],"screenshot":"step_0002.jpg","post_state":"display-1"}
-{"kind":"key","ts":"2026-04-25T10:00:03Z","pid":501,"key":"7","modifiers":[],"screenshot":"step_0003.jpg","post_state":"display-17"}
+{"kind":"click","ts":"2026-04-25T10:00:01Z","pid":501,"x":100,"y":200,"modifiers":[],"screenshot":"step_0001.jpg","post_state":"calc-open","bundle_id":"com.apple.calculator","app_name":"Calculator"}
+{"kind":"key","ts":"2026-04-25T10:00:02Z","pid":501,"key":"1","modifiers":[],"screenshot":"step_0002.jpg","post_state":"display-1","bundle_id":"com.apple.calculator","app_name":"Calculator"}
+{"kind":"key","ts":"2026-04-25T10:00:03Z","pid":501,"key":"7","modifiers":[],"screenshot":"step_0003.jpg","post_state":"display-17","bundle_id":"com.apple.calculator","app_name":"Calculator"}

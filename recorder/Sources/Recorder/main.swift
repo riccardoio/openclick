@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import RecorderCore
 
@@ -53,6 +54,7 @@ let tap = EventTap { event in
 
   ingest.async {
     var axNode: AXNode? = nil
+    let app = pid > 0 ? NSRunningApplication(processIdentifier: pid_t(pid)) : nil
     if pid > 0 {
       if let windows = try? CuaDriver.listWindows(pid: pid), let first = windows.first {
         screenshotter.setTarget(pid: pid, windowId: first.windowId)
@@ -63,7 +65,13 @@ let tap = EventTap { event in
     }
     let screenshotRef = screenshotter.captureNow()
     do {
-      try writer.appendEvent(event, axTree: axNode, screenshotRef: screenshotRef)
+      try writer.appendEvent(
+        event,
+        axTree: axNode,
+        screenshotRef: screenshotRef,
+        bundleId: app?.bundleIdentifier,
+        appName: app?.localizedName
+      )
     } catch {
       FileHandle.standardError.write("append failed: \(error)\n".data(using: .utf8)!)
     }

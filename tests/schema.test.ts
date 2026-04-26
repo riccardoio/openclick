@@ -128,6 +128,27 @@ intent:
     expect(result.errors.some((e) => /success_signals/.test(e))).toBe(true);
   });
 
+  test("non-string intent.success_signals entries fail validation", () => {
+    const result = validateSkillMd(`---
+name: ok
+description: bad signal types
+target:
+  bundle_id: com.example.app
+  app_name: Example
+intent:
+  goal: do a thing
+  success_signals:
+    - done
+    - 123
+---
+# Title
+## Steps
+1. step
+`);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => /success_signals/.test(e))).toBe(true);
+  });
+
   test("rejects coordinate / positional leakage in body", () => {
     const base = `---
 name: ok

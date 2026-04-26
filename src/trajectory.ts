@@ -18,6 +18,8 @@ export interface TrajectoryEvent {
   screenshot?: string;
   ax_tree?: unknown;
   post_state?: string;
+  bundle_id?: string;
+  app_name?: string;
   [key: string]: unknown;
 }
 

@@ -1,6 +1,7 @@
 node_modules/
 .DS_Store
 .bun/
+.build/
 dist/
 recorder/.build/
 recorder/.swiftpm/
