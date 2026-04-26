@@ -1,17 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { type PlannerClient, generatePlan } from "../src/planner.ts";
 
-const SAMPLE_SKILL = `---
-name: calc
-description: Compute 17 times 23 using Calculator
----
-# Calculator: 17x23
-## Steps
-1. Launch Calculator.
-2. Click 1, 7, x, 2, 3, =.
-## Stop conditions
-- Display shows 391.
-`;
+const SAMPLE_TASK =
+  "Use Calculator to compute 17 times 23. Stop when the display shows 391.";
 
 describe("planner", () => {
   test("calls the planner client exactly once and parses returned JSON", async () => {
@@ -40,7 +31,7 @@ describe("planner", () => {
     };
 
     const plan = await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "no relevant apps running",
       claudeClient: client,
     });
@@ -49,9 +40,9 @@ describe("planner", () => {
     expect(plan.steps[0]?.tool).toBe("launch_app");
     expect(plan.steps[0]?.purpose).toBe("open Calculator");
     expect(plan.stopWhen).toBe("display shows 391");
-    // The skill body and current state must be threaded into the prompt the
+    // The task and current state must be threaded into the prompt the
     // planner sends to the LLM so it can produce a grounded plan.
-    expect(lastPrompt).toContain("Calculator: 17x23");
+    expect(lastPrompt).toContain("Use Calculator to compute");
     expect(lastPrompt).toContain("no relevant apps running");
   });
 
@@ -75,12 +66,81 @@ describe("planner", () => {
       },
     };
     const plan = await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
     });
     expect(plan.steps).toHaveLength(1);
     expect(plan.steps[0]?.tool).toBe("press_key");
+  });
+
+  test("extracts the first balanced JSON object when the model emits prose and a second plan", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return [
+          "I should inspect first.",
+          JSON.stringify({
+            steps: [
+              {
+                tool: "click",
+                args: { pid: "$pid", window_id: "$window_id" },
+                purpose: "first plan",
+              },
+            ],
+            stopWhen: "first",
+          }),
+          "Let me restart with a better plan:",
+          JSON.stringify({
+            steps: [
+              {
+                tool: "click",
+                args: { pid: "$pid", window_id: "$window_id" },
+                purpose: "second plan",
+              },
+            ],
+            stopWhen: "second",
+          }),
+        ].join("\n");
+      },
+    };
+    const plan = await generatePlan({
+      taskPrompt: SAMPLE_TASK,
+      currentStateSummary: "",
+      claudeClient: client,
+    });
+    expect(plan.stopWhen).toBe("first");
+    expect(plan.steps[0]?.purpose).toBe("first plan");
+  });
+
+  test("normalizes shifted-symbol press_key steps to hotkey steps", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "press_key",
+              args: { pid: 1, key: "*" },
+              purpose: "press multiply",
+            },
+            {
+              tool: "press_key",
+              args: { pid: 1, key: "A" },
+              purpose: "press uppercase A",
+            },
+          ],
+          stopWhen: "done",
+        });
+      },
+    };
+    const plan = await generatePlan({
+      taskPrompt: SAMPLE_TASK,
+      currentStateSummary: "",
+      claudeClient: client,
+    });
+    expect(plan.steps[0]?.tool).toBe("hotkey");
+    expect(plan.steps[0]?.args).toEqual({ pid: 1, keys: ["shift", "8"] });
+    expect(plan.steps[1]?.tool).toBe("hotkey");
+    expect(plan.steps[1]?.args).toEqual({ pid: 1, keys: ["shift", "a"] });
   });
 
   test("throws when the response is not valid JSON", async () => {
@@ -91,7 +151,7 @@ describe("planner", () => {
     };
     await expect(
       generatePlan({
-        skillMd: SAMPLE_SKILL,
+        taskPrompt: SAMPLE_TASK,
         currentStateSummary: "",
         claudeClient: client,
       }),
@@ -106,7 +166,7 @@ describe("planner", () => {
     };
     await expect(
       generatePlan({
-        skillMd: SAMPLE_SKILL,
+        taskPrompt: SAMPLE_TASK,
         currentStateSummary: "",
         claudeClient: client,
       }),
@@ -124,11 +184,71 @@ describe("planner", () => {
     };
     await expect(
       generatePlan({
-        skillMd: SAMPLE_SKILL,
+        taskPrompt: SAMPLE_TASK,
         currentStateSummary: "",
         claudeClient: client,
       }),
-    ).rejects.toThrow(/args|purpose/i);
+    ).rejects.toThrow(/args/i);
+  });
+
+  test("fills a default purpose when the model omits one", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [{ tool: "click", args: { pid: 1, x: 10, y: 20 } }],
+          stopWhen: "done",
+        });
+      },
+    };
+    const plan = await generatePlan({
+      taskPrompt: SAMPLE_TASK,
+      currentStateSummary: "",
+      claudeClient: client,
+    });
+    expect(plan.steps[0]?.purpose).toBe("run click");
+  });
+
+  test("throws when model emits more steps than the batch cap", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            { tool: "click", args: {}, purpose: "one" },
+            { tool: "click", args: {}, purpose: "two" },
+          ],
+          stopWhen: "done",
+        });
+      },
+    };
+    await expect(
+      generatePlan({
+        taskPrompt: SAMPLE_TASK,
+        currentStateSummary: "",
+        claudeClient: client,
+        maxStepsPerPlan: 1,
+      }),
+    ).rejects.toThrow(/max allowed/i);
+  });
+
+  test("accepts non-action statuses for done or blocked states", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          status: "done",
+          steps: [],
+          stopWhen: "display shows 391",
+          message: "already complete",
+        });
+      },
+    };
+    const plan = await generatePlan({
+      taskPrompt: SAMPLE_TASK,
+      currentStateSummary: "display shows 391",
+      claudeClient: client,
+    });
+    expect(plan.status).toBe("done");
+    expect(plan.steps).toHaveLength(0);
+    expect(plan.message).toBe("already complete");
   });
 
   test("threads executed-step history and live AX tree into the replan prompt", async () => {
@@ -140,7 +260,7 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
       replanContext: {
@@ -183,19 +303,19 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
     });
-    // The system-guidance preamble (everything before "SKILL.md:") is the
+    // The system-guidance preamble (everything before "User task:") is the
     // first principles block we shipped — extract it so we measure that, not
-    // the SKILL.md / replan / state appendices.
-    const guidance = lastPrompt.split("\nSKILL.md:")[0] ?? "";
+    // the task / replan / state appendices.
+    const guidance = lastPrompt.split("\nUser task:")[0] ?? "";
     const guidanceLines = guidance.split("\n").length;
     // ~50 lines is a generous ceiling for "first principles, not a tutorial".
     expect(guidanceLines).toBeLessThanOrEqual(50);
-    // Refers to all three planner inputs.
-    expect(guidance).toMatch(/intent/i);
+    // Refers to the live planning inputs.
+    expect(guidance).toMatch(/user's task/i);
     expect(guidance).toMatch(/screenshot/i);
     expect(guidance).toMatch(/AX tree/i);
     // No app-specific hand-holding.
@@ -212,7 +332,7 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
       replanContext: {
@@ -240,7 +360,7 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "Calculator window 42 visible",
       claudeClient: client,
       replanContext: {
@@ -268,7 +388,7 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
       imagePaths: ["/tmp/showme-discovery-abc.png"],
@@ -285,7 +405,7 @@ describe("planner", () => {
       },
     };
     await generatePlan({
-      skillMd: SAMPLE_SKILL,
+      taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
     });

@@ -91,6 +91,48 @@ intent:
     expect(fakeClaude.callsMade).toBe(2);
   });
 
+  test("passes resolved target metadata to Claude when the trajectory contains it", async () => {
+    const trajectoryDir = join(import.meta.dir, "fixtures/calc/trajectory");
+    let firstPrompt = "";
+    const fakeClaude = {
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      async generate(args: any) {
+        firstPrompt ||= args.prompt;
+        return `---
+name: calc
+description: Use Calculator to compute 17 times 23.
+target:
+  bundle_id: com.apple.calculator
+  app_name: Calculator
+keyboard_addressable: true
+intent:
+  goal: Compute 17 × 23 in Calculator.
+  success_signals:
+    - The display shows 391.
+---
+# Calculator: 17 × 23
+## Goal
+Open Calculator and compute 17 × 23.
+## Steps
+1. Enter the expression.
+## Stop conditions
+- The display shows the result.
+`;
+      },
+    };
+
+    await compileSkillMd({
+      trajectoryDir,
+      skillName: "calc-target-metadata",
+      claudeClient: fakeClaude,
+      outputDir: tmpOut(),
+    });
+
+    expect(firstPrompt).toContain("bundle_id: com.apple.calculator");
+    expect(firstPrompt).toContain("app_name: Calculator");
+    expect(firstPrompt).toContain("use these exact values");
+  });
+
   test("throws CompileValidationError if both attempts are invalid (no file written)", async () => {
     const trajectoryDir = join(import.meta.dir, "fixtures/calc/trajectory");
     const out = tmpOut();

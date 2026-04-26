@@ -1,9 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StepRunner } from "../src/executor.ts";
 import type { PlannerClient } from "../src/planner.ts";
 import { type QueryFn, runSkill, verifyStopWhen } from "../src/run.ts";
+
+let originalExitCode: typeof process.exitCode;
+
+beforeEach(() => {
+  originalExitCode = process.exitCode;
+  process.exitCode = 0;
+});
+
+afterEach(() => {
+  process.exitCode = originalExitCode ?? 0;
+});
 
 describe("run", () => {
   test("--dry-run blocks tool execution via PreToolUse hook", async () => {
@@ -30,8 +41,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "do it",
+      taskPrompt: "do it",
       live: false,
       maxSteps: 50,
       queryFn: fakeQuery,
@@ -59,8 +69,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "do it",
+      taskPrompt: "do it",
       live: true,
       maxSteps: 50,
       queryFn: fakeQuery,
@@ -79,8 +88,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       maxSteps: 7,
       queryFn: fakeQuery,
@@ -97,8 +105,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       cursor: true,
       maxSteps: 50,
@@ -120,8 +127,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: false,
       cursor: true,
       maxSteps: 50,
@@ -143,8 +149,7 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       maxSteps: 50,
       queryFn: fakeQuery,
@@ -168,8 +173,7 @@ describe("run", () => {
 
     await expect(
       runSkill({
-        skillRoot: dir,
-        userPrompt: "x",
+        taskPrompt: "x",
         live: true,
         cursor: true,
         maxSteps: 50,
@@ -195,15 +199,39 @@ describe("run", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       maxSteps: 50,
       queryFn: fakeQuery,
     });
     expect(registered).toHaveProperty("cua-driver");
-    expect(registered["cua-driver"].command).toBe("cua-driver");
+    expect(registered["cua-driver"].command).toMatch(/cua-driver$/);
     expect(registered["cua-driver"].args).toEqual(["mcp"]);
+  });
+
+  test("single Ctrl-C exits 130 after cleanup instead of reporting success", async () => {
+    const dir = makeFakeSkill("abort1");
+    const toggleCalls: boolean[] = [];
+
+    const fakeQuery: QueryFn = async function* () {
+      yield { type: "tool_use" };
+      process.emit("SIGINT");
+      yield { type: "result", result: "ignored-after-abort" };
+    };
+
+    await runSkill({
+      taskPrompt: "x",
+      live: true,
+      cursor: true,
+      maxSteps: 50,
+      queryFn: fakeQuery,
+      cursorToggleFn: async (enabled) => {
+        toggleCalls.push(enabled);
+      },
+    });
+
+    expect(process.exitCode).toBe(130);
+    expect(toggleCalls).toEqual([true, false]);
   });
 });
 
@@ -250,8 +278,7 @@ describe("run --fast", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       maxSteps: 50,
       fast: true,
@@ -289,8 +316,7 @@ describe("run --fast", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: false,
       maxSteps: 50,
       fast: true,
@@ -326,8 +352,7 @@ describe("run --fast", () => {
     };
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       maxSteps: 50,
       fast: true,
@@ -340,34 +365,87 @@ describe("run --fast", () => {
     expect(runnerCalls).toBe(3);
   });
 
-  test("--fast threads SKILL.md intent block into the planner prompt", async () => {
-    const dir = join(
-      "/tmp",
-      `showme-test-intent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    );
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "SKILL.md"),
-      `---
-name: intent-test
-description: test
-target:
-  bundle_id: com.example.fake
-  app_name: Fake
-intent:
-  goal: do the special thing
-  subgoals:
-    - phase alpha
-    - phase omega
-  success_signals:
-    - the special thing is done
----
-# t
-## Steps
-1. s
-`,
-    );
+  test("--fast returns a non-zero exit code when execution still fails", async () => {
+    const dir = makeFakeSkill("fast-fail-exit");
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 1, element_index: 99 },
+              purpose: "click missing target",
+            },
+          ],
+          stopWhen: "done",
+        });
+      },
+    };
+    const runner: StepRunner = async () => ({
+      ok: false,
+      error: "element_index 99 not found",
+    });
 
+    await runSkill({
+      taskPrompt: "x",
+      live: true,
+      maxSteps: 50,
+      fast: true,
+      maxReplans: 0,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("--fast honors maxSteps as a total step budget", async () => {
+    const dir = makeFakeSkill("fast-max-steps");
+    const toolsRun: string[] = [];
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 1, element_index: 1 },
+              purpose: "one",
+            },
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 1, element_index: 2 },
+              purpose: "two",
+            },
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 1, element_index: 3 },
+              purpose: "three",
+            },
+          ],
+          stopWhen: "done",
+        });
+      },
+    };
+    const runner: StepRunner = async (step) => {
+      toolsRun.push(step.purpose);
+      return { ok: true };
+    };
+
+    await runSkill({
+      taskPrompt: "x",
+      live: true,
+      maxSteps: 2,
+      fast: true,
+      maxReplans: 0,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(process.exitCode).toBe(1);
+    expect(toolsRun).toEqual(["one", "two"]);
+  });
+
+  test("--fast threads the user task into the planner prompt", async () => {
     let lastPrompt = "";
     const planner: PlannerClient = {
       async generatePlanText(prompt) {
@@ -378,10 +456,7 @@ intent:
     const runner: StepRunner = async () => ({ ok: true });
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
-      // Dry-run skips pre-discovery (avoiding cua-driver) but still threads
-      // the intent block into the planner prompt.
+      taskPrompt: "do the special thing in Fake",
       live: false,
       maxSteps: 50,
       fast: true,
@@ -389,9 +464,32 @@ intent:
       stepRunner: runner,
     });
 
-    expect(lastPrompt).toContain("Goal: do the special thing");
-    expect(lastPrompt).toContain("phase alpha");
-    expect(lastPrompt).toContain("the special thing is done");
+    expect(lastPrompt).toContain("User task:");
+    expect(lastPrompt).toContain("do the special thing in Fake");
+    expect(lastPrompt).not.toContain("SKILL.md:");
+  });
+
+  test("--fast threads explicit criteria into the planner prompt", async () => {
+    let lastPrompt = "";
+    const planner: PlannerClient = {
+      async generatePlanText(prompt) {
+        lastPrompt = prompt;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+
+    await runSkill({
+      taskPrompt: "draw a clock",
+      criteria: "clock must show 10:10 and look clean",
+      live: false,
+      maxSteps: 50,
+      fast: true,
+      plannerClient: planner,
+      stepRunner: async () => ({ ok: true }),
+    });
+
+    expect(lastPrompt).toContain("User success criteria:");
+    expect(lastPrompt).toContain("clock must show 10:10 and look clean");
   });
 
   test("--fast --cursor toggles the overlay on/off around the run", async () => {
@@ -406,8 +504,7 @@ intent:
     const runner: StepRunner = async () => ({ ok: true });
 
     await runSkill({
-      skillRoot: dir,
-      userPrompt: "x",
+      taskPrompt: "x",
       live: true,
       cursor: true,
       maxSteps: 50,
@@ -434,7 +531,7 @@ describe("verifyStopWhen", () => {
     };
     const result = await verifyStopWhen({
       plannerClient: planner,
-      stopWhen: "display shows 391",
+      stopWhen: "calculation is complete",
       pid: 1,
       windowId: 2,
       settleMs: 0,
@@ -448,6 +545,209 @@ describe("verifyStopWhen", () => {
     expect(result.explanation).toMatch(/391/);
   });
 
+  test("returns deterministic yes from AX without calling the model", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        throw new Error("should not call model");
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "display shows 391",
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({
+        ok: true,
+        stdout: "- [4] AXStaticText (391) id=display\n",
+      }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("yes");
+    expect(result.explanation).toContain("391");
+  });
+
+  test("does not deterministically accept browser search keywords from AX", async () => {
+    let modelCalled = false;
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        modelCalled = true;
+        return "UNKNOWN — address bar text alone does not prove results are visible";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "Google search results for OpenAI are visible",
+      intent: {
+        goal: "open Safari and search Google for OpenAI",
+        successSignals: ["Google search results for OpenAI are visible"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({
+        ok: true,
+        stdout:
+          '- [1] AXTextField = "https://www.google.com/search?q=OpenAI"\n',
+      }),
+      captureScreenshot: noShot,
+    });
+    expect(modelCalled).toBe(true);
+    expect(result.verdict).toBe("unknown");
+  });
+
+  test("downgrades visual-artifact YES replies that do not mention the artifact", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "YES — Figma is open with a design file visible on the canvas.";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      intent: {
+        goal: "open Figma, create a new design file, and draw a simple analog clock",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+    expect(result.explanation).toContain("clock");
+  });
+
+  test("downgrades visual-artifact YES replies that mention only the object", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "YES — a clock drawing with a circular outline and hands is visible on the canvas.";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      intent: {
+        goal: "open Figma, create a new design file, and draw a simple analog clock",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+  });
+
+  test("accepts visual-artifact YES replies that confirm requested attributes", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "YES — a decent analog clock is visible with a circular outline, two hands, and hour marks on the canvas.";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      intent: {
+        goal: "draw a decent analog clock with a circular outline, two hands, and hour marks",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("yes");
+  });
+
+  test("accepts structured verifier JSON when explicit criteria are met", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          verdict: "yes",
+          criteria_met: true,
+          missing: [],
+          quality_issues: [],
+          explanation:
+            "The clean analog clock is showing 10:10 and has hands and hour marks.",
+        });
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      criteria:
+        "clock must be clean, show 10:10, have two hands, and visible hour marks",
+      intent: {
+        goal: "draw a clean analog clock showing 10:10",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("yes");
+    expect(result.explanation).toContain("10:10");
+  });
+
+  test("rejects structured verifier JSON when explicit criteria are missing", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          verdict: "yes",
+          criteria_met: false,
+          missing: ["12 visible hour marks"],
+          quality_issues: ["rough outline"],
+          explanation:
+            "A rough clock is visible, but it misses requested marks.",
+        });
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      criteria: "clock must have 12 visible hour marks",
+      intent: {
+        goal: "draw a clean analog clock",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+    expect(result.explanation).toContain("12 visible hour marks");
+  });
+
+  test("downgrades visual-artifact YES replies that describe poor quality", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return "YES — a rough analog clock is visible with a circular outline and two hands, but the hour marks are misaligned.";
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "clock drawing is visible on the canvas",
+      intent: {
+        goal: "draw a decent analog clock with a circular outline, two hands, and hour marks",
+        successSignals: ["clock drawing is visible on the canvas"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({ ok: true, stdout: "- [0] AXWindow Figma\n" }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+  });
+
   test("returns verdict=no when the model replies NO", async () => {
     const planner: PlannerClient = {
       async generatePlanText() {
@@ -456,7 +756,7 @@ describe("verifyStopWhen", () => {
     };
     const result = await verifyStopWhen({
       plannerClient: planner,
-      stopWhen: "display shows 391",
+      stopWhen: "calculation is complete",
       pid: 1,
       windowId: 2,
       settleMs: 0,
@@ -499,13 +799,13 @@ describe("verifyStopWhen", () => {
     };
     await verifyStopWhen({
       plannerClient: planner,
-      stopWhen: "display shows 391",
+      stopWhen: "calculation is complete",
       pid: 1,
       windowId: 2,
       settleMs: 0,
       intent: {
         goal: "Compute 17 × 23",
-        successSignals: ["display reads 391"],
+        successSignals: ["calculator result is visible"],
       },
       executedStepPurposes: ["press 1", "press 7", "press equals"],
       snapshot: async () => ({
@@ -514,10 +814,10 @@ describe("verifyStopWhen", () => {
       }),
       captureScreenshot: noShot,
     });
-    expect(capturedPrompt).toContain("display shows 391");
+    expect(capturedPrompt).toContain("calculation is complete");
     expect(capturedPrompt).toContain("AXStaticText");
     expect(capturedPrompt).toContain("Compute 17 × 23");
-    expect(capturedPrompt).toContain("display reads 391");
+    expect(capturedPrompt).toContain("calculator result is visible");
     expect(capturedPrompt).toContain("press equals");
     expect(capturedPrompt).toMatch(/UNKNOWN/);
   });
@@ -555,7 +855,7 @@ describe("verifyStopWhen", () => {
     };
     await verifyStopWhen({
       plannerClient: planner,
-      stopWhen: "display shows 391",
+      stopWhen: "calculation is complete",
       pid: 1,
       windowId: 2,
       settleMs: 0,

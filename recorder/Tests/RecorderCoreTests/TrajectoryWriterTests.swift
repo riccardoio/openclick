@@ -8,7 +8,7 @@ final class TrajectoryWriterTests: XCTestCase {
     let event = Event.click(ClickEvent(
       ts: "2026-04-25T10:00:00Z", pid: 1, windowId: 1, x: 1, y: 1, modifiers: []
     ))
-    try writer.appendEvent(event, axTree: nil, screenshotRef: nil)
+    try writer.appendEvent(event, axTree: nil, screenshotRef: nil, bundleId: nil, appName: nil)
     try writer.finalize()
 
     let lines = try String(contentsOf: dir.appendingPathComponent("events.jsonl"))
@@ -26,7 +26,13 @@ final class TrajectoryWriterTests: XCTestCase {
       ts: "2026-04-25T10:00:00Z", pid: 71422, windowId: 8104, x: 12, y: 34, modifiers: ["cmd"]
     ))
     let ax = AXNode(role: "AXButton", title: "Labels", children: [])
-    try writer.appendEvent(event, axTree: ax, screenshotRef: "step_0001.jpg")
+    try writer.appendEvent(
+      event,
+      axTree: ax,
+      screenshotRef: "step_0001.jpg",
+      bundleId: "com.apple.calculator",
+      appName: "Calculator"
+    )
     try writer.finalize()
 
     let line = try XCTUnwrap(
@@ -47,6 +53,8 @@ final class TrajectoryWriterTests: XCTestCase {
     XCTAssertEqual(axDict["role"] as? String, "AXButton")
     XCTAssertEqual(axDict["title"] as? String, "Labels")
     XCTAssertEqual(obj["screenshot"] as? String, "step_0001.jpg")
+    XCTAssertEqual(obj["bundle_id"] as? String, "com.apple.calculator")
+    XCTAssertEqual(obj["app_name"] as? String, "Calculator")
   }
 
   func testFinalizeWritesSessionJson() throws {
@@ -72,7 +80,9 @@ final class TrajectoryWriterTests: XCTestCase {
     let writer = try TrajectoryWriter(directory: dir, taskName: "x", taskDescription: "x")
     try writer.finalize()
     let event = Event.key(KeyEvent(ts: "x", pid: 1, key: "a", modifiers: []))
-    XCTAssertNoThrow(try writer.appendEvent(event, axTree: nil, screenshotRef: nil))
+    XCTAssertNoThrow(
+      try writer.appendEvent(event, axTree: nil, screenshotRef: nil, bundleId: nil, appName: nil)
+    )
   }
 
   func testConcurrentAppendsAndCounterAreSerialized() throws {
@@ -85,7 +95,13 @@ final class TrajectoryWriterTests: XCTestCase {
         let event = Event.click(ClickEvent(
           ts: "2026-04-25T10:00:00Z", pid: 1, windowId: i, x: 0, y: 0, modifiers: []
         ))
-        try? writer.appendEvent(event, axTree: nil, screenshotRef: writer.nextScreenshotName())
+        try? writer.appendEvent(
+          event,
+          axTree: nil,
+          screenshotRef: writer.nextScreenshotName(),
+          bundleId: nil,
+          appName: nil
+        )
       }
     }
     group.wait()

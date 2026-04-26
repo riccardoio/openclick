@@ -31,6 +31,26 @@ describe("prompt", () => {
     expect(prompt.text).toContain("keyboard_addressable");
   });
 
+  test("threads resolved target metadata into the prompt when available", () => {
+    const prompt = buildCompilePrompt({
+      taskName: "calc",
+      taskDescription: "calculator 17 times 23",
+      events: [],
+      sampledScreenshotPaths: [],
+      truncatedAxTrees: [],
+      targetMetadata: {
+        bundleId: "com.apple.calculator",
+        appName: "Calculator",
+      },
+    });
+    expect(prompt.text).toContain(
+      "RESOLVED TARGET METADATA FROM THE RECORDING",
+    );
+    expect(prompt.text).toContain("bundle_id: com.apple.calculator");
+    expect(prompt.text).toContain("app_name: Calculator");
+    expect(prompt.text).toContain("Use exactly `com.apple.calculator`");
+  });
+
   test("throws over token cap", () => {
     const huge = "x".repeat(TOKEN_HARD_CAP * 5);
     expect(() =>

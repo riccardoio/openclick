@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   type StepRunner,
+  classifyToolSafety,
   executePlan,
   parseAxTreeIndex,
   resolveSelector,
+  runCuaDriverStep,
 } from "../src/executor.ts";
 import type { Plan } from "../src/planner.ts";
 
@@ -24,6 +26,52 @@ const SIMPLE_PLAN: Plan = {
 };
 
 describe("executor", () => {
+  test("classifies foreground-only primitives out of shared-seat mode", () => {
+    expect(classifyToolSafety("click").category).toBe("background_safe");
+    expect(classifyToolSafety("mcp__cua-driver__move_cursor").category).toBe(
+      "foreground_required",
+    );
+    expect(classifyToolSafety("paste_svg").category).toBe(
+      "foreground_required",
+    );
+  });
+
+  test("blocks foreground-only primitives by default", async () => {
+    const result = await runCuaDriverStep({
+      tool: "move_cursor",
+      args: { x: 10, y: 10 },
+      purpose: "move the real cursor",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("foreground-required tool blocked");
+  });
+
+  test("executePlan enforces shared-seat policy before injected runners", async () => {
+    let called = false;
+    const result = await executePlan(
+      {
+        steps: [
+          {
+            tool: "move_cursor",
+            args: { x: 10, y: 10 },
+            purpose: "move the real cursor",
+          },
+        ],
+        stopWhen: "cursor moved",
+      },
+      {
+        stepRunner: async () => {
+          called = true;
+          return { ok: true };
+        },
+      },
+    );
+
+    expect(called).toBe(false);
+    expect(result.error).toContain("foreground-required tool blocked");
+  });
+
   test("walks the plan via the injected step runner", async () => {
     const calls: string[] = [];
     const runner: StepRunner = async (step) => {
@@ -50,6 +98,22 @@ describe("executor", () => {
     expect(result.stepsExecuted).toBe(0);
   });
 
+  test("maxSteps stops execution once the budget is exhausted", async () => {
+    const calls: string[] = [];
+    const runner: StepRunner = async (step) => {
+      calls.push(step.tool);
+      return { ok: true, stdout: "{}" };
+    };
+    const result = await executePlan(SIMPLE_PLAN, {
+      stepRunner: runner,
+      maxSteps: 1,
+    });
+    expect(calls).toEqual(["launch_app"]);
+    expect(result.stepsExecuted).toBe(1);
+    expect(result.failedStepIndex).toBe(1);
+    expect(result.error).toMatch(/max step budget exhausted/i);
+  });
+
   test("aborts on the first failed step and returns the error", async () => {
     const runner: StepRunner = async (step) => {
       if (step.tool === "click")
@@ -60,6 +124,227 @@ describe("executor", () => {
     expect(result.stepsExecuted).toBe(1);
     expect(result.failedStepIndex).toBe(1);
     expect(result.error).toMatch(/element_index 5/);
+  });
+
+  test("normalizes shifted-symbol press_key steps before running cua-driver", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "press_key",
+          args: { pid: 1, key: "*" },
+          purpose: "press multiply",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, { stepRunner: runner });
+    expect(calls).toEqual([
+      { tool: "hotkey", args: { pid: 1, keys: ["shift", "8"] } },
+    ]);
+  });
+
+  test("falls back to key sequence for type_text when no editable role is visible", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "type_text",
+          args: { pid: 1, text: "18*24\n" },
+          purpose: "enter expression",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [1] AXButton (1) id=One\n"),
+      },
+    });
+    expect(calls).toEqual([
+      { tool: "press_key", args: { pid: 1, key: "1" } },
+      { tool: "press_key", args: { pid: 1, key: "8" } },
+      { tool: "hotkey", args: { pid: 1, keys: ["shift", "8"] } },
+      { tool: "press_key", args: { pid: 1, key: "2" } },
+      { tool: "press_key", args: { pid: 1, key: "4" } },
+      { tool: "press_key", args: { pid: 1, key: "return" } },
+    ]);
+  });
+
+  test("keeps type_text when an editable role is visible", async () => {
+    const calls: string[] = [];
+    const runner: StepRunner = async (step) => {
+      calls.push(step.tool);
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "type_text",
+          args: { pid: 1, text: "hello" },
+          purpose: "enter query",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [1] AXTextField (Search) id=search\n"),
+      },
+    });
+    expect(calls).toEqual(["type_text"]);
+  });
+
+  test("keeps non-numeric type_text even when AX is sparse", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "type_text",
+          args: { pid: 1, text: "https://www.google.com/search?q=OpenAI\n" },
+          purpose: "enter URL",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2, axIndex: [] },
+    });
+    expect(calls).toEqual([
+      {
+        tool: "type_text",
+        args: { pid: 1, text: "https://www.google.com/search?q=OpenAI\n" },
+      },
+    ]);
+  });
+
+  test("converts keyboard steps to AX button clicks when matching buttons are visible", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "press_key",
+          args: { pid: 1, key: "2" },
+          purpose: "press 2",
+        },
+        {
+          tool: "hotkey",
+          args: { pid: 1, keys: ["shift", "8"] },
+          purpose: "press multiply",
+        },
+        {
+          tool: "press_key",
+          args: { pid: 1, key: "return" },
+          purpose: "press equals",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex(
+          [
+            "- [15] AXButton (2) id=Two",
+            "- [9] AXButton (Multiply) id=Multiply",
+            "- [21] AXButton (Equals) id=Equals",
+          ].join("\n"),
+        ),
+      },
+    });
+    expect(calls).toEqual([
+      { tool: "click", args: { pid: 1, window_id: 2, element_index: 15 } },
+      { tool: "click", args: { pid: 1, window_id: 2, element_index: 9 } },
+      { tool: "click", args: { pid: 1, window_id: 2, element_index: 21 } },
+    ]);
+  });
+
+  test("repairs drag window_id from context before running", async () => {
+    let captured: Record<string, unknown> = {};
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "drag",
+          args: {
+            pid: "$pid",
+            from: { x: 10, y: 20 },
+            to: { x: 100, y: 120 },
+          },
+          purpose: "drag on canvas",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(captured).toEqual({
+      pid: 1,
+      window_id: 2,
+      from: { x: 10, y: 20 },
+      to: { x: 100, y: 120 },
+    });
+  });
+
+  test("preserves screenshot dimensions for scaled drag steps", async () => {
+    let captured: Record<string, unknown> = {};
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "drag",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            from: { x: 10, y: 20 },
+            to: { x: 100, y: 120 },
+            screenshot_width: 640,
+            screenshot_height: 480,
+          },
+          purpose: "draw a line on canvas",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1, windowId: 2 },
+    });
+    expect(captured.screenshot_width).toBe(640);
+    expect(captured.screenshot_height).toBe(480);
   });
 
   test("substitutes $pid and $window_id from a previous launch_app result", async () => {
@@ -239,6 +524,35 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(captured.window_id).toBe(3745);
   });
 
+  test("seeds pid and windowId from get_window_state args when stdout is text", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 14002, window_id: 3745 },
+          purpose: "snapshot",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", __selector: { title: "2", role: "AXButton" } },
+          purpose: "press 2",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "click") captured = step.args;
+      if (step.tool === "get_window_state")
+        return { ok: true, stdout: "- [16] AXButton (2) id=Two\n" };
+      return { ok: true };
+    };
+    await executePlan(plan, { stepRunner: runner });
+    expect(captured.pid).toBe(14002);
+    expect(captured.window_id).toBe(3745);
+    expect(captured.element_index).toBe(16);
+  });
+
   test("does not mutate the caller's initialContext object", async () => {
     const original = {
       pid: 1,
@@ -288,6 +602,15 @@ describe("parseAxTreeIndex", () => {
     expect(entries[1]?.ordinal).toBe(1);
   });
 
+  test("parses quoted AX titles used by macOS menu bar items", () => {
+    const entries = parseAxTreeIndex(`
+- AXApplication "Figma"
+  - [4] AXMenuBar actions=[AXCancel]
+    - [9] AXMenuBarItem "File" actions=[AXCancel, AXPick]
+`);
+    expect(entries.find((entry) => entry.index === 9)?.title).toBe("File");
+  });
+
   test("returns empty array on empty input", () => {
     expect(parseAxTreeIndex("").length).toBe(0);
     expect(parseAxTreeIndex("not a tree").length).toBe(0);
@@ -317,6 +640,10 @@ describe("resolveSelector", () => {
     expect(resolveSelector(entries, { ax_id: "ok1" })).toBe(1);
     expect(resolveSelector(entries, { ax_id: "OK2" })).toBe(2);
     expect(resolveSelector(entries, { ax_id: "Display" })).toBe(4);
+  });
+
+  test("numeric ax_id falls back to element index when the planner confuses [N] for id", () => {
+    expect(resolveSelector(entries, { ax_id: "2" })).toBe(2);
   });
 
   test("title alone is ambiguous when multiple entries match → null", () => {
@@ -427,6 +754,36 @@ describe("refreshBeforeAxClick", () => {
     ]);
     expect(calls[1]?.args.element_index).toBe(12);
     expect(calls[3]?.args.element_index).toBe(42);
+  });
+
+  test("clears stale AX state when refresh returns no addressable entries", async () => {
+    let capturedClickArgs: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, __title: "5" },
+          purpose: "press 5",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "get_window_state") {
+        return { ok: true, stdout: "window state unavailable\n" };
+      }
+      capturedClickArgs = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex("- [12] AXButton (5) id=Five\n"),
+      },
+    });
+    expect(capturedClickArgs.element_index).toBeUndefined();
   });
 
   test("refreshBeforeAxClick=false disables the auto-refresh", async () => {
