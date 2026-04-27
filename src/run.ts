@@ -3496,7 +3496,8 @@ function meaningfulWindowTokens(text: string): string[] {
   ]);
   const seen = new Set<string>();
   const tokens: string[] = [];
-  for (const token of text.toLowerCase().match(/[a-z0-9][a-z0-9._'-]*/g) ?? []) {
+  for (const token of text.toLowerCase().match(/[a-z0-9][a-z0-9._'-]*/g) ??
+    []) {
     if (token.length < 3 || stopwords.has(token) || seen.has(token)) continue;
     if (/^(com|org|io|net)\./.test(token)) continue;
     seen.add(token);

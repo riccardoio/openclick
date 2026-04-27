@@ -1204,9 +1204,11 @@ function findWindowLeaseReplacement(
     .filter(isUsableWindowRecord)
     .filter((window) => {
       const candidateTitle =
-        typeof window.title === "string" ? window.title.trim().toLowerCase() : "";
+        typeof window.title === "string"
+          ? window.title.trim().toLowerCase()
+          : "";
       return candidateTitle === title;
-  });
+    });
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -1265,8 +1267,7 @@ function windowRecordScore(window: Record<string, unknown>): number {
   const titleBonus =
     typeof window.title === "string" && window.title.trim() ? 100_000 : 0;
   const visibleBonus = window.is_on_screen === false ? -2_000_000 : 2_000_000;
-  const spaceBonus =
-    window.on_current_space === false ? -2_000_000 : 2_000_000;
+  const spaceBonus = window.on_current_space === false ? -2_000_000 : 2_000_000;
   const focusedBonus =
     window.is_focused === true ||
     window.focused === true ||
@@ -1276,7 +1277,13 @@ function windowRecordScore(window: Record<string, unknown>): number {
       : 0;
   const zBonus = Number(window.z_index ?? 0) * 100_000;
   return (
-    usable + focusedBonus + visibleBonus + spaceBonus + zBonus + titleBonus + area
+    usable +
+    focusedBonus +
+    visibleBonus +
+    spaceBonus +
+    zBonus +
+    titleBonus +
+    area
   );
 }
 
