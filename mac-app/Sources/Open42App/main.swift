@@ -238,16 +238,18 @@ final class ChatBarController: NSObject {
     runningProcess = process
 
     process.terminationHandler = { [weak self] process in
-      DispatchQueue.main.async {
-        self?.stopStreaming()
-        self?.activityLog.finish(exitCode: Int(process.terminationStatus))
-        self?.viewModel.isRunning = false
-        self?.viewModel.status =
-          process.terminationStatus == 0
+      let terminationStatus = process.terminationStatus
+      guard let controller = self else { return }
+      Task { @MainActor [controller, terminationStatus] in
+        controller.stopStreaming()
+        controller.activityLog.finish(exitCode: Int(terminationStatus))
+        controller.viewModel.isRunning = false
+        controller.viewModel.status =
+          terminationStatus == 0
           ? "Finished"
-          : "open42 exited with status \(process.terminationStatus)"
-        self?.runningProcess = nil
-        self?.show()
+          : "open42 exited with status \(terminationStatus)"
+        controller.runningProcess = nil
+        controller.show()
       }
     }
 
@@ -280,12 +282,14 @@ final class ChatBarController: NSObject {
         handle.readabilityHandler = nil
         return
       }
-      let text = String(decoding: data, as: UTF8.self)
-      DispatchQueue.main.async {
-        for rawLine in text.components(separatedBy: .newlines) {
-          let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-          guard !line.isEmpty else { continue }
-          self?.activityLog.append(line)
+      let lines = String(decoding: data, as: UTF8.self)
+        .components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      guard !lines.isEmpty, let controller = self else { return }
+      Task { @MainActor [controller, lines] in
+        for line in lines {
+          controller.activityLog.append(line)
         }
       }
     }
@@ -718,12 +722,14 @@ final class ActivityLogController: NSObject {
         handle.readabilityHandler = nil
         return
       }
-      let text = String(decoding: data, as: UTF8.self)
-      DispatchQueue.main.async {
-        for rawLine in text.components(separatedBy: .newlines) {
-          let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-          guard !line.isEmpty else { continue }
-          self?.viewModel.appendLog(line)
+      let lines = String(decoding: data, as: UTF8.self)
+        .components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      guard !lines.isEmpty, let controller = self else { return }
+      Task { @MainActor [controller, lines] in
+        for line in lines {
+          controller.viewModel.appendLog(line)
         }
       }
     }

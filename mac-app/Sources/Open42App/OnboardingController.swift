@@ -152,10 +152,11 @@ final class OnboardingController: NSObject {
     let env = ProcessInfo.processInfo.environment
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       let result = OnboardingController.spawnDoctorJSON(env: env)
-      DispatchQueue.main.async {
-        self?.isChecking = false
-        self?.viewModel.isChecking = false
-        self?.applyDoctorResult(result)
+      guard let controller = self else { return }
+      Task { @MainActor [controller, result] in
+        controller.isChecking = false
+        controller.viewModel.isChecking = false
+        controller.applyDoctorResult(result)
       }
     }
   }
@@ -349,7 +350,7 @@ final class OnboardingController: NSObject {
 
   // MARK: - Subprocess
 
-  private enum DoctorRunResult {
+  private enum DoctorRunResult: Sendable {
     case ok(DoctorReport)
     case launchFailure(String)
     case parseFailure(String)
@@ -422,12 +423,12 @@ extension OnboardingController: NSWindowDelegate {
 
 // MARK: - Doctor JSON shape
 
-struct DoctorReport: Decodable {
+struct DoctorReport: Decodable, Sendable {
   let results: [DoctorResult]
   let allOk: Bool
 }
 
-struct DoctorResult: Decodable {
+struct DoctorResult: Decodable, Sendable {
   let name: String
   let status: String
   let detail: String
