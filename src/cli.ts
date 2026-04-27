@@ -15,10 +15,14 @@ Commands:
                                        screen while it works.
                                        --criteria adds explicit success criteria
                                        for verifier feedback/retry rounds.
+                                       --max-steps, --max-batches,
+                                       --max-model-calls, --max-screenshots
+                                       bound live execution.
                                        --no-memory disables app-memory retrieval.
                                        --no-learn disables writing new memories.
                                        --allow-foreground permits tools that may
                                        steal focus, move cursor, or touch global state.
+                                       --agent uses the legacy Agent SDK path.
                                        Plans cheap small batches, executes via
                                        cua-driver, then screenshots/replans.
   cancel <run-id>                      Request cancellation for a running task.
@@ -36,13 +40,18 @@ Commands:
                                        Show or set role-specific model
                                        (planner|verifier|result|compile).
   settings api-key status|set|clear    Manage the Anthropic API key.
+  settings anthropic-api-key status|set|clear
+                                       Manage the Anthropic API key explicitly.
   settings openai-api-key status|set|clear
                                        Manage the OpenAI API key.
-  server [--host 127.0.0.1] [--port 4242]
+  server [--host 127.0.0.1] [--port 4242] [--token <token>]
                                        Start the local HTTP API server.
   mcp                                  Start the open42 MCP stdio server.
-  daemon install|uninstall|status      Install the local API server as a
+  daemon install [--host 127.0.0.1] [--port 4242] [--token <token>]
+                                       Install the local API server as a
                                        launchd user daemon.
+  daemon status                        Show launchd daemon install/load state.
+  daemon uninstall                     Remove the launchd user daemon.
 
 Options:
   --help, -h             Show this help
