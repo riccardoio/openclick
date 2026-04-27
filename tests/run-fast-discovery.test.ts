@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { _internals } from "../src/run.ts";
 
-const { extractBundleId, parseListAppsOutput, pickBundleIdByEarliestMention } =
-  _internals;
+const {
+  extractBundleId,
+  parseListAppsOutput,
+  pickBundleIdByEarliestMention,
+  pickInitialWindowId,
+} = _internals;
 
 describe("--fast pre-discovery: extractBundleId", () => {
   test("finds bundle id from a backtick code span (calc compile output)", () => {
@@ -111,5 +115,65 @@ Use the Calculator to compute 17 × 23. Save the result to Finder.`;
     // Finder mentioned first; Calculator mentioned later. Finder wins.
     const skill = "Open Finder, then later open Calculator.";
     expect(pickBundleIdByEarliestMention(skill, apps)).toBe("com.apple.finder");
+  });
+});
+
+describe("--fast pre-discovery: pickInitialWindowId", () => {
+  test("prefers the focused/frontmost content window over a larger stale window", () => {
+    expect(
+      pickInitialWindowId([
+        {
+          window_id: 111,
+          title: "Existing Figma file",
+          bounds: { width: 2200, height: 1300 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 1,
+        },
+        {
+          window_id: 222,
+          title: "Target Figma file",
+          bounds: { width: 1100, height: 800 },
+          is_on_screen: true,
+          on_current_space: false,
+          is_focused: true,
+          z_index: 100,
+        },
+      ]),
+    ).toBe(222);
+  });
+
+  test("falls back to any reported window when bounds are missing", () => {
+    expect(
+      pickInitialWindowId([
+        { window_id: 111, title: "Palette", z_index: 1 },
+        { window_id: 222, title: "Untitled", z_index: 20 },
+      ]),
+    ).toBe(222);
+  });
+
+  test("uses task title tokens when no foreground signal is reliable", () => {
+    expect(
+      pickInitialWindowId(
+        [
+          {
+            window_id: 111,
+            title: "Landing page mockup",
+            bounds: { width: 1600, height: 1000 },
+            is_on_screen: true,
+            z_index: 50,
+          },
+          {
+            window_id: 222,
+            title: "Pricing redesign",
+            bounds: { width: 1200, height: 800 },
+            is_on_screen: true,
+            on_current_space: false,
+            z_index: 1,
+          },
+        ],
+        "In Figma, update the Pricing redesign file",
+      ),
+    ).toBe(222);
   });
 });

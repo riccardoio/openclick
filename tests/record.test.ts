@@ -16,7 +16,7 @@ describe("paths", () => {
   });
 
   test("resolveCuaDriverBinary honors the CUA_DRIVER override", () => {
-    const dir = mkdtempSync(join(tmpdir(), "showme-cua-driver-"));
+    const dir = mkdtempSync(join(tmpdir(), "open42-cua-driver-"));
     const fakeBinary = join(dir, "cua-driver");
     writeFileSync(fakeBinary, "#!/bin/sh\nexit 0\n");
     chmodSync(fakeBinary, 0o755);

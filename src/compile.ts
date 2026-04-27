@@ -1,7 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AxNode, truncateAxTree } from "./axtree.ts";
-import { detectImageMimeType } from "./imagemime.ts";
+import {
+  AnthropicModelClient,
+  type ModelClient,
+  createModelClient,
+} from "./models.ts";
 import { resolveSkillRoot } from "./paths.ts";
 import { buildCompilePrompt } from "./prompt.ts";
 import { sampleScreenshots } from "./sampler.ts";
@@ -147,44 +151,40 @@ export class CompileValidationError extends Error {
 
 // Production Claude client wrapper.
 export class AnthropicClaudeClient implements ClaudeClient {
-  private apiKey: string;
+  private client: ModelClient;
 
-  constructor(apiKey: string = Bun.env.ANTHROPIC_API_KEY ?? "") {
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var required");
-    this.apiKey = apiKey;
+  constructor(apiKey?: string) {
+    this.client = new AnthropicModelClient({
+      apiKey,
+      role: "compile",
+    });
   }
 
   async generate(args: {
     prompt: string;
     imagePaths: string[];
   }): Promise<string> {
-    const Anthropic = (await import("@anthropic-ai/sdk")).default;
-    const client = new Anthropic({ apiKey: this.apiKey });
-
-    const content: Array<unknown> = [{ type: "text", text: args.prompt }];
-    for (const path of args.imagePaths) {
-      const data = readFileSync(path);
-      // Sniff each image: cua-driver always writes PNG bytes regardless of
-      // the chosen file extension, while older fixtures may genuinely be JPEG.
-      // Hardcoding image/jpeg here used to 400 against the Anthropic API.
-      const mediaType = detectImageMimeType(data);
-      content.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: mediaType,
-          data: data.toString("base64"),
-        },
-      });
-    }
-    const msg = await client.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 4096,
-      // biome-ignore lint/suspicious/noExplicitAny: SDK content union not exported cleanly
-      messages: [{ role: "user", content: content as any }],
+    return this.client.generate({
+      prompt: args.prompt,
+      imagePaths: args.imagePaths,
+      role: "compile",
+      maxTokens: 4096,
     });
-    // biome-ignore lint/suspicious/noExplicitAny: SDK content block union, narrowed by type tag
-    const textBlock = msg.content.find((b: any) => b.type === "text") as any;
-    return textBlock?.text ?? "";
+  }
+}
+
+export class RoutedClaudeClient implements ClaudeClient {
+  private readonly client = createModelClient("compile");
+
+  async generate(args: {
+    prompt: string;
+    imagePaths: string[];
+  }): Promise<string> {
+    return this.client.generate({
+      prompt: args.prompt,
+      imagePaths: args.imagePaths,
+      role: "compile",
+      maxTokens: 4096,
+    });
   }
 }

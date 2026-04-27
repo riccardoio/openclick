@@ -1,20 +1,36 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { addAppMemoryFact } from "../src/memory.ts";
+import { readRunTakeoverResume } from "../src/trace.ts";
 
 let originalLog: typeof console.log;
 let captured: string[];
 let home: string;
 let originalHome: string | undefined;
+let originalDisableKeychain: string | undefined;
+let originalLaunchAgentsDir: string | undefined;
+let originalSkipLaunchctl: string | undefined;
+let originalAnthropicApiKey: string | undefined;
+let originalOpen42ApiKey: string | undefined;
 
 beforeEach(() => {
   originalLog = console.log;
-  originalHome = Bun.env.SHOWME_HOME;
-  home = mkdtempSync(join(tmpdir(), "showme-cli-"));
-  Bun.env.SHOWME_HOME = home;
+  originalHome = Bun.env.OPEN42_HOME;
+  originalDisableKeychain = Bun.env.OPEN42_DISABLE_KEYCHAIN;
+  originalLaunchAgentsDir = Bun.env.OPEN42_LAUNCH_AGENTS_DIR;
+  originalSkipLaunchctl = Bun.env.OPEN42_SKIP_LAUNCHCTL;
+  originalAnthropicApiKey = Bun.env.ANTHROPIC_API_KEY;
+  originalOpen42ApiKey = Bun.env.OPEN42_API_KEY;
+  home = mkdtempSync(join(tmpdir(), "open42-cli-"));
+  Bun.env.OPEN42_HOME = home;
+  Bun.env.OPEN42_DISABLE_KEYCHAIN = "1";
+  Bun.env.OPEN42_LAUNCH_AGENTS_DIR = join(home, "LaunchAgents");
+  Bun.env.OPEN42_SKIP_LAUNCHCTL = "1";
+  Bun.env.ANTHROPIC_API_KEY = undefined;
+  Bun.env.OPEN42_API_KEY = undefined;
   captured = [];
   console.log = (...args: unknown[]) => {
     captured.push(args.map(String).join(" "));
@@ -23,8 +39,22 @@ beforeEach(() => {
 
 afterEach(() => {
   console.log = originalLog;
-  if (originalHome === undefined) Bun.env.SHOWME_HOME = undefined;
-  else Bun.env.SHOWME_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
+  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalDisableKeychain === undefined)
+    Bun.env.OPEN42_DISABLE_KEYCHAIN = undefined;
+  else Bun.env.OPEN42_DISABLE_KEYCHAIN = originalDisableKeychain;
+  if (originalLaunchAgentsDir === undefined)
+    Bun.env.OPEN42_LAUNCH_AGENTS_DIR = undefined;
+  else Bun.env.OPEN42_LAUNCH_AGENTS_DIR = originalLaunchAgentsDir;
+  if (originalSkipLaunchctl === undefined)
+    Bun.env.OPEN42_SKIP_LAUNCHCTL = undefined;
+  else Bun.env.OPEN42_SKIP_LAUNCHCTL = originalSkipLaunchctl;
+  if (originalAnthropicApiKey === undefined)
+    Bun.env.ANTHROPIC_API_KEY = undefined;
+  else Bun.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+  if (originalOpen42ApiKey === undefined) Bun.env.OPEN42_API_KEY = undefined;
+  else Bun.env.OPEN42_API_KEY = originalOpen42ApiKey;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -42,7 +72,7 @@ describe("cli", () => {
 
   test("--version prints version", async () => {
     await main(["--version"]);
-    expect(text()).toMatch(/^showme \d+\.\d+\.\d+/);
+    expect(text()).toMatch(/^open42 \d+\.\d+\.\d+/);
   });
 
   test("unknown subcommand throws", async () => {
@@ -74,6 +104,11 @@ describe("cli", () => {
     await main(["--help"]);
     expect(text()).toContain("Complete a macOS task from your prompt");
     expect(text()).toContain("screenshots/replans");
+  });
+
+  test("--help advertises doctor --json for the menu-bar onboarding", async () => {
+    await main(["--help"]);
+    expect(text()).toContain("--json");
   });
 
   test("invalid --max-steps throws", async () => {
@@ -136,5 +171,87 @@ describe("cli", () => {
 
     expect(text()).toContain("cancellation requested for run-123");
     expect(existsSync(join(home, "runs", "run-123", "cancel"))).toBe(true);
+  });
+
+  test("takeover finish writes a resume marker for the paused runner", async () => {
+    await main([
+      "takeover",
+      "finish",
+      "--run-id",
+      "run-123",
+      "--outcome",
+      "success",
+      "--bundle-id",
+      "com.example.App",
+      "--app-name",
+      "Example",
+      "--task",
+      "Download invoice",
+      "--issue",
+      "Confirmation click required",
+      "--summary",
+      "Clicked the confirm button after checking the dialog.",
+      "--reason-type",
+      "confirmation_dialog",
+      "--feedback",
+      "completed",
+      "--trajectory-path",
+      "/tmp/open42-takeover",
+    ]);
+
+    const marker = readRunTakeoverResume("run-123");
+    expect(marker?.outcome).toBe("success");
+    expect(marker?.reason_type).toBe("confirmation_dialog");
+    expect(marker?.summary).toContain("confirm button");
+    expect(marker?.trajectory_path).toBe("/tmp/open42-takeover");
+  });
+
+  test("settings api-key stores and masks the saved key", async () => {
+    await main(["settings", "api-key", "status"]);
+    expect(text()).toContain("not configured");
+
+    await main(["settings", "api-key", "set", "sk-ant-test-secret"]);
+    expect(text()).toContain("API key saved");
+
+    await main(["settings", "api-key", "status"]);
+    expect(text()).toContain("settings");
+    expect(text()).toContain("******************");
+    expect(text()).not.toContain("sk-ant-test-secret");
+
+    await main(["settings", "api-key", "clear"]);
+    await main(["settings", "api-key", "status"]);
+    expect(text()).toContain("saved anthropic API key cleared");
+    expect(text()).toContain("not configured");
+  });
+
+  test("settings provider and model commands persist provider choices", async () => {
+    await main(["settings", "provider", "status"]);
+    expect(text()).toContain("model provider: anthropic");
+
+    await main(["settings", "provider", "set", "openai"]);
+    await main(["settings", "provider", "status"]);
+    expect(text()).toContain("model provider set to openai");
+    expect(text()).toContain("model provider: openai");
+
+    await main(["settings", "model", "set", "planner", "gpt-4.1"]);
+    await main(["settings", "model", "status"]);
+    expect(text()).toContain("planner=gpt-4.1");
+  });
+
+  test("daemon install writes a launch agent plist for the API server", async () => {
+    await main(["daemon", "install", "--port", "4343", "--token", "secret"]);
+
+    const plistPath = join(home, "LaunchAgents", "dev.open42.server.plist");
+    expect(existsSync(plistPath)).toBe(true);
+    const plist = readFileSync(plistPath, "utf8");
+    expect(plist).toContain("<string>server</string>");
+    expect(plist).toContain("<string>4343</string>");
+    expect(plist).toContain("OPEN42_SERVER_TOKEN");
+
+    await main(["daemon", "status"]);
+    expect(text()).toContain("daemon installed");
+
+    await main(["daemon", "uninstall"]);
+    expect(existsSync(plistPath)).toBe(false);
   });
 });

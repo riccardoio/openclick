@@ -4,7 +4,7 @@ Real `trajectory/` is recorded by hand. To populate:
 
 ```bash
 open -n -g -a CuaDriver --args serve
-bun bin/showme record todo "add a checkbox task in Reminders"
+bun bin/open42 record todo "add a checkbox task in Reminders"
 # perform the task, Ctrl-C
 cp -r ~/.cua/skills/todo/trajectory ./trajectory
 ```

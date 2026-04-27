@@ -5,7 +5,7 @@ public final class Screenshotter {
   private let writer: TrajectoryWriter
   private let intervalSeconds: TimeInterval
   private var timer: DispatchSourceTimer?
-  private let queue = DispatchQueue(label: "showme.screenshotter")
+  private let queue = DispatchQueue(label: "open42.screenshotter")
   private var currentTarget: (pid: Int32, windowId: Int)? = nil
 
   public init(writer: TrajectoryWriter, intervalSeconds: TimeInterval = 2.0) {

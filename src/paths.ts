@@ -10,12 +10,14 @@ export function resolveSkillRoot(skillName: string): string {
   return join(homedir(), ".cua", "skills", skillName);
 }
 
-export function resolveShowmeHome(): string {
-  return Bun.env.SHOWME_HOME ?? join(homedir(), ".showme");
+export function resolveOpen42Home(): string {
+  return (
+    Bun.env.OPEN42_HOME ?? Bun.env.SHOWME_HOME ?? join(homedir(), ".open42")
+  );
 }
 
 export function resolveAppMemoryRoot(): string {
-  return join(resolveShowmeHome(), "apps");
+  return join(resolveOpen42Home(), "apps");
 }
 
 export function resolveAppMemoryPath(bundleId: string): string {
@@ -27,16 +29,34 @@ export function resolveAppMemoryPath(bundleId: string): string {
 }
 
 export function resolveRunLockPath(): string {
-  return join(resolveShowmeHome(), "run.lock");
+  return join(resolveOpen42Home(), "run.lock");
 }
 
 export function resolveRunCancelPath(runId: string): string {
-  return join(resolveShowmeHome(), "runs", sanitizeBundleId(runId), "cancel");
+  return join(resolveOpen42Home(), "runs", sanitizeBundleId(runId), "cancel");
+}
+
+export function resolveRunInterventionPath(runId: string): string {
+  return join(
+    resolveOpen42Home(),
+    "runs",
+    sanitizeBundleId(runId),
+    "intervention.json",
+  );
+}
+
+export function resolveRunTakeoverResumePath(runId: string): string {
+  return join(
+    resolveOpen42Home(),
+    "runs",
+    sanitizeBundleId(runId),
+    "takeover-resume.json",
+  );
 }
 
 export function resolveRunTracePath(runId: string): string {
   return join(
-    resolveShowmeHome(),
+    resolveOpen42Home(),
     "runs",
     sanitizeBundleId(runId),
     "trace.json",
@@ -65,7 +85,7 @@ export function requireCuaDriverBinary(): string {
   const path = resolveCuaDriverBinary();
   if (!path) {
     throw new Error(
-      "cua-driver not found. Re-run `showme doctor` and install/configure cua-driver first.",
+      "cua-driver not found. Re-run `open42 doctor` and install/configure cua-driver first.",
     );
   }
   return path;
@@ -76,10 +96,10 @@ export function resolveRecorderBinary(): string {
   const repoBin = join(
     import.meta.dir,
     "..",
-    "recorder",
+    "mac-app",
     ".build",
     "release",
-    "showme-recorder",
+    "open42-recorder",
   );
   return repoBin;
 }
