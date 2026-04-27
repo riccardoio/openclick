@@ -3,7 +3,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StepRunner } from "../src/executor.ts";
 import type { PlannerClient } from "../src/planner.ts";
-import { type QueryFn, runSkill, verifyStopWhen } from "../src/run.ts";
+import {
+  type QueryFn,
+  buildBrowserNavigationPlan,
+  runSkill,
+  verifyStopWhen,
+} from "../src/run.ts";
 
 let originalExitCode: typeof process.exitCode;
 
@@ -295,6 +300,8 @@ describe("run --fast", () => {
   test("--fast --dry-run prints the plan but executes nothing", async () => {
     const dir = makeFakeSkill("fast2");
     let runs = 0;
+    const logs: string[] = [];
+    const originalLog = console.log;
 
     const planner: PlannerClient = {
       async generatePlanText() {
@@ -315,15 +322,70 @@ describe("run --fast", () => {
       return { ok: true };
     };
 
-    await runSkill({
-      taskPrompt: "x",
-      live: false,
-      maxSteps: 50,
-      fast: true,
-      plannerClient: planner,
-      stepRunner: runner,
-    });
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      await runSkill({
+        taskPrompt: "x",
+        live: false,
+        maxSteps: 50,
+        fast: true,
+        plannerClient: planner,
+        stepRunner: runner,
+      });
+    } finally {
+      console.log = originalLog;
+    }
     expect(runs).toBe(0);
+    expect(logs.some((line) => line.includes("dry-run complete"))).toBe(true);
+    expect(logs.some((line) => line.startsWith("[open42] done."))).toBe(false);
+  });
+
+  test("--fast emits a structured task_result on success", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 1, element_index: 1 },
+              purpose: "click the requested button",
+            },
+          ],
+          stopWhen: "done",
+        });
+      },
+    };
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      await runSkill({
+        taskPrompt: "click the requested button",
+        live: true,
+        maxSteps: 50,
+        fast: true,
+        plannerClient: planner,
+        stepRunner: async () => ({ ok: true }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const line = logs.find((entry) =>
+      entry.startsWith("[open42] task_result "),
+    );
+    expect(line).toBeDefined();
+    const payload = JSON.parse(
+      line?.replace("[open42] task_result ", "") ?? "{}",
+    ) as { kind?: string; title?: string; body?: string };
+    expect(payload.kind).toBe("confirmation");
+    expect(payload.title).toBe("Done");
+    expect(payload.body).toBe("I have done what you asked.");
   });
 
   test("--fast replans on a step failure (capped at maxReplans)", async () => {
@@ -399,6 +461,83 @@ describe("run --fast", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  test("--fast resumes remaining work after a successful takeover", async () => {
+    const dir = makeFakeSkill("fast-takeover-resume");
+    const prompts: string[] = [];
+    const toolsRun: string[] = [];
+    let plannerCalls = 0;
+
+    const planner: PlannerClient = {
+      async generatePlanText(prompt) {
+        prompts.push(prompt);
+        plannerCalls++;
+        if (plannerCalls === 1) {
+          return JSON.stringify({
+            steps: [
+              {
+                tool: "click",
+                args: { pid: 1, window_id: 2, element_index: 99 },
+                purpose: "click confirmation dialog",
+              },
+            ],
+            stopWhen: "the latest unread email is open",
+          });
+        }
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "click",
+              args: { pid: 1, window_id: 2, element_index: 4 },
+              purpose: "open the latest unread email",
+            },
+          ],
+          stopWhen: "the latest unread email is open",
+        });
+      },
+    };
+    const runner: StepRunner = async (step) => {
+      toolsRun.push(step.purpose);
+      if (step.purpose === "click confirmation dialog") {
+        return { ok: false, error: "confirmation dialog blocked automation" };
+      }
+      return { ok: true };
+    };
+
+    await runSkill({
+      taskPrompt: "Open Gmail and open the latest unread email",
+      live: true,
+      maxSteps: 10,
+      fast: true,
+      maxReplans: 0,
+      learn: false,
+      plannerClient: planner,
+      stepRunner: runner,
+      takeoverResumeFn: async (runId) => ({
+        schema_version: 1,
+        run_id: runId,
+        outcome: "success",
+        issue: "Confirmation click required",
+        summary: "Clicked the confirmation and returned to the Gmail inbox.",
+        reason_type: "confirmation_dialog",
+        bundle_id: "com.google.Chrome",
+        app_name: "Google Chrome",
+        task: "Open Gmail and open the latest unread email",
+        created_at: new Date().toISOString(),
+      }),
+    });
+
+    expect(process.exitCode).toBe(0);
+    expect(toolsRun).toEqual([
+      "click confirmation dialog",
+      "open the latest unread email",
+    ]);
+    expect(prompts.at(-1)).toContain("Latest user takeover:");
+    expect(prompts.at(-1)).toContain(
+      "Continue with only the remaining work needed",
+    );
+    expect(prompts.at(-1)).toContain("latest unread email");
+  });
+
   test("--fast honors maxSteps as a total step budget", async () => {
     const dir = makeFakeSkill("fast-max-steps");
     const toolsRun: string[] = [];
@@ -443,6 +582,62 @@ describe("run --fast", () => {
 
     expect(process.exitCode).toBe(1);
     expect(toolsRun).toEqual(["one", "two"]);
+  });
+
+  test("--fast uses open_url for direct Chrome Gmail navigation", async () => {
+    let plannerCalled = false;
+    const toolsRun: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        plannerCalled = true;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    const runner: StepRunner = async (step) => {
+      toolsRun.push({ tool: step.tool, args: step.args });
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          pid: 123,
+          windows: [{ window_id: 456, bounds: { width: 800, height: 600 } }],
+        }),
+      };
+    };
+
+    await runSkill({
+      taskPrompt: "Open Google Chrome and go to Gmail",
+      live: true,
+      maxSteps: 5,
+      fast: true,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(plannerCalled).toBe(false);
+    expect(toolsRun).toEqual([
+      {
+        tool: "open_url",
+        args: {
+          bundle_id: "com.google.Chrome",
+          url: "https://mail.google.com/",
+        },
+      },
+    ]);
+  });
+
+  test("browser navigation shortcut keeps compound Gmail tasks unfinished", () => {
+    const simple = buildBrowserNavigationPlan(
+      "Open Google Chrome and go to Gmail",
+    );
+    expect(simple?.stopWhen).toContain("Google Chrome is showing");
+
+    const compound = buildBrowserNavigationPlan(
+      "Open Google Chrome, go to Gmail, and open the last unread email",
+    );
+    expect(compound?.steps[0]?.tool).toBe("open_url");
+    expect(compound?.stopWhen).toContain("The full user task is complete");
+    expect(compound?.stopWhen).toContain("last unread email");
+    expect(compound?.stopWhen).toContain("only the first step");
   });
 
   test("--fast threads the user task into the planner prompt", async () => {
@@ -594,6 +789,72 @@ describe("verifyStopWhen", () => {
     });
     expect(modelCalled).toBe(true);
     expect(result.verdict).toBe("unknown");
+  });
+
+  test("downgrades Gmail inbox-list YES when task requires opening an unread email", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          verdict: "yes",
+          criteria_met: true,
+          missing: [],
+          quality_issues: [],
+          explanation:
+            "The screenshot shows Gmail inbox open with unread emails visible and ready to be clicked.",
+        });
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "the last unread email is open and readable",
+      intent: {
+        goal: "open chrome and go to gmail and read the last unread email",
+        successSignals: ["the last unread email content is visible"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({
+        ok: true,
+        stdout:
+          '- [1] AXStaticText "Inbox"\n- [2] AXStaticText "Unread message from Stripe"\n',
+      }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("unknown");
+    expect(result.explanation).toContain("not opened yet");
+  });
+
+  test("accepts Gmail email-content YES when the requested unread email is opened", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          verdict: "yes",
+          criteria_met: true,
+          missing: [],
+          quality_issues: [],
+          explanation:
+            "The latest unread email is opened in conversation view with the sender, subject, and message body visible.",
+        });
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen: "the last unread email is open and readable",
+      intent: {
+        goal: "open chrome and go to gmail and read the last unread email",
+        successSignals: ["the last unread email content is visible"],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({
+        ok: true,
+        stdout: '- [1] AXStaticText "Subject"\n- [2] AXStaticText "Body"\n',
+      }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("yes");
   });
 
   test("downgrades visual-artifact YES replies that do not mention the artifact", async () => {
@@ -863,14 +1124,14 @@ describe("verifyStopWhen", () => {
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
       }),
-      captureScreenshot: async () => "/tmp/showme-verify-xyz.png",
+      captureScreenshot: async () => "/tmp/open42-verify-xyz.png",
     });
-    expect(receivedImages).toEqual(["/tmp/showme-verify-xyz.png"]);
+    expect(receivedImages).toEqual(["/tmp/open42-verify-xyz.png"]);
   });
 });
 
 function makeFakeSkill(name: string): string {
-  const dir = join("/tmp", `showme-test-${name}-${Date.now()}`);
+  const dir = join("/tmp", `open42-test-${name}-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "SKILL.md"),

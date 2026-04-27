@@ -180,16 +180,16 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     case .accessibility: return "Accessibility"
     case .screenRecording: return "Screen Recording"
     case .cuaDriver: return "CuaDriver"
-    case .apiKey: return "Anthropic API key"
+    case .apiKey: return "Model API key"
     }
   }
 
   var defaultDescription: String {
     switch self {
-    case .accessibility: return "Required so showme can click and type in apps."
-    case .screenRecording: return "Required so showme can see and verify the screen."
+    case .accessibility: return "Required so open42 can click and type in apps."
+    case .screenRecording: return "Required so open42 can see and verify the screen."
     case .cuaDriver: return "Background helper that performs clicks and keystrokes."
-    case .apiKey: return "Lets showme call Claude to plan each step."
+    case .apiKey: return "Lets open42 call the selected model provider."
     }
   }
 
@@ -213,9 +213,9 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
   var defaultActionTitle: String {
     switch self {
-    case .accessibility, .screenRecording: return "Open Settings"
-    case .cuaDriver: return "Start Daemon"
-    case .apiKey: return "Copy export Command"
+    case .accessibility, .screenRecording: return "Request Access"
+    case .cuaDriver: return ""
+    case .apiKey: return ""
     }
   }
 }
@@ -242,6 +242,11 @@ struct PermissionItem: Identifiable {
 @MainActor
 final class OnboardingViewModel: ObservableObject {
   @Published var items: [PermissionItem]
+  @Published var provider: Open42Provider = Open42SettingsStore.provider()
+  @Published var apiKeyDraft: String = ""
+  @Published var maskedApiKey: String = "Not set"
+  @Published var apiKeySource: String = "Not configured"
+  @Published var hasSavedProviderKey: Bool = false
   @Published var footerMessage: String = "Checking permissions…"
   @Published var footerTone: FooterTone = .checking
   @Published var isChecking: Bool = false
@@ -250,6 +255,9 @@ final class OnboardingViewModel: ObservableObject {
 
   var onRunCheck: (() -> Void)?
   var onAction: ((PermissionKind) -> Void)?
+  var onProviderChanged: ((Open42Provider) -> Void)?
+  var onSaveApiKey: ((String) -> Void)?
+  var onClearApiKey: (() -> Void)?
   var onDone: (() -> Void)?
 
   init() {
@@ -268,6 +276,14 @@ final class OnboardingViewModel: ObservableObject {
     items[idx].status = status
     if let description { items[idx].description = description }
     if let actionTitle { items[idx].actionTitle = actionTitle }
+  }
+
+  func updateProviderKeyState(provider: Open42Provider, masked: String, source: String, saved: Bool) {
+    self.provider = provider
+    maskedApiKey = masked
+    apiKeySource = source
+    hasSavedProviderKey = saved
+    apiKeyDraft = ""
   }
 }
 
@@ -608,8 +624,10 @@ struct GlassPermissionRow: View {
       }
       Spacer(minLength: 12)
       statusBadge
-      Button(item.actionTitle, action: onAction)
-        .buttonStyle(GlassButtonStyle())
+      if !item.actionTitle.isEmpty {
+        Button(item.actionTitle, action: onAction)
+          .buttonStyle(GlassButtonStyle())
+      }
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 16)
@@ -677,7 +695,11 @@ struct OnboardingView: View {
         header
           .padding(.top, 48)
           .padding(.horizontal, 32)
-          .padding(.bottom, 30)
+          .padding(.bottom, 18)
+
+        providerSetup
+          .padding(.horizontal, 28)
+          .padding(.bottom, 14)
 
         VStack(spacing: 13) {
           ForEach(viewModel.items) { item in
@@ -717,14 +739,84 @@ struct OnboardingView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Welcome to showme")
+      Text("Welcome to open42")
         .font(.system(size: 32, weight: .bold))
         .foregroundStyle(DarkPalette.textPrimary)
-      Text("showme controls your Mac with natural-language prompts.\nGrant these four things once and you’re ready.")
+      Text("open42 controls your Mac with natural-language prompts.\nGrant these four things once and you’re ready.")
         .font(.system(size: 14, weight: .regular))
         .foregroundStyle(DarkPalette.textSecondary)
         .lineSpacing(3)
     }
+  }
+
+  private var providerSetup: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(spacing: 12) {
+        Picker("Provider", selection: providerBinding) {
+          ForEach(Open42Provider.allCases) { provider in
+            Text(provider.title).tag(provider)
+          }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 240)
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text("\(viewModel.provider.title) API key")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(DarkPalette.textPrimary)
+          Text("\(viewModel.apiKeySource) · \(viewModel.maskedApiKey)")
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(DarkPalette.textTertiary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 8)
+      }
+
+      HStack(spacing: 10) {
+        SecureField("Paste \(viewModel.provider.title) API key", text: $viewModel.apiKeyDraft)
+          .textFieldStyle(.plain)
+          .font(.system(size: 13))
+          .padding(.horizontal, 12)
+          .padding(.vertical, 9)
+          .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+              .fill(DarkPalette.rowFill)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+              .strokeBorder(DarkPalette.rowBorder, lineWidth: 1)
+          )
+
+        Button("Save Key") {
+          viewModel.onSaveApiKey?(viewModel.apiKeyDraft)
+        }
+        .buttonStyle(GlassButtonStyle())
+        Button("Clear") { viewModel.onClearApiKey?() }
+          .buttonStyle(GlassButtonStyle())
+          .disabled(!viewModel.hasSavedProviderKey)
+      }
+    }
+    .padding(16)
+    .background(
+      RoundedRectangle(cornerRadius: 20, style: .continuous)
+        .fill(DarkPalette.rowFill)
+        .background(
+          RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(.ultraThinMaterial)
+        )
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 20, style: .continuous)
+        .strokeBorder(DarkPalette.rowBorder, lineWidth: 1)
+    )
+    .shadow(color: DarkPalette.cardShadow, radius: 18, x: 0, y: 8)
+  }
+
+  private var providerBinding: Binding<Open42Provider> {
+    Binding(
+      get: { viewModel.provider },
+      set: { viewModel.onProviderChanged?($0) }
+    )
   }
 
   private var footer: some View {
@@ -774,7 +866,7 @@ struct CommandBarView: View {
             .frame(width: 28, height: 28)
         }
         .buttonStyle(.plain)
-        .help("Open the showme permissions panel.")
+        .help("Open the open42 permissions panel.")
 
         Button {
           viewModel.onToggleForeground?()
@@ -797,7 +889,7 @@ struct CommandBarView: View {
         .animation(.easeOut(duration: 0.18), value: promptFocused)
 
       VStack(alignment: .leading, spacing: 4) {
-        TextField("Ask showme to do anything", text: $viewModel.prompt)
+        TextField("Ask open42 to do anything", text: $viewModel.prompt)
           .textFieldStyle(.plain)
           .font(.system(size: 16, weight: .regular))
           .foregroundStyle(DarkPalette.textPrimary)
@@ -823,19 +915,16 @@ struct CommandBarView: View {
     .padding(.horizontal, 22)
     .padding(.vertical, 18)
     .background {
-      RoundedRectangle(cornerRadius: 32, style: .continuous)
-        .fill(DarkPalette.panelFill)
-        .background(
-          RoundedRectangle(cornerRadius: 32, style: .continuous)
-            .fill(.ultraThinMaterial)
-        )
+      Capsule(style: .continuous)
+        .fill(.ultraThinMaterial)
+        .overlay(Capsule(style: .continuous).fill(DarkPalette.panelFill))
     }
     .overlay(
-      RoundedRectangle(cornerRadius: 32, style: .continuous)
+      Capsule(style: .continuous)
         .strokeBorder(DarkPalette.glassBorder, lineWidth: 1)
     )
     .overlay(alignment: .top) {
-      RoundedRectangle(cornerRadius: 32, style: .continuous)
+      Capsule(style: .continuous)
         .stroke(
           LinearGradient(
             colors: [DarkPalette.glassHighlight.opacity(1.2), .clear],
@@ -847,6 +936,8 @@ struct CommandBarView: View {
         .blendMode(.plusLighter)
         .allowsHitTesting(false)
     }
+    .clipShape(Capsule(style: .continuous))
+    .compositingGroup()
     .shadow(color: .black.opacity(0.50), radius: 36, x: 0, y: 14)
     .padding(8)
     .onAppear {

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import SwiftUI
 
@@ -51,16 +52,17 @@ final class GlassEffectView: NSVisualEffectView {
 /// Onboarding panel — Superhuman-style dark glass surface hosted in SwiftUI.
 @MainActor
 final class OnboardingController: NSObject {
-  static let hasSeenOnboardingKey = "showme.hasSeenOnboarding"
-  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.showme.bar") ?? .standard
+  static let hasSeenOnboardingKey = "open42.hasSeenOnboarding"
+  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.open42.app") ?? .standard
 
   private let window: NSWindow
   private let viewModel = OnboardingViewModel()
   private var isChecking = false
+  private var daemonAutoRetryCount = 0
 
   override init() {
     window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 720, height: 720),
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 820),
       styleMask: [.titled, .closable, .fullSizeContentView, .miniaturizable],
       backing: .buffered,
       defer: false
@@ -76,13 +78,14 @@ final class OnboardingController: NSObject {
     }
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
+    refreshProviderKeyState()
     runChecks()
   }
 
   // MARK: - Window setup
 
   private func configureWindow() {
-    window.title = "showme"
+    window.title = "open42"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
@@ -119,6 +122,13 @@ final class OnboardingController: NSObject {
     viewModel.onRunCheck = { [weak self] in self?.runChecks() }
     viewModel.onDone = { [weak self] in self?.handleDone() }
     viewModel.onAction = { [weak self] kind in self?.handleAction(kind: kind) }
+    viewModel.onProviderChanged = { [weak self] provider in
+      Open42SettingsStore.saveProvider(provider)
+      self?.refreshProviderKeyState()
+      self?.runChecks()
+    }
+    viewModel.onSaveApiKey = { [weak self] key in self?.saveApiKey(key) }
+    viewModel.onClearApiKey = { [weak self] in self?.clearApiKey() }
   }
 
   private func handleDone() {
@@ -130,9 +140,10 @@ final class OnboardingController: NSObject {
 
   private func runChecks() {
     if isChecking { return }
+    refreshProviderKeyState()
     isChecking = true
     viewModel.isChecking = true
-    viewModel.footerMessage = "Checking permissions…"
+    viewModel.footerMessage = "Checking permissions and preparing helper…"
     viewModel.footerTone = .checking
     for kind in PermissionKind.allCases {
       viewModel.update(kind: kind, status: .checking)
@@ -153,29 +164,40 @@ final class OnboardingController: NSObject {
     switch result {
     case .ok(let report):
       let byName = Dictionary(uniqueKeysWithValues: report.results.map { ($0.name, $0) })
-      applySimple(.accessibility, name: "Accessibility (recorder)", in: byName, okMessage: "Granted to the showme recorder.")
+      applySimple(.accessibility, name: "Accessibility (via cua-driver)", in: byName, okMessage: "Granted to CuaDriver. App control will work.")
       applySimple(.screenRecording, name: "Screen Recording (via cua-driver)", in: byName, okMessage: "Granted to CuaDriver. Screenshots will work.")
       applyCuaDriver(installed: byName["cua-driver installed"], daemon: byName["cua-driver daemon"])
-      applySimple(.apiKey, name: "ANTHROPIC_API_KEY", in: byName, okMessage: "ANTHROPIC_API_KEY is set in your shell.")
+      let apiKeyName = viewModel.provider == .openai ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
+      applySimple(
+        .apiKey,
+        name: apiKeyName,
+        in: byName,
+        okMessage: "\(viewModel.provider.title) API key is configured."
+      )
       if report.allOk {
         viewModel.footerMessage = "All set. You can close this window."
         viewModel.footerTone = .success
       } else {
         let failing = report.results.filter { $0.status == "fail" }.count
-        viewModel.footerMessage = "\(failing) item\(failing == 1 ? "" : "s") still need attention."
-        viewModel.footerTone = .warning
+        if viewModel.items.contains(where: { $0.kind == .cuaDriver && $0.status == .checking }) {
+          viewModel.footerMessage = "Preparing the background helper…"
+          viewModel.footerTone = .checking
+        } else {
+          viewModel.footerMessage = "\(failing) item\(failing == 1 ? "" : "s") still need attention."
+          viewModel.footerTone = .warning
+        }
       }
     case .launchFailure(let detail):
       for kind in PermissionKind.allCases {
-        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not run `showme doctor`.")
+        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not run `open42 doctor`.")
       }
-      viewModel.footerMessage = "Could not run `showme doctor`. \(detail)"
+      viewModel.footerMessage = "Could not run `open42 doctor`. \(detail)"
       viewModel.footerTone = .warning
     case .parseFailure(let detail):
       for kind in PermissionKind.allCases {
         viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not parse doctor output.")
       }
-      viewModel.footerMessage = "showme doctor returned unexpected output. \(detail)"
+      viewModel.footerMessage = "open42 doctor returned unexpected output. \(detail)"
       viewModel.footerTone = .warning
     }
   }
@@ -194,6 +216,7 @@ final class OnboardingController: NSObject {
 
   private func applyCuaDriver(installed: DoctorResult?, daemon: DoctorResult?) {
     if installed?.status != "ok" {
+      daemonAutoRetryCount = 0
       viewModel.update(
         kind: .cuaDriver,
         status: .missing(reason: "Not installed"),
@@ -205,17 +228,24 @@ final class OnboardingController: NSObject {
     if daemon?.status != "ok" {
       viewModel.update(
         kind: .cuaDriver,
-        status: .missing(reason: "Not running"),
-        description: "CuaDriver is installed but the helper isn’t running. Start it now.",
-        actionTitle: "Start Daemon"
+        status: .checking,
+        description: "Preparing the background helper automatically.",
+        actionTitle: ""
       )
+      if daemonAutoRetryCount < 3 {
+        daemonAutoRetryCount += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+          self?.runChecks()
+        }
+      }
       return
     }
+    daemonAutoRetryCount = 0
     viewModel.update(
       kind: .cuaDriver,
       status: .ok,
       description: "CuaDriver is installed and running.",
-      actionTitle: "Restart Daemon"
+      actionTitle: ""
     )
   }
 
@@ -224,23 +254,97 @@ final class OnboardingController: NSObject {
   private func handleAction(kind: PermissionKind) {
     switch kind {
     case .accessibility:
-      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+      NativePermissionPrompts.requestAccessibility()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        self?.runChecks()
+      }
     case .screenRecording:
-      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+      NativePermissionPrompts.requestScreenRecording()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        self?.runChecks()
+      }
     case .cuaDriver:
       // Action varies based on row state — read it back via item title.
       if let item = viewModel.items.first(where: { $0.kind == .cuaDriver }) {
         if item.actionTitle.lowercased().contains("install") {
           CuaDriverActions.copyInstall()
+        } else if item.actionTitle.lowercased().contains("check") {
+          runChecks()
         } else {
-          CuaDriverActions.startDaemon()
+          runChecks()
         }
       } else {
-        CuaDriverActions.startDaemon()
+        runChecks()
       }
     case .apiKey:
       ApiKeyActions.copyExportCommand()
     }
+  }
+
+  private func refreshProviderKeyState() {
+    let provider = Open42SettingsStore.provider()
+    if let key = Open42Keychain.apiKey(provider: provider), !key.isEmpty {
+      viewModel.updateProviderKeyState(
+        provider: provider,
+        masked: Open42Keychain.mask(key),
+        source: "Saved in Keychain",
+        saved: true
+      )
+      return
+    }
+    if let envKey = ProcessInfo.processInfo.environment[provider.envKeyName], !envKey.isEmpty {
+      viewModel.updateProviderKeyState(
+        provider: provider,
+        masked: Open42Keychain.mask(envKey),
+        source: "Available from app environment",
+        saved: false
+      )
+      return
+    }
+    if provider == .anthropic,
+      let envKey = ProcessInfo.processInfo.environment["OPEN42_API_KEY"],
+      !envKey.isEmpty
+    {
+      viewModel.updateProviderKeyState(
+        provider: provider,
+        masked: Open42Keychain.mask(envKey),
+        source: "Available from app environment",
+        saved: false
+      )
+      return
+    }
+    viewModel.updateProviderKeyState(
+      provider: provider,
+      masked: "Not set",
+      source: "Not configured",
+      saved: false
+    )
+  }
+
+  private func saveApiKey(_ key: String) {
+    let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      viewModel.footerMessage = "Paste a \(viewModel.provider.title) API key before saving."
+      viewModel.footerTone = .warning
+      return
+    }
+    if Open42Keychain.saveApiKey(trimmed, provider: viewModel.provider) {
+      viewModel.footerMessage = "\(viewModel.provider.title) API key saved."
+      viewModel.footerTone = .success
+      refreshProviderKeyState()
+      runChecks()
+    } else {
+      viewModel.footerMessage = "Could not save the \(viewModel.provider.title) API key."
+      viewModel.footerTone = .warning
+    }
+  }
+
+  private func clearApiKey() {
+    Open42Keychain.deleteApiKey(provider: viewModel.provider)
+    viewModel.footerMessage = "Saved \(viewModel.provider.title) API key removed."
+    viewModel.footerTone = .warning
+    refreshProviderKeyState()
+    runChecks()
   }
 
   // MARK: - Subprocess
@@ -252,14 +356,18 @@ final class OnboardingController: NSObject {
   }
 
   nonisolated private static func spawnDoctorJSON(env: [String: String]) -> DoctorRunResult {
-    let (url, args) = showmeInvocation(env: env)
+    let (url, args) = open42Invocation(env: env)
     let process = Process()
     process.executableURL = url
-    process.arguments = args + ["doctor", "--json"]
+    process.arguments = args + ["doctor", "--fix", "--json"]
 
     var processEnv = env
-    if processEnv["SHOWME_BIN"] == nil && processEnv["SHOWME_REPO_ROOT"] == nil {
-      processEnv["SHOWME_BAR_USE_ENV"] = "1"
+    processEnv["OPEN42_APP_USE_ENV"] = "1"
+    if let apiKey = Open42Keychain.apiKey(provider: .anthropic), !apiKey.isEmpty {
+      processEnv["ANTHROPIC_API_KEY"] = apiKey
+    }
+    if let apiKey = Open42Keychain.apiKey(provider: .openai), !apiKey.isEmpty {
+      processEnv["OPENAI_API_KEY"] = apiKey
     }
     process.environment = processEnv
 
@@ -289,14 +397,20 @@ final class OnboardingController: NSObject {
     }
   }
 
-  nonisolated private static func showmeInvocation(env: [String: String]) -> (URL, [String]) {
+  nonisolated private static func open42Invocation(env: [String: String]) -> (URL, [String]) {
+    if let bin = env["OPEN42_BIN"], !bin.isEmpty {
+      return (URL(fileURLWithPath: bin), [])
+    }
     if let bin = env["SHOWME_BIN"], !bin.isEmpty {
       return (URL(fileURLWithPath: bin), [])
     }
-    if let root = env["SHOWME_REPO_ROOT"], !root.isEmpty {
-      return (URL(fileURLWithPath: root).appendingPathComponent("bin/showme"), [])
+    if let root = env["OPEN42_REPO_ROOT"], !root.isEmpty {
+      return (URL(fileURLWithPath: root).appendingPathComponent("bin/open42"), [])
     }
-    return (URL(fileURLWithPath: "/usr/bin/env"), ["showme"])
+    if let bundled = Bundle.main.url(forResource: "open42-cli/bin/open42", withExtension: nil) {
+      return (bundled, [])
+    }
+    return (URL(fileURLWithPath: "/usr/bin/env"), ["open42"])
   }
 }
 
@@ -329,6 +443,21 @@ enum SettingsLink {
       return
     }
     NSWorkspace.shared.open(resolved)
+  }
+}
+
+enum NativePermissionPrompts {
+  static func requestAccessibility() {
+    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(options)
+    SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+  }
+
+  static func requestScreenRecording() {
+    if !CGPreflightScreenCaptureAccess() {
+      _ = CGRequestScreenCaptureAccess()
+    }
+    SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
   }
 }
 

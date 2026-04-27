@@ -45,6 +45,46 @@ export interface MemoryBundle {
 
 export type MemoryKind = "affordance" | "avoid" | "observation";
 
+export function recordTakeoverLearning(args: {
+  bundleId: string;
+  appName?: string;
+  task?: string;
+  issue: string;
+  summary: string;
+  reasonType?: string;
+  outcome?: "success" | "failed" | "cancelled";
+  feedback?: string;
+  evidence?: string[];
+}): AppMemory {
+  const outcome = args.outcome ?? "success";
+  const evidence = [
+    ...(args.task ? [`task: ${args.task}`] : []),
+    `issue: ${args.issue}`,
+    ...(args.reasonType ? [`reason_type: ${args.reasonType}`] : []),
+    `outcome: ${outcome}`,
+    `takeover: ${args.summary}`,
+    ...(args.feedback ? [`feedback: ${args.feedback}`] : []),
+    ...(args.evidence ?? []),
+  ];
+  const kind: MemoryKind = outcome === "success" ? "affordance" : "avoid";
+  return addAppMemoryFact({
+    bundleId: args.bundleId,
+    appName: args.appName,
+    kind,
+    description:
+      outcome === "success"
+        ? `When blocked by "${args.issue}", a successful user takeover did this: ${args.summary}`
+        : `When blocked by "${args.issue}", this takeover did not fully resolve it: ${args.summary}`,
+    confidence: outcome === "success" ? 0.72 : 0.66,
+    status: "candidate",
+    source: "local",
+    scope: "user takeover",
+    cause:
+      outcome === "success" ? "takeover_demonstration" : "takeover_unresolved",
+    evidence,
+  });
+}
+
 export function emptyAppMemory(bundleId: string, appName?: string): AppMemory {
   const now = new Date().toISOString();
   return {
@@ -341,9 +381,9 @@ function mergeFacts(
 }
 
 function trimMemory(memory: AppMemory): void {
-  memory.affordances = memory.affordances.sort(sortFacts).slice(0, 50);
-  memory.avoid = memory.avoid.sort(sortFacts).slice(0, 50);
-  memory.observations = memory.observations.sort(sortFacts).slice(0, 80);
+  memory.affordances = memory.affordances.sort(sortFacts);
+  memory.avoid = memory.avoid.sort(sortFacts);
+  memory.observations = memory.observations.sort(sortFacts);
 }
 
 function topFacts(facts: AppMemoryFact[], count: number): AppMemoryFact[] {

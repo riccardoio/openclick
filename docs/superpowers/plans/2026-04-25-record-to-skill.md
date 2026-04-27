@@ -1,4 +1,4 @@
-# showme — Record-to-Skill Implementation Plan
+# open42 — Record-to-Skill Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -47,14 +47,14 @@ If you don't have the Apple Developer pieces yet: scaffold + build (Tasks 0–18
 ## File Structure
 
 ```
-showme/
-├── package.json                      # bun + TS, defines `showme` bin
+open42/
+├── package.json                      # bun + TS, defines `open42` bin
 ├── tsconfig.json                     # strict TS config
 ├── biome.json                        # lint+format (Biome, single tool)
 ├── .gitignore
 ├── README.md                         # populated in Task 20
 ├── bin/
-│   └── showme                        # TS entry shim, calls into src/cli.ts
+│   └── open42                        # TS entry shim, calls into src/cli.ts
 ├── src/
 │   ├── cli.ts                        # subcommand parser
 │   ├── types.ts                      # shared types (Trajectory, SkillMd, etc.)
@@ -118,7 +118,7 @@ Goal: scaffold builds cleanly, CLI prints help/version, Swift binary builds with
 ### Task 0: Project scaffold
 
 **Files:**
-- Create: `package.json`, `tsconfig.json`, `biome.json`, `.gitignore`, `bin/showme`, `src/cli.ts`, `src/types.ts`, `recorder/Package.swift`, `recorder/Sources/Recorder/main.swift`, `recorder/Sources/RecorderCore/.gitkeep`, `recorder/Tests/RecorderCoreTests/.gitkeep`, `tests/.gitkeep`
+- Create: `package.json`, `tsconfig.json`, `biome.json`, `.gitignore`, `bin/open42`, `src/cli.ts`, `src/types.ts`, `recorder/Package.swift`, `recorder/Sources/Recorder/main.swift`, `recorder/Sources/RecorderCore/.gitkeep`, `recorder/Tests/RecorderCoreTests/.gitkeep`, `tests/.gitkeep`
 
 - [ ] **Step 1: Create `.gitignore`**
 ```
@@ -134,11 +134,11 @@ recorder/.swiftpm/
 - [ ] **Step 2: Create `package.json`**
 ```json
 {
-  "name": "showme",
+  "name": "open42",
   "version": "0.0.1",
   "description": "Record a task once, replay it on macOS via cua-driver.",
   "type": "module",
-  "bin": { "showme": "./bin/showme" },
+  "bin": { "open42": "./bin/open42" },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -186,7 +186,7 @@ recorder/.swiftpm/
 }
 ```
 
-- [ ] **Step 5: Create `bin/showme`**
+- [ ] **Step 5: Create `bin/open42`**
 ```ts
 #!/usr/bin/env bun
 import { main } from "../src/cli.ts";
@@ -195,12 +195,12 @@ main(Bun.argv.slice(2)).catch((err) => {
   process.exit(1);
 });
 ```
-Then `chmod +x bin/showme`.
+Then `chmod +x bin/open42`.
 
 - [ ] **Step 6: Create stub `src/cli.ts`**
 ```ts
 export async function main(args: string[]): Promise<void> {
-  console.log("showme 0.0.1 (stub)");
+  console.log("open42 0.0.1 (stub)");
 }
 ```
 
@@ -216,10 +216,10 @@ export type Empty = Record<string, never>;
 import PackageDescription
 
 let package = Package(
-  name: "showme-recorder",
+  name: "open42-recorder",
   platforms: [.macOS(.v14)],
   products: [
-    .executable(name: "showme-recorder", targets: ["Recorder"]),
+    .executable(name: "open42-recorder", targets: ["Recorder"]),
     .library(name: "RecorderCore", targets: ["RecorderCore"]),
   ],
   targets: [
@@ -236,10 +236,10 @@ import Foundation
 
 let args = CommandLine.arguments
 if args.contains("--version") {
-  print("showme-recorder 0.0.1")
+  print("open42-recorder 0.0.1")
   exit(0)
 }
-print("showme-recorder: stub. Use --version.")
+print("open42-recorder: stub. Use --version.")
 ```
 
 - [ ] **Step 10: Install + verify**
@@ -247,16 +247,16 @@ print("showme-recorder: stub. Use --version.")
 Run: `bun install`
 Expected: dependencies installed, `node_modules/` populated.
 
-Run: `bun bin/showme`
-Expected output: `showme 0.0.1 (stub)`
+Run: `bun bin/open42`
+Expected output: `open42 0.0.1 (stub)`
 
-Run: `cd recorder && swift build -c release && ./.build/release/showme-recorder --version && cd ..`
-Expected output: `showme-recorder 0.0.1`
+Run: `cd recorder && swift build -c release && ./.build/release/open42-recorder --version && cd ..`
+Expected output: `open42-recorder 0.0.1`
 
 - [ ] **Step 11: Commit**
 ```bash
 git add .gitignore package.json tsconfig.json biome.json bin/ src/ recorder/ tests/
-git commit -m "chore: scaffold showme (TS+bun CLI + Swift recorder skeleton)"
+git commit -m "chore: scaffold open42 (TS+bun CLI + Swift recorder skeleton)"
 ```
 
 ---
@@ -285,7 +285,7 @@ describe("cli", () => {
   test("--version prints version", async () => {
     const log = captureLog();
     await main(["--version"]);
-    expect(log.text()).toMatch(/^showme \d+\.\d+\.\d+/);
+    expect(log.text()).toMatch(/^open42 \d+\.\d+\.\d+/);
   });
 
   test("unknown subcommand exits non-zero", async () => {
@@ -320,7 +320,7 @@ Expected: 4 failures (current `main` only prints stub).
 ```ts
 const VERSION = "0.0.1";
 
-const USAGE = `Usage: showme <command> [options]
+const USAGE = `Usage: open42 <command> [options]
 
 Commands:
   record <task-name>     Record a task by demonstration
@@ -338,7 +338,7 @@ export async function main(args: string[]): Promise<void> {
     return;
   }
   if (args[0] === "--version" || args[0] === "-v") {
-    console.log(`showme ${VERSION}`);
+    console.log(`open42 ${VERSION}`);
     return;
   }
   const cmd = args[0];
@@ -493,7 +493,7 @@ git commit -m "feat(recorder): Event Codable types with round-trip tests"
 
 ## Chunk 2: Swift Recorder
 
-Goal: a working `showme-recorder` binary that captures real CGEvents, snapshots AX state per event, takes periodic screenshots, and writes a valid trajectory directory. Exits cleanly on SIGINT.
+Goal: a working `open42-recorder` binary that captures real CGEvents, snapshots AX state per event, takes periodic screenshots, and writes a valid trajectory directory. Exits cleanly on SIGINT.
 
 ### Task 3: cua-driver bridge (Swift)
 
@@ -854,12 +854,12 @@ public enum Permissions {
   public static func ensureOrDie() {
     if hasAccessibility() { return }
     print("""
-    showme-recorder requires Accessibility permission to capture human input.
+    open42-recorder requires Accessibility permission to capture human input.
 
     1. macOS just opened System Settings → Privacy & Security → Accessibility.
     2. Click the + and add this binary at:
        \(CommandLine.arguments[0])
-    3. Re-run showme-recorder.
+    3. Re-run open42-recorder.
     """)
     promptIfMissing()
     exit(2)
@@ -898,7 +898,7 @@ public final class EventTap {
       callback: EventTap.callback,
       userInfo: userInfo
     ) else {
-      throw NSError(domain: "showme-recorder", code: 1,
+      throw NSError(domain: "open42-recorder", code: 1,
         userInfo: [NSLocalizedDescriptionKey: "CGEvent.tapCreate failed (Accessibility likely revoked)"])
     }
     self.tap = tap
@@ -970,7 +970,7 @@ if CommandLine.arguments.contains("--smoke-tap") {
 Build + run:
 ```bash
 cd recorder && swift build -c release
-./.build/release/showme-recorder --smoke-tap
+./.build/release/open42-recorder --smoke-tap
 ```
 
 Expected: macOS prompts for Accessibility (first run only). After granting, click somewhere — JSON event prints to stdout. Press Ctrl-C to exit.
@@ -999,7 +999,7 @@ public final class Screenshotter {
   private let writer: TrajectoryWriter
   private let intervalSeconds: TimeInterval
   private var timer: DispatchSourceTimer?
-  private let queue = DispatchQueue(label: "showme.screenshotter")
+  private let queue = DispatchQueue(label: "open42.screenshotter")
   private var currentTarget: (pid: Int32, windowId: Int)? = nil
 
   public init(writer: TrajectoryWriter, intervalSeconds: TimeInterval = 2.0) {
@@ -1104,7 +1104,7 @@ import RecorderCore
 
 func usage() -> Never {
   print("""
-  Usage: showme-recorder --output <dir> --task <name> --description <text>
+  Usage: open42-recorder --output <dir> --task <name> --description <text>
 
   Captures CGEvents + AX snapshots + periodic screenshots into <dir>/events.jsonl
   and <dir>/session.json. Stop with Ctrl-C.
@@ -1113,7 +1113,7 @@ func usage() -> Never {
 }
 
 let args = CommandLine.arguments
-if args.contains("--version") { print("showme-recorder 0.0.1"); exit(0) }
+if args.contains("--version") { print("open42-recorder 0.0.1"); exit(0) }
 if args.contains("--help") { usage() }
 
 func arg(_ flag: String) -> String? {
@@ -1178,8 +1178,8 @@ sigSrc.setEventHandler {
 }
 sigSrc.resume()
 
-print("[showme-recorder] recording → \(outURL.path)")
-print("[showme-recorder] perform your task. Ctrl-C when done.")
+print("[open42-recorder] recording → \(outURL.path)")
+print("[open42-recorder] perform your task. Ctrl-C when done.")
 CFRunLoopRun()
 ```
 
@@ -1191,10 +1191,10 @@ Run cua-driver daemon: `open -n -g -a CuaDriver --args serve`
 
 Run recorder against a test directory:
 ```bash
-mkdir -p /tmp/showme-test
+mkdir -p /tmp/open42-test
 cd recorder && swift build -c release
-./.build/release/showme-recorder \
-  --output /tmp/showme-test \
+./.build/release/open42-recorder \
+  --output /tmp/open42-test \
   --task calc-test \
   --description "calculator 17 times 23"
 ```
@@ -1202,9 +1202,9 @@ cd recorder && swift build -c release
 Open Calculator, type `17 * 23 =`, then `Ctrl-C` in the recorder terminal.
 
 Verify:
-- `/tmp/showme-test/events.jsonl` has 8+ lines (one per click/key)
-- `/tmp/showme-test/session.json` exists with task_name + task_description
-- `/tmp/showme-test/step_*.jpg` files exist
+- `/tmp/open42-test/events.jsonl` has 8+ lines (one per click/key)
+- `/tmp/open42-test/session.json` exists with task_name + task_description
+- `/tmp/open42-test/step_*.jpg` files exist
 - Sample one event line — `kind` is set; `ax_tree` field present (may be null if cua-driver couldn't snapshot)
 
 - [ ] **Step 3: Commit**
@@ -1253,7 +1253,7 @@ export function resolveSkillRoot(skillName: string): string {
 
 export function resolveRecorderBinary(): string {
   // First check vendored binary in the repo (built via `swift build`).
-  const repoBin = join(import.meta.dir, "..", "recorder", ".build", "release", "showme-recorder");
+  const repoBin = join(import.meta.dir, "..", "recorder", ".build", "release", "open42-recorder");
   return repoBin;
 }
 ```
@@ -1281,8 +1281,8 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
     );
   }
 
-  console.log("[showme] this recording will capture screenshots of your screen.");
-  console.log("[showme] close anything sensitive. Starting in 3...");
+  console.log("[open42] this recording will capture screenshots of your screen.");
+  console.log("[open42] close anything sensitive. Starting in 3...");
   await sleep(1000); console.log("2..."); await sleep(1000); console.log("1..."); await sleep(1000);
 
   const proc = spawn(binary, [
@@ -1298,7 +1298,7 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
     });
   });
 
-  console.log(`[showme] trajectory written to ${dir}`);
+  console.log(`[open42] trajectory written to ${dir}`);
 }
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
@@ -2034,9 +2034,9 @@ case "compile": {
     skillName,
     claudeClient: new AnthropicClaudeClient(),
   });
-  console.log(`[showme] wrote ${result.outputPath}`);
+  console.log(`[open42] wrote ${result.outputPath}`);
   if (!result.valid) {
-    console.error(`[showme] WARNING: SKILL.md failed validation: ${result.errors.join(", ")}`);
+    console.error(`[open42] WARNING: SKILL.md failed validation: ${result.errors.join(", ")}`);
     process.exitCode = 2;
   }
   return;
@@ -2163,7 +2163,7 @@ describe("run", () => {
 });
 
 function makeFakeSkill(name: string): string {
-  const dir = join("/tmp", `showme-test-${name}-${Date.now()}`);
+  const dir = join("/tmp", `open42-test-${name}-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "SKILL.md"), `---
 name: ${name}
@@ -2221,14 +2221,14 @@ export async function runSkill(opts: RunOptions): Promise<void> {
   const systemPrompt = buildSystemPrompt(skillMd);
 
   if (!opts.live) {
-    console.log("[showme] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.");
+    console.log("[open42] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.");
   }
-  console.log("[showme] press Ctrl-C to abort.");
+  console.log("[open42] press Ctrl-C to abort.");
 
   let aborted = false;
   const onSigint = () => {
     aborted = true;
-    console.log("\n[showme] aborted by user.");
+    console.log("\n[open42] aborted by user.");
     process.exit(130);
   };
   process.on("SIGINT", onSigint);
@@ -2237,7 +2237,7 @@ export async function runSkill(opts: RunOptions): Promise<void> {
     const tool = input.tool_name ?? "<unknown>";
     const args = input.tool_input ?? {};
     const summary = summarizeToolCall(tool, args);
-    console.log(`[showme] about to: ${summary}`);
+    console.log(`[open42] about to: ${summary}`);
     if (!opts.live) {
       // Block execution by returning a "denied" decision.
       return { decision: "block", reason: "dry-run mode" };
@@ -2271,13 +2271,13 @@ export async function runSkill(opts: RunOptions): Promise<void> {
       const msg = message as any;
       if (msg.type === "tool_use") stepCount++;
       if (msg.type === "result" && "result" in msg) {
-        console.log(`[showme] ${msg.result}`);
+        console.log(`[open42] ${msg.result}`);
       }
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
   }
-  console.log(`[showme] done. ${stepCount} tool calls.`);
+  console.log(`[open42] done. ${stepCount} tool calls.`);
 }
 
 function buildSystemPrompt(skillMd: string): string {
@@ -2367,11 +2367,11 @@ description: Take a screenshot of the frontmost window.
 EOF
 
 # Dry run first
-bun bin/showme run hello --prompt "do it"
+bun bin/open42 run hello --prompt "do it"
 # Expected: prints "about to: ..." for each tool call. No actual execution.
 
 # Live run
-bun bin/showme run hello --live --prompt "do it"
+bun bin/open42 run hello --live --prompt "do it"
 # Expected: cua-driver tools execute. Title of frontmost window printed.
 ```
 
@@ -2411,7 +2411,7 @@ cp -r ~/.cua/skills/calc/trajectory tests/fixtures/calc/      # if not already t
 cp -r ~/.cua/skills/triage-issues/trajectory tests/fixtures/triage/
 
 # Pick a third task — record it now if you don't have one
-bun bin/showme record todo "add a checkbox task in Reminders"
+bun bin/open42 record todo "add a checkbox task in Reminders"
 cp -r ~/.cua/skills/todo/trajectory tests/fixtures/todo/
 ```
 
@@ -2538,10 +2538,10 @@ jobs:
           # Each invocation produces a separate binary under .build/<arch>-apple-macosx/release/
           mkdir -p .build/release
           lipo -create \
-            .build/arm64-apple-macosx/release/showme-recorder \
-            .build/x86_64-apple-macosx/release/showme-recorder \
-            -output .build/release/showme-recorder
-          lipo -info .build/release/showme-recorder  # verify
+            .build/arm64-apple-macosx/release/open42-recorder \
+            .build/x86_64-apple-macosx/release/open42-recorder \
+            -output .build/release/open42-recorder
+          lipo -info .build/release/open42-recorder  # verify
       - name: Codesign
         env:
           DEV_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
@@ -2554,7 +2554,7 @@ jobs:
           security import /tmp/cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
           security default-keychain -s build.keychain
-          codesign --sign "$DEV_ID" --options runtime --timestamp recorder/.build/release/showme-recorder
+          codesign --sign "$DEV_ID" --options runtime --timestamp recorder/.build/release/open42-recorder
       - name: Notarize
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -2562,13 +2562,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           mkdir -p dmg-staging
-          cp recorder/.build/release/showme-recorder dmg-staging/
-          hdiutil create -volname "showme" -srcfolder dmg-staging -ov -format UDZO showme.dmg
-          xcrun notarytool submit showme.dmg --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-          xcrun stapler staple showme.dmg
+          cp recorder/.build/release/open42-recorder dmg-staging/
+          hdiutil create -volname "open42" -srcfolder dmg-staging -ov -format UDZO open42.dmg
+          xcrun notarytool submit open42.dmg --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple open42.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          files: showme.dmg
+          files: open42.dmg
 ```
 
 Required GitHub secrets (user sets these once):
@@ -2601,7 +2601,7 @@ cd recorder && swift build -c release && cd ..
 
 - [ ] **Step 3: Record**
 ```bash
-bun bin/showme record calc "calculate 17 times 23 in Calculator"
+bun bin/open42 record calc "calculate 17 times 23 in Calculator"
 # Open Calculator. Type 17, *, 23, =. Ctrl-C in the recorder terminal.
 ```
 
@@ -2609,21 +2609,21 @@ Verify: `~/.cua/skills/calc/trajectory/events.jsonl` populated, `step_*.jpg` fil
 
 - [ ] **Step 4: Compile**
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... bun bin/showme compile calc
+ANTHROPIC_API_KEY=sk-ant-... bun bin/open42 compile calc
 ```
 
 Verify: `~/.cua/skills/calc/SKILL.md` exists, validates, looks reasonable.
 
 - [ ] **Step 5: Run --dry-run**
 ```bash
-bun bin/showme run calc --prompt "compute 17 * 23"
+bun bin/open42 run calc --prompt "compute 17 * 23"
 ```
 
 Verify: prints planned actions, doesn't execute.
 
 - [ ] **Step 6: Run --live**
 ```bash
-bun bin/showme run calc --live --prompt "compute 17 * 23"
+bun bin/open42 run calc --live --prompt "compute 17 * 23"
 ```
 
 Verify: cursor moves, Calculator shows 391. The "demo" works end-to-end.
@@ -2694,13 +2694,13 @@ git commit -m "feat: triage-issues skill working on multiple repos (compile prom
 
 **Files:**
 - Modify: `README.md`
-- Add: `docs/showme-demo.gif`
+- Add: `docs/open42-demo.gif`
 
 - [ ] **Step 1: Write `README.md`**
 
 Sections:
 1. Hero gif (60s, embedded at top)
-2. One-paragraph pitch: "showme records a task once. Claude turns it into a SKILL.md. cua-driver replays it on your real Mac. macOS only. ~"
+2. One-paragraph pitch: "open42 records a task once. Claude turns it into a SKILL.md. cua-driver replays it on your real Mac. macOS only. ~"
 3. Install (two commands: `bun install` + cua-driver one-liner; or download DMG)
 4. Quickstart (`record`, `compile`, `run`)
 5. How it works (CGEventTap → Claude → cua-driver MCP)
@@ -2717,7 +2717,7 @@ Keep under 200 lines.
 
 - [ ] **Step 3: Commit**
 ```bash
-git add README.md docs/showme-demo.gif
+git add README.md docs/open42-demo.gif
 git commit -m "docs: README with hero gif"
 ```
 
@@ -2743,11 +2743,11 @@ git push origin v0.1.0
 
 - [ ] **Step 3: Verify CI builds DMG**
 
-Watch the Release workflow in GitHub Actions. Expected: `showme.dmg` notarized + attached to the v0.1.0 release.
+Watch the Release workflow in GitHub Actions. Expected: `open42.dmg` notarized + attached to the v0.1.0 release.
 
 - [ ] **Step 4: Manual install test on a different Mac (or VM)**
 
-Download `showme.dmg`, open, install, run. Verify no Gatekeeper warning. Run the bundled `triage-issues` skill against your own GitHub.
+Download `open42.dmg`, open, install, run. Verify no Gatekeeper warning. Run the bundled `triage-issues` skill against your own GitHub.
 
 - [ ] **Step 5: Commit any fixes from the install test**
 
@@ -2761,7 +2761,7 @@ If the install test surfaces issues, fix and tag v0.1.1.
 
 Format: 1 sentence + gif + repo link.
 
-Draft: "I taught my Mac to triage GitHub issues by doing it once. Then it did it on a different repo. Built with cua-driver + agentskills. Open source. <gif> github.com/riccardo/showme"
+Draft: "I taught my Mac to triage GitHub issues by doing it once. Then it did it on a different repo. Built with cua-driver + agentskills. Open source. <gif> github.com/riccardo/open42"
 
 - [ ] **Step 2: Optional 3-tweet thread**
 

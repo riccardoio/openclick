@@ -7,6 +7,7 @@ import {
   exportMemoryBundle,
   importMemoryBundle,
   listAppMemories,
+  recordTakeoverLearning,
   renderRelevantMemoriesForPrompt,
   writeMemoryBundle,
 } from "../src/memory.ts";
@@ -15,14 +16,14 @@ let home: string;
 let originalHome: string | undefined;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "showme-memory-"));
-  originalHome = Bun.env.SHOWME_HOME;
-  Bun.env.SHOWME_HOME = home;
+  home = mkdtempSync(join(tmpdir(), "open42-memory-"));
+  originalHome = Bun.env.OPEN42_HOME;
+  Bun.env.OPEN42_HOME = home;
 });
 
 afterEach(() => {
-  if (originalHome === undefined) Bun.env.SHOWME_HOME = undefined;
-  else Bun.env.SHOWME_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
+  else Bun.env.OPEN42_HOME = originalHome;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -93,5 +94,156 @@ describe("app memory", () => {
     ]);
     expect(rendered).toContain("caution");
     expect(rendered).toContain("Avoid raw drags");
+  });
+
+  test("merges repeated facts incrementally instead of replacing the lesson", () => {
+    addAppMemoryFact({
+      bundleId: "com.example.App",
+      appName: "Example",
+      kind: "affordance",
+      description: "Click Continue after the Gmail confirmation prompt.",
+      confidence: 0.61,
+      evidence: ["first takeover"],
+    });
+    addAppMemoryFact({
+      bundleId: "com.example.App",
+      appName: "Example",
+      kind: "affordance",
+      description: "Click Continue after the Gmail confirmation prompt.",
+      confidence: 0.9,
+      evidence: ["second takeover"],
+    });
+
+    const memory = exportMemoryBundle().memories[0];
+    const fact = memory?.affordances[0];
+    expect(memory?.affordances).toHaveLength(1);
+    expect(fact?.description).toBe(
+      "Click Continue after the Gmail confirmation prompt.",
+    );
+    expect(fact?.evidence_count).toBe(2);
+    expect(fact?.confidence).toBe(0.9);
+    expect(fact?.evidence).toContain("first takeover");
+    expect(fact?.evidence).toContain("second takeover");
+  });
+
+  test("keeps distinct lessons side by side for the same app", () => {
+    addAppMemoryFact({
+      bundleId: "com.example.App",
+      appName: "Example",
+      kind: "affordance",
+      description: "Use Cmd-L before entering Gmail URLs.",
+      confidence: 0.7,
+    });
+    addAppMemoryFact({
+      bundleId: "com.example.App",
+      appName: "Example",
+      kind: "affordance",
+      description: "Open the unread filter before selecting the latest email.",
+      confidence: 0.72,
+    });
+
+    const descriptions =
+      exportMemoryBundle().memories[0]?.affordances.map(
+        (fact) => fact.description,
+      ) ?? [];
+    expect(descriptions).toContain("Use Cmd-L before entering Gmail URLs.");
+    expect(descriptions).toContain(
+      "Open the unread filter before selecting the latest email.",
+    );
+  });
+
+  test("retains stored lessons beyond the prompt-rendering budget", () => {
+    for (let i = 0; i < 55; i++) {
+      addAppMemoryFact({
+        bundleId: "com.example.App",
+        appName: "Example",
+        kind: "affordance",
+        description: `Long-term lesson ${i}`,
+        confidence: 0.6,
+      });
+    }
+
+    const memory = exportMemoryBundle().memories[0];
+    expect(memory?.affordances).toHaveLength(55);
+
+    const rendered = renderRelevantMemoriesForPrompt([
+      { name: "Example", bundleId: "com.example.App" },
+    ]);
+    expect(rendered?.match(/Long-term lesson/g)).toHaveLength(5);
+  });
+
+  test("imports merge with existing local lessons instead of replacing them", () => {
+    addAppMemoryFact({
+      bundleId: "com.example.App",
+      appName: "Example",
+      kind: "affordance",
+      description: "Local lesson remains available.",
+      confidence: 0.8,
+    });
+
+    const otherHome = mkdtempSync(join(tmpdir(), "open42-memory-import-"));
+    try {
+      const original = Bun.env.OPEN42_HOME;
+      Bun.env.OPEN42_HOME = otherHome;
+      addAppMemoryFact({
+        bundleId: "com.example.App",
+        appName: "Example",
+        kind: "affordance",
+        description: "Imported lesson is added as a candidate.",
+        confidence: 0.9,
+      });
+      const path = join(otherHome, "bundle.json");
+      writeMemoryBundle(path);
+
+      Bun.env.OPEN42_HOME = home;
+      importMemoryBundle(path);
+      Bun.env.OPEN42_HOME = original;
+    } finally {
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+
+    const facts = exportMemoryBundle().memories[0]?.affordances ?? [];
+    expect(facts.map((fact) => fact.description)).toContain(
+      "Local lesson remains available.",
+    );
+    expect(facts.map((fact) => fact.description)).toContain(
+      "Imported lesson is added as a candidate.",
+    );
+    expect(
+      facts.find(
+        (fact) => fact.description === "Local lesson remains available.",
+      )?.source,
+    ).toBe("local");
+    expect(
+      facts.find(
+        (fact) =>
+          fact.description === "Imported lesson is added as a candidate.",
+      )?.source,
+    ).toBe("imported");
+  });
+
+  test("takeover outcomes add better-scoped lessons without overwriting successes", () => {
+    recordTakeoverLearning({
+      bundleId: "com.example.App",
+      appName: "Example",
+      task: "Open the latest unread Gmail email",
+      issue: "Confirmation click required",
+      summary: "Clicked Continue, then Gmail returned to the inbox.",
+      outcome: "success",
+    });
+    recordTakeoverLearning({
+      bundleId: "com.example.App",
+      appName: "Example",
+      task: "Open the latest unread Gmail email",
+      issue: "Wrong screen after takeover",
+      summary: "The takeover ended on Chrome settings, not Gmail.",
+      outcome: "failed",
+    });
+
+    const memory = exportMemoryBundle().memories[0];
+    expect(memory?.affordances[0]?.description).toContain(
+      "successful user takeover",
+    );
+    expect(memory?.avoid[0]?.description).toContain("did not fully resolve it");
   });
 });
