@@ -331,8 +331,9 @@ final class ActivityPanelViewModel: ObservableObject {
     onTakeoverStarted?(issue)
     takeoverTimer?.invalidate()
     takeoverTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-      Task { @MainActor in
-        self?.updateTakeoverElapsed(startedAt: startedAt)
+      guard let viewModel = self else { return }
+      Task { @MainActor [viewModel, startedAt] in
+        viewModel.updateTakeoverElapsed(startedAt: startedAt)
       }
     }
   }
