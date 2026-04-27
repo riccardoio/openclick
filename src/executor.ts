@@ -1,5 +1,5 @@
 /**
- * Local executor for `showme run --fast` plans.
+ * Local executor for `open42 run --fast` plans.
  *
  * Walks a {@link Plan} step by step, shelling out to `cua-driver <tool> <json>`
  * for each — no LLM round-trip per step. The substitution layer below
@@ -44,6 +44,11 @@ export interface ExecutePlanOptions {
    * Tests / cases that already prime the cache can disable this.
    */
   refreshBeforeAxClick?: boolean;
+  /**
+   * Validate the pinned pid/window_id before window-targeted actions. In
+   * production this defaults on; injected test runners opt in explicitly.
+   */
+  revalidateWindowLease?: boolean;
   /** Maximum number of plan steps to execute in this invocation. */
   maxSteps?: number;
   /**
@@ -74,6 +79,8 @@ export interface ExecutePlanResult {
 export interface ExecutorContext {
   pid?: number;
   windowId?: number;
+  /** Title of the selected window, used as a lease fingerprint if id changes. */
+  windowTitle?: string;
   /** Structured AX entries from the latest get_window_state. */
   axIndex?: AxIndexEntry[];
   /** Pixel size of the optimized screenshot most recently shown to the planner. */
@@ -98,6 +105,10 @@ export interface AxIndexEntry {
   title?: string;
   /** Roles of ancestor elements, root-first (no titles, just role chain). */
   ancestorPath: string[];
+  /** 0-based line number in the source AX dump; used to find descendants. */
+  lineNumber: number;
+  /** Leading whitespace count in the source AX dump. */
+  indent: number;
   /**
    * 0-based ordinal among entries that share the SAME (role, title) tuple
    * (case-insensitive). Lets the planner pick "the second AXButton 'OK'".
@@ -135,6 +146,7 @@ const BACKGROUND_SAFE_TOOLS = new Set([
   "list_apps",
   "list_windows",
   "multi_drag",
+  "open_url",
   "press_key",
   "right_click",
   "screenshot",
@@ -181,7 +193,7 @@ export function classifyToolSafety(tool: string): StepSafety {
   return {
     tool: normalized,
     category: "unsupported",
-    reason: `${normalized} is not in showme's background-safe tool allowlist`,
+    reason: `${normalized} is not in open42's background-safe tool allowlist`,
   };
 }
 
@@ -196,6 +208,7 @@ export function classifyStepSafety(step: Pick<PlanStep, "tool">): StepSafety {
  */
 export interface PlanSelector {
   title?: string;
+  title_contains?: string;
   ax_id?: string;
   role?: string;
   ordinal?: number;
@@ -223,7 +236,7 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
   // (role|title) → count, for ordinal assignment.
   const ordinalCounter = new Map<string, number>();
 
-  for (const rawLine of stdout.split("\n")) {
+  for (const [lineNumber, rawLine] of stdout.split("\n").entries()) {
     const m = lineRe.exec(rawLine);
     if (!m) continue;
     const indent = (m[1] ?? "").length;
@@ -244,7 +257,16 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
         const ordKey = `${role.toLowerCase()}|${(title ?? "").toLowerCase()}`;
         const ordinal = ordinalCounter.get(ordKey) ?? 0;
         ordinalCounter.set(ordKey, ordinal + 1);
-        entries.push({ index, role, id, title, ancestorPath, ordinal });
+        entries.push({
+          index,
+          role,
+          id,
+          title,
+          ancestorPath,
+          lineNumber,
+          indent,
+          ordinal,
+        });
       }
     }
 
@@ -261,9 +283,11 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
  *
  * Resolution rules:
  *   - ax_id present → match unique entry by id (case-insensitive).
- *   - title + role  → match all by both, apply ordinal (default 0). When
- *                     multiple match without an ordinal, return null.
- *   - title alone   → match by title; multiple matches without ordinal → null.
+ *   - title/title_contains + role → match all by both, apply ordinal
+ *                                  (default 0). When multiple match without
+ *                                  an ordinal, return null.
+ *   - title/title_contains alone  → match by title; multiple matches without
+ *                                  ordinal → null.
  */
 export function resolveSelector(
   entries: AxIndexEntry[],
@@ -290,10 +314,15 @@ export function resolveSelector(
   }
 
   const wantTitle = lower(selector.title);
+  const wantTitleContains = lower(selector.title_contains);
   const wantRole = lower(selector.role);
   let matches = entries;
   if (wantTitle !== undefined)
     matches = matches.filter((e) => lower(e.title) === wantTitle);
+  if (wantTitleContains !== undefined)
+    matches = matches.filter((e) =>
+      lower(e.title)?.includes(wantTitleContains),
+    );
   if (wantRole !== undefined)
     matches = matches.filter((e) => lower(e.role) === wantRole);
 
@@ -318,6 +347,7 @@ export async function executePlan(
     ? {
         pid: opts.initialContext.pid,
         windowId: opts.initialContext.windowId,
+        windowTitle: opts.initialContext.windowTitle,
         axIndex: opts.initialContext.axIndex,
         screenshotWidth: opts.initialContext.screenshotWidth,
         screenshotHeight: opts.initialContext.screenshotHeight,
@@ -325,6 +355,7 @@ export async function executePlan(
     : {};
 
   const refreshBeforeAxClick = opts.refreshBeforeAxClick ?? true;
+  const revalidateWindowLease = opts.revalidateWindowLease ?? !opts.stepRunner;
   const executionPolicy = opts.executionPolicy ?? "background";
 
   let executed = 0;
@@ -348,9 +379,30 @@ export async function executePlan(
     // intent.success_signals — that's the only validation we trust. Legacy
     // plans may still contain assert steps; treat them as silent skips.
     if (step.tool === "assert") {
-      log(`[showme] (skip assert: ${step.purpose})`);
+      log(`[open42] (skip assert: ${step.purpose})`);
       executed++;
       continue;
+    }
+
+    const normalizedStep = normalizePlanStep(step);
+    let resolved = resolveStepForContext(normalizedStep, ctx);
+
+    if (
+      !opts.dryRun &&
+      revalidateWindowLease &&
+      shouldRevalidateWindowLease(resolved, ctx)
+    ) {
+      const leaseResult = await revalidateCurrentWindowLease(ctx, runner, log);
+      if (!leaseResult.ok) {
+        return {
+          stepsExecuted: executed,
+          totalSteps: plan.steps.length,
+          failedStepIndex: i,
+          error: leaseResult.error ?? "window lease validation failed",
+          lastContext: ctx,
+        };
+      }
+      resolved = resolveStepForContext(normalizedStep, ctx);
     }
 
     // Auto-refresh: state-changing clicks rerender; element_index drifts. If
@@ -361,7 +413,7 @@ export async function executePlan(
     if (
       !opts.dryRun &&
       refreshBeforeAxClick &&
-      isAxTargetedStep(step) &&
+      isAxTargetedStep(normalizedStep) &&
       ctx.pid !== undefined &&
       ctx.windowId !== undefined
     ) {
@@ -370,7 +422,7 @@ export async function executePlan(
         args: { pid: ctx.pid, window_id: ctx.windowId },
         purpose: "refresh AX index",
       };
-      log("[showme] (refresh AX index)");
+      log("[open42] (refresh AX index)");
       const refreshResult = await runner(refreshStep);
       if (refreshResult.ok && refreshResult.stdout)
         absorbContext(
@@ -381,19 +433,10 @@ export async function executePlan(
         );
       // A failed refresh shouldn't kill the run — fall through and let the
       // real click attempt produce the error message the user expects.
+      resolved = resolveStepForContext(normalizedStep, ctx);
     }
 
-    const normalizedStep = normalizePlanStep(step);
-    const resolved: PlanStep = {
-      tool: normalizedStep.tool,
-      args: repairArgsForContext(
-        normalizedStep.tool,
-        substitutePlaceholders(normalizedStep.args, ctx),
-        ctx,
-      ),
-      purpose: normalizedStep.purpose,
-    };
-    log(`[showme] about to: ${step.purpose}`);
+    log(`[open42] about to: ${step.purpose}`);
     if (opts.dryRun) continue;
     const safety = classifyStepSafety(resolved);
     if (safety.category === "unsupported") {
@@ -413,7 +456,7 @@ export async function executePlan(
         stepsExecuted: executed,
         totalSteps: plan.steps.length,
         failedStepIndex: i,
-        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let showme control foreground/global input.`,
+        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
         lastContext: ctx,
       };
     }
@@ -466,6 +509,128 @@ const EDITABLE_ROLES = new Set([
   "axsearchfield",
 ]);
 
+const PID_TARGETED_TOOLS = new Set([
+  "get_window_state",
+  "list_windows",
+  "click",
+  "double_click",
+  "right_click",
+  "drag",
+  "multi_drag",
+  "click_hold",
+  "scroll",
+  "set_value",
+  "type_text",
+  "type_text_chars",
+  "press_key",
+  "hotkey",
+  "zoom",
+  "paste_svg",
+]);
+
+const WINDOW_TARGETED_TOOLS = new Set([
+  "get_window_state",
+  "click",
+  "double_click",
+  "right_click",
+  "drag",
+  "multi_drag",
+  "click_hold",
+  "set_value",
+  "screenshot",
+  "paste_svg",
+]);
+
+const PID_WINDOW_PAIRED_TOOLS = new Set([
+  "get_window_state",
+  "click",
+  "double_click",
+  "right_click",
+  "drag",
+  "multi_drag",
+  "click_hold",
+  "scroll",
+  "set_value",
+  "type_text",
+  "paste_svg",
+]);
+
+const APP_DISCOVERY_ARG_KEYS = ["app_name", "app", "application", "bundle_id"];
+
+function resolveStepForContext(step: PlanStep, ctx: ExecutorContext): PlanStep {
+  return {
+    tool: step.tool,
+    args: repairArgsForContext(
+      step.tool,
+      substitutePlaceholders(step.args, ctx),
+      ctx,
+    ),
+    purpose: step.purpose,
+  };
+}
+
+function shouldRevalidateWindowLease(
+  step: PlanStep,
+  ctx: ExecutorContext,
+): boolean {
+  if (ctx.pid === undefined || ctx.windowId === undefined) return false;
+  const tool = canonicalToolName(step.tool);
+  if (tool === "launch_app" || tool === "list_windows" || tool === "open_url") {
+    return false;
+  }
+  const pid = asFiniteNumber(step.args.pid);
+  const windowId = asFiniteNumber(step.args.window_id);
+  if (pid !== ctx.pid || windowId !== ctx.windowId) return false;
+  return (
+    WINDOW_TARGETED_TOOLS.has(tool) ||
+    (tool === "scroll" && windowId !== null) ||
+    (tool === "type_text" && windowId !== null)
+  );
+}
+
+async function revalidateCurrentWindowLease(
+  ctx: ExecutorContext,
+  runner: StepRunner,
+  log: (line: string) => void,
+): Promise<StepResult> {
+  if (ctx.pid === undefined || ctx.windowId === undefined) return { ok: true };
+  const originalWindowId = ctx.windowId;
+  const result = await runner({
+    tool: "list_windows",
+    args: { pid: ctx.pid },
+    purpose: "validate current window lease",
+  });
+  if (!result.ok || !result.stdout) {
+    log("[open42] (window lease: validation unavailable)");
+    return { ok: true };
+  }
+  const windows = parseWindowsPayload(result.stdout);
+  if (!windows) {
+    log("[open42] (window lease: validation returned unparsable windows)");
+    return { ok: true };
+  }
+  const exact = findWindowById(windows, originalWindowId);
+  if (exact) {
+    rememberWindow(ctx, exact);
+    return { ok: true };
+  }
+
+  const replacement = findWindowLeaseReplacement(windows, ctx);
+  if (replacement) {
+    rememberWindow(ctx, replacement);
+    log(
+      `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+    );
+    return { ok: true };
+  }
+
+  const title = ctx.windowTitle ? ` titled "${ctx.windowTitle}"` : "";
+  return {
+    ok: false,
+    error: `window lease lost: window_id ${originalWindowId}${title} is no longer present and no unambiguous replacement was found. Refusing to switch to another window silently.`,
+  };
+}
+
 async function runResolvedStep(
   step: PlanStep,
   runner: StepRunner,
@@ -474,6 +639,12 @@ async function runResolvedStep(
 ): Promise<StepResult> {
   const buttonStep = keyboardStepToButtonClick(step, ctx);
   if (buttonStep) return await runner(buttonStep);
+
+  const rowClickStep = rowCoordinateClickToAxClick(step, ctx);
+  if (rowClickStep) {
+    log("[open42] (row click fallback: using AX row/link)");
+    return await runner(rowClickStep);
+  }
 
   const text = step.args.text;
   if (
@@ -488,7 +659,7 @@ async function runResolvedStep(
     return await runner(step);
   }
 
-  log("[showme] (type_text fallback: sending key sequence)");
+  log("[open42] (type_text fallback: sending key sequence)");
   let stdout = "";
   for (const keyStep of textToKeySteps(step.args.pid, text, step.purpose)) {
     const result = await runner(keyStep);
@@ -541,6 +712,151 @@ function keyboardStepToButtonClick(
     },
     purpose: step.purpose,
   };
+}
+
+function rowCoordinateClickToAxClick(
+  step: PlanStep,
+  ctx: ExecutorContext,
+): PlanStep | null {
+  if (
+    step.tool !== "click" ||
+    typeof step.args.pid !== "number" ||
+    typeof step.args.x !== "number" ||
+    typeof step.args.y !== "number" ||
+    step.args.element_index !== undefined ||
+    step.args.__selector !== undefined ||
+    step.args.__title !== undefined ||
+    step.args.__ax_id !== undefined ||
+    !ctx.axIndex ||
+    ctx.axIndex.length === 0
+  ) {
+    return null;
+  }
+
+  const windowId =
+    typeof step.args.window_id === "number"
+      ? step.args.window_id
+      : ctx.windowId;
+  if (windowId === undefined) return null;
+
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  if (!mentionsMessageRow(text)) return null;
+
+  const rows = ctx.axIndex.filter(
+    (entry) =>
+      entry.role.toLowerCase() === "axrow" &&
+      typeof entry.title === "string" &&
+      entry.title.trim().length > 0,
+  );
+  if (rows.length === 0) return null;
+
+  let candidates = rows;
+  if (/\bunread\b/i.test(text)) {
+    const unreadRows = rows.filter((entry) =>
+      /\bunread\b/i.test(entry.title ?? ""),
+    );
+    if (unreadRows.length === 0) return null;
+    candidates = unreadRows;
+  }
+
+  const row = bestRowForText(candidates, text);
+  if (!row) return null;
+  const target = firstDescendantLink(row, ctx.axIndex) ?? row;
+
+  return {
+    tool: "click",
+    args: {
+      pid: step.args.pid,
+      window_id: windowId,
+      element_index: target.index,
+    },
+    purpose: `${step.purpose} (resolved to AX row/link)`,
+  };
+}
+
+function mentionsMessageRow(text: string): boolean {
+  return /\b(unread|email|e-mail|message|inbox|conversation|thread)\b/i.test(
+    text,
+  );
+}
+
+function bestRowForText(
+  rows: AxIndexEntry[],
+  text: string,
+): AxIndexEntry | undefined {
+  const tokens = meaningfulRowTokens(text);
+  if (tokens.length === 0) return rows[0];
+
+  let best = rows[0];
+  let bestScore = -1;
+  for (const row of rows) {
+    const title = row.title?.toLowerCase() ?? "";
+    const score = tokens.reduce(
+      (count, token) => count + (title.includes(token) ? 1 : 0),
+      0,
+    );
+    if (score > bestScore) {
+      best = row;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : rows[0];
+}
+
+function meaningfulRowTokens(text: string): string[] {
+  const stopwords = new Set([
+    "click",
+    "open",
+    "read",
+    "most",
+    "recent",
+    "latest",
+    "last",
+    "top",
+    "first",
+    "unread",
+    "email",
+    "mail",
+    "message",
+    "row",
+    "conversation",
+    "thread",
+    "from",
+    "gmail",
+    "inbox",
+    "the",
+    "and",
+    "with",
+    "resolved",
+    "link",
+  ]);
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const token of text.toLowerCase().match(/[a-z0-9][a-z0-9.'-]*/g) ?? []) {
+    if (token.length < 3 || stopwords.has(token) || seen.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+  }
+  return tokens;
+}
+
+function firstDescendantLink(
+  row: AxIndexEntry,
+  entries: AxIndexEntry[],
+): AxIndexEntry | undefined {
+  const ordered = [...entries].sort((a, b) => a.lineNumber - b.lineNumber);
+  for (const entry of ordered) {
+    if (entry.lineNumber <= row.lineNumber) continue;
+    if (entry.indent <= row.indent) break;
+    if (entry.role.toLowerCase() === "axlink") return entry;
+  }
+  return undefined;
+}
+
+function stringArg(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function keyFromKeyboardStep(step: PlanStep): string | null {
@@ -711,6 +1027,8 @@ function substitutePlaceholders(
 function normalizeSelector(value: Record<string, unknown>): PlanSelector {
   const selector: PlanSelector = {};
   if (typeof value.title === "string") selector.title = value.title;
+  if (typeof value.title_contains === "string")
+    selector.title_contains = value.title_contains;
   if (typeof value.ax_id === "string") selector.ax_id = value.ax_id;
   if (typeof value.role === "string") selector.role = value.role;
   if (typeof value.ordinal === "number" && Number.isInteger(value.ordinal))
@@ -723,35 +1041,67 @@ function repairArgsForContext(
   args: Record<string, unknown>,
   ctx: ExecutorContext,
 ): Record<string, unknown> {
+  const normalizedTool = canonicalToolName(tool);
   const out = { ...args };
+
   if (
-    (tool === "get_window_state" || tool === "list_windows") &&
+    (PID_TARGETED_TOOLS.has(normalizedTool) ||
+      WINDOW_TARGETED_TOOLS.has(normalizedTool)) &&
+    ctx.pid !== undefined &&
+    usesConcreteTarget(out, ctx)
+  ) {
+    for (const key of APP_DISCOVERY_ARG_KEYS) delete out[key];
+  }
+
+  if (
+    PID_TARGETED_TOOLS.has(normalizedTool) &&
     out.pid === undefined &&
     ctx.pid !== undefined
   ) {
     out.pid = ctx.pid;
   }
-  if (tool === "paste_svg" && out.pid === undefined && ctx.pid !== undefined)
-    out.pid = ctx.pid;
   if (
-    tool === "paste_svg" &&
-    out.window_id === undefined &&
-    ctx.windowId !== undefined
-  )
-    out.window_id = ctx.windowId;
-  if (
-    (tool === "get_window_state" ||
-      tool === "click" ||
-      tool === "double_click" ||
-      tool === "right_click" ||
-      tool === "drag" ||
-      tool === "screenshot") &&
+    shouldFillWindowIdForTool(normalizedTool, out) &&
     out.window_id === undefined &&
     ctx.windowId !== undefined
   ) {
     out.window_id = ctx.windowId;
   }
+  if (
+    PID_WINDOW_PAIRED_TOOLS.has(normalizedTool) &&
+    typeof out.pid === "number" &&
+    typeof out.window_id === "number" &&
+    ctx.pid !== undefined &&
+    ctx.windowId !== undefined &&
+    out.window_id === ctx.windowId &&
+    out.pid !== ctx.pid
+  ) {
+    out.pid = ctx.pid;
+  }
   return out;
+}
+
+function shouldFillWindowIdForTool(
+  tool: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (WINDOW_TARGETED_TOOLS.has(tool)) return true;
+  return (
+    (tool === "scroll" || tool === "type_text") &&
+    args.element_index !== undefined
+  );
+}
+
+function usesConcreteTarget(
+  args: Record<string, unknown>,
+  ctx: ExecutorContext,
+): boolean {
+  return (
+    args.pid !== undefined ||
+    args.window_id !== undefined ||
+    ctx.pid !== undefined ||
+    ctx.windowId !== undefined
+  );
 }
 
 /**
@@ -769,6 +1119,7 @@ function absorbContext(
 ): void {
   if (
     tool !== "launch_app" &&
+    tool !== "open_url" &&
     tool !== "list_windows" &&
     tool !== "get_window_state"
   )
@@ -781,8 +1132,13 @@ function absorbContext(
     ctx.axIndex = entries;
   }
 
-  if (typeof args.pid === "number") ctx.pid = args.pid;
-  if (typeof args.window_id === "number") ctx.windowId = args.window_id;
+  const anchoredPid = ctx.pid;
+  const anchoredWindowId = ctx.windowId;
+
+  if (tool !== "list_windows") {
+    if (typeof args.pid === "number") ctx.pid = args.pid;
+    if (typeof args.window_id === "number") ctx.windowId = args.window_id;
+  }
 
   let parsed: unknown;
   try {
@@ -792,29 +1148,142 @@ function absorbContext(
   }
   if (!parsed || typeof parsed !== "object") return;
   const obj = parsed as Record<string, unknown>;
-  if (typeof obj.pid === "number") ctx.pid = obj.pid;
-  if (typeof obj.window_id === "number") ctx.windowId = obj.window_id;
-  if (Array.isArray(obj.windows) && obj.windows.length > 0) {
-    const first = pickUsableWindow(obj.windows);
-    if (first && typeof first.window_id === "number")
-      ctx.windowId = first.window_id;
+  if (typeof obj.pid === "number" && tool !== "list_windows") ctx.pid = obj.pid;
+  const explicitWindowId =
+    typeof obj.window_id === "number" ? obj.window_id : undefined;
+  if (explicitWindowId !== undefined && tool !== "list_windows") {
+    ctx.windowId = explicitWindowId;
   }
+  if (Array.isArray(obj.windows) && obj.windows.length > 0) {
+    const preferredWindowId = explicitWindowId ?? anchoredWindowId;
+    const first =
+      preferredWindowId !== undefined
+        ? findWindowById(obj.windows, preferredWindowId)
+        : pickUsableWindow(obj.windows);
+    if (tool === "list_windows" && preferredWindowId !== undefined && !first) {
+      const replacement = findWindowLeaseReplacement(obj.windows, ctx);
+      if (replacement) {
+        rememberWindow(ctx, replacement);
+        return;
+      }
+      // Do not switch away from an anchored window just because a planner
+      // inspected a different pid. This prevents impossible pid/window pairs
+      // such as pid=2820 + window_id owned by pid=1838, and keeps browser tabs
+      // or document windows pinned to the task target.
+      ctx.pid = anchoredPid;
+      ctx.windowId = anchoredWindowId;
+      return;
+    }
+    if (
+      first &&
+      (preferredWindowId === undefined || first.window_id === preferredWindowId)
+    ) {
+      rememberWindow(ctx, first);
+    }
+  }
+}
+
+function rememberWindow(
+  ctx: ExecutorContext,
+  window: Record<string, unknown>,
+): void {
+  if (typeof window.pid === "number") ctx.pid = window.pid;
+  if (typeof window.window_id === "number") ctx.windowId = window.window_id;
+  if (typeof window.title === "string" && window.title.trim()) {
+    ctx.windowTitle = window.title.trim();
+  }
+}
+
+function findWindowLeaseReplacement(
+  windows: unknown[],
+  ctx: ExecutorContext,
+): Record<string, unknown> | undefined {
+  const title = ctx.windowTitle?.trim().toLowerCase();
+  if (!title) return undefined;
+  const matches = windowRecords(windows)
+    .filter(isUsableWindowRecord)
+    .filter((window) => {
+      const candidateTitle =
+        typeof window.title === "string"
+          ? window.title.trim().toLowerCase()
+          : "";
+      return candidateTitle === title;
+    });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function parseWindowsPayload(stdout: string): Record<string, unknown>[] | null {
+  try {
+    const parsed = JSON.parse(stdout) as { windows?: unknown[] };
+    return Array.isArray(parsed.windows) ? windowRecords(parsed.windows) : null;
+  } catch {
+    return null;
+  }
+}
+
+function findWindowById(
+  windows: unknown[],
+  windowId: number,
+): Record<string, unknown> | undefined {
+  return windows.find(
+    (window): window is Record<string, unknown> =>
+      !!window &&
+      typeof window === "object" &&
+      (window as Record<string, unknown>).window_id === windowId,
+  );
 }
 
 function pickUsableWindow(
   windows: unknown[],
+  preferredWindowId?: number,
 ): Record<string, unknown> | undefined {
   const records = windows.filter(
     (window): window is Record<string, unknown> =>
       !!window && typeof window === "object",
   );
+  if (preferredWindowId !== undefined) {
+    const preferred = records.find(
+      (window) =>
+        window.window_id === preferredWindowId && isUsableWindowRecord(window),
+    );
+    if (preferred) return preferred;
+  }
+  return records.sort((a, b) => windowRecordScore(b) - windowRecordScore(a))[0];
+}
+
+function isUsableWindowRecord(window: Record<string, unknown>): boolean {
+  const bounds = window.bounds as Record<string, unknown> | undefined;
+  const width = Number(bounds?.width ?? 0);
+  const height = Number(bounds?.height ?? 0);
+  return width >= 100 && height >= 80;
+}
+
+function windowRecordScore(window: Record<string, unknown>): number {
+  const bounds = window.bounds as Record<string, unknown> | undefined;
+  const width = Number(bounds?.width ?? 0);
+  const height = Number(bounds?.height ?? 0);
+  const usable = width >= 100 && height >= 80 ? 1_000_000 : -1_000_000;
+  const area = Math.min(width * height, 1_000_000);
+  const titleBonus =
+    typeof window.title === "string" && window.title.trim() ? 100_000 : 0;
+  const visibleBonus = window.is_on_screen === false ? -2_000_000 : 2_000_000;
+  const spaceBonus = window.on_current_space === false ? -2_000_000 : 2_000_000;
+  const focusedBonus =
+    window.is_focused === true ||
+    window.focused === true ||
+    window.is_key === true ||
+    window.is_main === true
+      ? 5_000_000
+      : 0;
+  const zBonus = Number(window.z_index ?? 0) * 100_000;
   return (
-    records.find((window) => {
-      const bounds = window.bounds as Record<string, unknown> | undefined;
-      const width = Number(bounds?.width ?? 0);
-      const height = Number(bounds?.height ?? 0);
-      return width >= 100 && height >= 80;
-    }) ?? records[0]
+    usable +
+    focusedBonus +
+    visibleBonus +
+    spaceBonus +
+    zBonus +
+    titleBonus +
+    area
   );
 }
 
@@ -833,7 +1302,7 @@ export async function runCuaDriverStep(
   ) {
     return {
       ok: false,
-      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let showme control foreground/global input.`,
+      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
     };
   }
   if (step.tool === "drag") return await runVirtualDrag(step, cuaDriver);
@@ -841,6 +1310,7 @@ export async function runCuaDriverStep(
     return await runVirtualMultiDrag(step, cuaDriver);
   if (step.tool === "click_hold")
     return await runVirtualClickHold(step, cuaDriver);
+  if (step.tool === "open_url") return await runOpenUrl(step, cuaDriver);
   // Extension primitive: intentionally not advertised in the default planner.
   // Generic runs should use the target app like a human unless a future
   // app-specific extension explicitly opts into clipboard import.
@@ -916,6 +1386,186 @@ async function runVirtualClickHold(
   );
 }
 
+async function runOpenUrl(
+  step: PlanStep,
+  cuaDriver: string,
+): Promise<StepResult> {
+  const url = typeof step.args.url === "string" ? step.args.url.trim() : "";
+  if (!/^https?:\/\/\S+/i.test(url)) {
+    return { ok: false, error: "open_url requires an http(s) url" };
+  }
+  const bundleId =
+    typeof step.args.bundle_id === "string" && step.args.bundle_id.trim()
+      ? step.args.bundle_id.trim()
+      : undefined;
+
+  let launchInfo: Record<string, unknown> = {};
+  if (bundleId) {
+    const launch = Bun.spawn(
+      [
+        cuaDriver,
+        "call",
+        "launch_app",
+        JSON.stringify({ bundle_id: bundleId }),
+      ],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
+    const launchResult = await collectProcess(launch);
+    if (launchResult.timedOut) {
+      return { ok: false, error: "open_url launch_app timed out" };
+    }
+    if (launchResult.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `open_url launch_app exited ${launchResult.exitCode}: ${launchResult.stderr.trim() || launchResult.stdout.trim()}`,
+      };
+    }
+    try {
+      launchInfo = JSON.parse(launchResult.stdout) as Record<string, unknown>;
+    } catch {
+      launchInfo = {};
+    }
+  }
+
+  const openArgs = ["/usr/bin/open"];
+  if (bundleId) openArgs.push("-b", bundleId);
+  openArgs.push(url);
+  const pid = typeof launchInfo.pid === "number" ? launchInfo.pid : undefined;
+  const preOpenWindows =
+    pid !== undefined ? await listWindowsForPid(cuaDriver, pid) : undefined;
+  const proc = Bun.spawn(openArgs, {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
+  if (timedOut) return { ok: false, error: "open_url timed out", stdout };
+  if (exitCode !== 0) {
+    return {
+      ok: false,
+      error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
+      stdout,
+    };
+  }
+  let postOpenWindows: unknown[] | undefined;
+  let selectedWindow: Record<string, unknown> | undefined;
+  if (pid !== undefined) {
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    postOpenWindows = await listWindowsForPid(cuaDriver, pid);
+    selectedWindow = Array.isArray(postOpenWindows)
+      ? pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)
+      : undefined;
+  }
+  return {
+    ok: true,
+    stdout: JSON.stringify({
+      ...launchInfo,
+      pid,
+      window_id:
+        typeof selectedWindow?.window_id === "number"
+          ? selectedWindow.window_id
+          : undefined,
+      windows: postOpenWindows,
+      bundle_id: bundleId,
+      url,
+    }),
+  };
+}
+
+async function listWindowsForPid(
+  cuaDriver: string,
+  pid: number,
+): Promise<unknown[] | undefined> {
+  const windows = Bun.spawn(
+    [cuaDriver, "call", "list_windows", JSON.stringify({ pid })],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  );
+  const result = await collectProcess(windows);
+  if (result.timedOut || result.exitCode !== 0) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { windows?: unknown[] };
+    return parsed.windows;
+  } catch {
+    return undefined;
+  }
+}
+
+export function pickOpenedUrlWindow(
+  beforeWindows: unknown[],
+  afterWindows: unknown[],
+  url: string,
+): Record<string, unknown> | undefined {
+  const afterRecords = windowRecords(afterWindows);
+  const after = afterRecords.filter(isUsableWindowRecord);
+  const candidates = after.length > 0 ? after : afterRecords;
+  if (candidates.length === 0) return undefined;
+  const beforeById = new Map<number, Record<string, unknown>>();
+  for (const window of windowRecords(beforeWindows)) {
+    const id = asFiniteNumber(window.window_id);
+    if (id !== null) beforeById.set(id, window);
+  }
+  const tokens = urlWindowTokens(url);
+  let best = candidates[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const window of candidates) {
+    const id = asFiniteNumber(window.window_id);
+    const before = id === null ? undefined : beforeById.get(id);
+    const score =
+      windowRecordScore(window) +
+      openUrlWindowDeltaScore(window, before, tokens);
+    if (score > bestScore) {
+      best = window;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function windowRecords(windows: unknown[]): Record<string, unknown>[] {
+  return windows.filter(
+    (window): window is Record<string, unknown> =>
+      !!window && typeof window === "object",
+  );
+}
+
+function openUrlWindowDeltaScore(
+  window: Record<string, unknown>,
+  before: Record<string, unknown> | undefined,
+  tokens: string[],
+): number {
+  const title = typeof window.title === "string" ? window.title : "";
+  let score = 0;
+  if (!before) score += 10_000_000;
+  const beforeTitle = typeof before?.title === "string" ? before.title : "";
+  if (before && title.trim() && title !== beforeTitle) score += 6_000_000;
+  const titleLower = title.toLowerCase();
+  const tokenHits = tokens.filter((token) => titleLower.includes(token)).length;
+  score += tokenHits * 2_500_000;
+  const z = asFiniteNumber(window.z_index);
+  const oldZ = asFiniteNumber(before?.z_index);
+  if (z !== null && oldZ !== null && z > oldZ) {
+    score += Math.min(z - oldZ, 1_000) * 25_000;
+  }
+  return score;
+}
+
+function urlWindowTokens(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    const raw = [
+      ...parsed.hostname.split("."),
+      ...parsed.pathname.split(/[/?#._-]+/),
+    ];
+    const tokens = raw
+      .map((part) => part.toLowerCase())
+      .filter((part) => part.length >= 3 && part !== "www" && part !== "com");
+    if (parsed.hostname.endsWith("mail.google.com")) tokens.push("gmail");
+    return [...new Set(tokens)];
+  } catch {
+    return [];
+  }
+}
+
 async function runVirtualPasteSvg(
   step: PlanStep,
   cuaDriver: string,
@@ -949,7 +1599,7 @@ guard let data = Data(base64Encoded: encoded),
 }
 
 let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-  .appendingPathComponent("showme-\(UUID().uuidString).svg")
+  .appendingPathComponent("open42-\(UUID().uuidString).svg")
 try? svg.write(to: tempURL, atomically: true, encoding: .utf8)
 
 let pasteboard = NSPasteboard.general
@@ -1313,7 +1963,7 @@ async function getWindowBounds(
 
 async function collectProcess(
   proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = Number(Bun.env.SHOWME_STEP_TIMEOUT_MS ?? 20_000),
+  timeoutMs = Number(Bun.env.OPEN42_STEP_TIMEOUT_MS ?? 20_000),
 ): Promise<{
   exitCode: number | null;
   stdout: string;

@@ -60,7 +60,7 @@ public enum CuaDriver {
     let group = DispatchGroup()
     var outData = Data()
     var errData = Data()
-    let drainQueue = DispatchQueue(label: "showme.cua-driver.drain", attributes: .concurrent)
+    let drainQueue = DispatchQueue(label: "open42.cua-driver.drain", attributes: .concurrent)
     drainQueue.async(group: group) {
       outData = stdout.fileHandleForReading.readDataToEndOfFile()
     }
