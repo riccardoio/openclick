@@ -14,14 +14,14 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
   const binary = resolveRecorderBinary();
   if (!existsSync(binary)) {
     throw new Error(
-      `recorder binary not found at ${binary}\nBuild it first: cd recorder && swift build -c release`,
+      `recorder binary not found at ${binary}\nBuild it first: cd mac-app && swift build -c release`,
     );
   }
 
   console.log(
-    "[showme] this recording will capture screenshots of your screen.",
+    "[open42] this recording will capture screenshots of your screen.",
   );
-  console.log("[showme] close anything sensitive. Starting in 3...");
+  console.log("[open42] close anything sensitive. Starting in 3...");
   await sleep(1000);
   console.log("2...");
   await sleep(1000);
@@ -43,7 +43,7 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
 
   await waitForRecorderExit(proc);
 
-  console.log(`[showme] trajectory written to ${dir}`);
+  console.log(`[open42] trajectory written to ${dir}`);
 }
 
 export async function waitForRecorderExit(

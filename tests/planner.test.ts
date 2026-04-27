@@ -143,6 +143,34 @@ describe("planner", () => {
     expect(plan.steps[1]?.args).toEqual({ pid: 1, keys: ["shift", "a"] });
   });
 
+  test("normalizes targetless browser address-bar clicks to command-l", async () => {
+    const client: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "click",
+              args: { pid: 1838, window_id: 11129 },
+              purpose: "Focus the Chrome address bar",
+              expected_change: "Address bar becomes focused and editable",
+            },
+          ],
+          stopWhen: "Gmail is open",
+        });
+      },
+    };
+    const plan = await generatePlan({
+      taskPrompt: "Open Chrome and go to Gmail",
+      currentStateSummary: "Google Chrome is open",
+      claudeClient: client,
+    });
+    expect(plan.steps[0]?.tool).toBe("hotkey");
+    expect(plan.steps[0]?.args).toEqual({
+      pid: 1838,
+      keys: ["command", "l"],
+    });
+  });
+
   test("throws when the response is not valid JSON", async () => {
     const client: PlannerClient = {
       async generatePlanText() {
@@ -391,9 +419,9 @@ describe("planner", () => {
       taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
-      imagePaths: ["/tmp/showme-discovery-abc.png"],
+      imagePaths: ["/tmp/open42-discovery-abc.png"],
     });
-    expect(receivedImages).toEqual(["/tmp/showme-discovery-abc.png"]);
+    expect(receivedImages).toEqual(["/tmp/open42-discovery-abc.png"]);
   });
 
   test("works without image paths (text-only fallback)", async () => {

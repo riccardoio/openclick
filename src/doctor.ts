@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolveCuaDriverBinary, resolveRecorderBinary } from "./paths.ts";
+import { apiKeyStatus, resolveModelProvider } from "./settings.ts";
 
 export type CheckStatus = "ok" | "fail";
 
@@ -23,10 +24,15 @@ export interface SystemProbe {
   bunVersion(): string | null;
   cuaDriverPath(): string | null;
   cuaDriverDaemonRunning(): Promise<boolean>;
+  accessibilityGranted(): Promise<boolean>;
   screenRecordingGranted(): Promise<boolean>;
   recorderBinaryExists(): boolean;
   recorderHasAccessibility(): Promise<boolean>;
   anthropicApiKeySet(): boolean;
+}
+
+export interface DoctorOptions {
+  includeRecorder?: boolean;
 }
 
 export class RealSystemProbe implements SystemProbe {
@@ -55,6 +61,14 @@ export class RealSystemProbe implements SystemProbe {
   }
 
   async screenRecordingGranted(): Promise<boolean> {
+    return this.permissionGranted(/screen[\s_]?recording/i);
+  }
+
+  async accessibilityGranted(): Promise<boolean> {
+    return this.permissionGranted(/accessibility/i);
+  }
+
+  private async permissionGranted(namePattern: RegExp): Promise<boolean> {
     const path = this.cuaDriverPath();
     if (!path) return false;
     const proc = Bun.spawn([path, "check_permissions"], {
@@ -65,18 +79,10 @@ export class RealSystemProbe implements SystemProbe {
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     if (proc.exitCode !== 0) return false;
-    // cua-driver check_permissions output formats observed:
-    //   "✅ Screen Recording: granted."           (CLI human-readable, current)
-    //   "❌ Screen Recording: NOT granted"        (negative case)
-    //   '"screen_recording": true'                (JSON-ish, older versions)
-    // Find the screen-recording line and verify it says granted but not
-    // "not granted". Match both snake_case and title-case naming.
-    const srLine = out
-      .split("\n")
-      .find((l) => /screen[\s_]?recording/i.test(l));
-    if (!srLine) return false;
-    if (/not\s+granted/i.test(srLine)) return false;
-    return /(:\s*true\b|granted)/i.test(srLine);
+    const line = out.split("\n").find((l) => namePattern.test(l));
+    if (!line) return false;
+    if (/not\s+granted/i.test(line)) return false;
+    return /(:\s*true\b|granted)/i.test(line);
   }
 
   recorderBinaryExists(): boolean {
@@ -96,25 +102,27 @@ export class RealSystemProbe implements SystemProbe {
   }
 
   anthropicApiKeySet(): boolean {
-    return !!Bun.env.ANTHROPIC_API_KEY;
+    return apiKeyStatus(resolveModelProvider()).available;
   }
 }
 
 const CUA_INSTALL_HINT =
   '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"';
-const CUA_DAEMON_HINT = "open -n -g -a CuaDriver --args serve";
 const CUA_DAEMON_AUTOFIX_HINT =
-  "or run `showme doctor --fix` to start it for you";
+  "open42 starts this automatically when the app or runner needs it";
 const SR_HINT =
   "Run `cua-driver check_permissions`. If Screen Recording is missing, grant it in System Settings → Privacy & Security → Screen Recording for the CuaDriver app, then restart the daemon.";
 const RECORDER_BUILD_HINT =
-  "cd recorder && swift build -c release  # builds ./.build/release/showme-recorder";
+  "cd mac-app && swift build -c release  # builds ./.build/release/open42-recorder";
 const ACCESSIBILITY_HINT =
-  "Open System Settings → Privacy & Security → Accessibility → click + → add the recorder binary at the path above. Then re-run `showme doctor`. (Each rebuild changes the binary's cdhash, so the grant must be re-added after rebuilds.)";
+  "Open System Settings → Privacy & Security → Accessibility → click + → add the recorder binary at the path above. Then re-run `open42 doctor`. (Each rebuild changes the binary's cdhash, so the grant must be re-added after rebuilds.)";
 const API_KEY_HINT =
-  "export ANTHROPIC_API_KEY=sk-ant-...  # add to your shell rc to persist";
+  "Run `open42 settings api-key set sk-ant-...`, `open42 settings openai-api-key set sk-...`, or add the provider API key to your shell.";
 
-export async function runDoctor(probe: SystemProbe): Promise<DoctorReport> {
+export async function runDoctor(
+  probe: SystemProbe,
+  opts: DoctorOptions = {},
+): Promise<DoctorReport> {
   const results: CheckResult[] = [];
 
   const bun = probe.bunVersion();
@@ -149,7 +157,26 @@ export async function runDoctor(probe: SystemProbe): Promise<DoctorReport> {
           name: "cua-driver daemon",
           status: "fail",
           detail: "not running",
-          fixHint: `Start it: ${CUA_DAEMON_HINT} (${CUA_DAEMON_AUTOFIX_HINT})`,
+          fixHint: CUA_DAEMON_AUTOFIX_HINT,
+        },
+  );
+
+  const ax = daemonRunning ? await probe.accessibilityGranted() : false;
+  results.push(
+    ax
+      ? {
+          name: "Accessibility (via cua-driver)",
+          status: "ok",
+          detail: "granted",
+        }
+      : {
+          name: "Accessibility (via cua-driver)",
+          status: "fail",
+          detail: daemonRunning
+            ? "not granted"
+            : "skipped (daemon not running)",
+          fixHint:
+            "Grant Accessibility in System Settings → Privacy & Security → Accessibility for CuaDriver, then restart the daemon.",
         },
   );
 
@@ -171,46 +198,55 @@ export async function runDoctor(probe: SystemProbe): Promise<DoctorReport> {
         },
   );
 
-  const recBin = probe.recorderBinaryExists();
-  const { resolveRecorderBinary } = await import("./paths.ts");
-  const recPath = resolveRecorderBinary();
-  results.push(
-    recBin
-      ? { name: "Swift recorder built", status: "ok", detail: recPath }
-      : {
-          name: "Swift recorder built",
-          status: "fail",
-          detail: `missing at ${recPath}`,
-          fixHint: RECORDER_BUILD_HINT,
-        },
-  );
+  if (opts.includeRecorder) {
+    const recBin = probe.recorderBinaryExists();
+    const { resolveRecorderBinary } = await import("./paths.ts");
+    const recPath = resolveRecorderBinary();
+    results.push(
+      recBin
+        ? { name: "Swift recorder built", status: "ok", detail: recPath }
+        : {
+            name: "Swift recorder built",
+            status: "fail",
+            detail: `missing at ${recPath}`,
+            fixHint: RECORDER_BUILD_HINT,
+          },
+    );
 
-  const ax = recBin ? await probe.recorderHasAccessibility() : false;
-  results.push(
-    ax
-      ? {
-          name: "Accessibility (recorder)",
-          status: "ok",
-          detail: "granted to recorder cdhash",
-        }
-      : {
-          name: "Accessibility (recorder)",
-          status: "fail",
-          detail: recBin
-            ? "not granted to recorder cdhash"
-            : "skipped (recorder not built)",
-          fixHint: recBin
-            ? `${ACCESSIBILITY_HINT}\n         Path: ${recPath}`
-            : ACCESSIBILITY_HINT,
-        },
-  );
+    const recorderAx = recBin ? await probe.recorderHasAccessibility() : false;
+    results.push(
+      recorderAx
+        ? {
+            name: "Accessibility (recorder)",
+            status: "ok",
+            detail: "granted to recorder cdhash",
+          }
+        : {
+            name: "Accessibility (recorder)",
+            status: "fail",
+            detail: recBin
+              ? "not granted to recorder cdhash"
+              : "skipped (recorder not built)",
+            fixHint: recBin
+              ? `${ACCESSIBILITY_HINT}\n         Path: ${recPath}`
+              : ACCESSIBILITY_HINT,
+          },
+    );
+  }
 
+  const provider = resolveModelProvider();
+  const apiKeyName =
+    provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
   const apiKey = probe.anthropicApiKeySet();
   results.push(
     apiKey
-      ? { name: "ANTHROPIC_API_KEY", status: "ok", detail: "set in env" }
+      ? {
+          name: apiKeyName,
+          status: "ok",
+          detail: `configured for ${provider}`,
+        }
       : {
-          name: "ANTHROPIC_API_KEY",
+          name: apiKeyName,
           status: "fail",
           detail: "unset",
           fixHint: API_KEY_HINT,
@@ -251,7 +287,7 @@ export async function tryAutoStartDaemon(
   } catch (e) {
     return {
       started: false,
-      message: `[doctor] could not invoke 'open' (${(e as Error).message}). Run \`${CUA_DAEMON_HINT}\` manually.`,
+      message: `[doctor] could not start the CuaDriver helper automatically (${(e as Error).message}). Reinstall CuaDriver or open the open42 permissions window again.`,
     };
   }
 
@@ -268,7 +304,8 @@ export async function tryAutoStartDaemon(
 
   return {
     started: false,
-    message: `[doctor] daemon did not come up within 5s. It may still be launching — re-run \`showme doctor\` in a moment, or start it manually with \`${CUA_DAEMON_HINT}\`.`,
+    message:
+      "[doctor] CuaDriver helper did not come up within 5s. It may still be launching — re-run `open42 doctor` in a moment.",
   };
 }
 
@@ -279,7 +316,7 @@ function sleep(ms: number): Promise<void> {
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push("Welcome to showme.");
+  lines.push("Welcome to open42.");
   lines.push("");
   lines.push("Prerequisites:");
   for (const r of report.results) {
@@ -294,12 +331,12 @@ export function formatDoctorReport(report: DoctorReport): string {
   if (report.allOk) {
     lines.push("All set. Try:");
     lines.push(
-      "  showme record my-first-skill 'describe what you're about to do'",
+      "  open42 record my-first-skill 'describe what you're about to do'",
     );
   } else {
     const failed = report.results.filter((r) => r.status === "fail").length;
     lines.push(
-      `Fix the ${failed} issue(s) above, then re-run \`showme doctor\`.`,
+      `Fix the ${failed} issue(s) above, then re-run \`open42 doctor\`.`,
     );
   }
   lines.push("");

@@ -8,20 +8,31 @@ import {
   parseAxTreeIndex,
   runCuaDriverStep,
 } from "./executor.ts";
-import { addAppMemoryFact, renderRelevantMemoriesForPrompt } from "./memory.ts";
+import {
+  addAppMemoryFact,
+  recordTakeoverLearning,
+  renderRelevantMemoriesForPrompt,
+} from "./memory.ts";
 import { requireCuaDriverBinary, resolveCuaDriverBinary } from "./paths.ts";
 import {
-  AnthropicPlannerClient,
   type GeneratePlanOptions,
   type Plan,
   type PlannerClient,
+  RoutedPlannerClient,
   generatePlan,
 } from "./planner.ts";
 import { type SkillIntent, readTargetMetadata } from "./schema.ts";
 import {
+  type InterventionPayload,
+  type InterventionReason,
+  type RunInterventionSnapshot,
+  type TakeoverResumeMarker,
   TraceRecorder,
   acquireRunLock,
+  clearRunTakeoverResume,
   isRunCancelRequested,
+  readRunTakeoverResume,
+  writeRunIntervention,
 } from "./trace.ts";
 
 export interface RunOptions {
@@ -57,10 +68,12 @@ export interface RunOptions {
   cursorToggleFn?: (enabled: boolean) => Promise<void>;
   /** Injectable for tests / production override of the Sonnet planner client. */
   plannerClient?: PlannerClient;
-  /** Injectable/configurable verifier client. Defaults to SHOWME_VERIFIER_MODEL. */
+  /** Injectable/configurable verifier client. Defaults to OPEN42_VERIFIER_MODEL. */
   verifierClient?: PlannerClient;
   /** Injectable for tests. In production, leave unset to shell out to cua-driver. */
   stepRunner?: StepRunner;
+  /** Injectable for tests / host apps that want to provide takeover markers directly. */
+  takeoverResumeFn?: (runId: string) => Promise<TakeoverResumeMarker | null>;
   /**
    * Opt-in escape hatch for tools that may steal focus, move the real cursor, or
    * modify global state. Default false keeps the Mac usable by the human.
@@ -92,10 +105,10 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
 
   if (!opts.live) {
     console.log(
-      "[showme] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
+      "[open42] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
     );
   }
-  console.log("[showme] press Ctrl-C to abort.");
+  console.log("[open42] press Ctrl-C to abort.");
 
   // Abort flag pattern: SIGINT sets the flag and lets the loop notice it.
   // The previous handler called process.exit(130) immediately, which bypassed
@@ -105,12 +118,12 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   const onSigint = (): void => {
     if (aborted) {
       // Second Ctrl-C: user is impatient, exit hard.
-      console.log("\n[showme] hard-aborted (second Ctrl-C).");
+      console.log("\n[open42] hard-aborted (second Ctrl-C).");
       process.exit(130);
     }
     aborted = true;
     console.log(
-      "\n[showme] aborting after current step finishes... (Ctrl-C again to force)",
+      "\n[open42] aborting after current step finishes... (Ctrl-C again to force)",
     );
   };
   process.on("SIGINT", onSigint);
@@ -120,7 +133,7 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
     const tool = input.tool_name ?? "<unknown>";
     const args = input.tool_input ?? {};
     const summary = summarizeToolCall(tool, args);
-    console.log(`[showme] about to: ${summary}`);
+    console.log(`[open42] about to: ${summary}`);
     if (!opts.live) {
       // Block execution by returning a "denied" decision.
       return { decision: "block", reason: "dry-run mode" };
@@ -156,9 +169,9 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   if (opts.cursor && opts.live) {
     try {
       await toggleCursor(true);
-      console.log("[showme] agent cursor overlay: ON");
+      console.log("[open42] agent cursor overlay: ON");
     } catch (e) {
-      console.warn(`[showme] couldn't enable agent cursor: ${e}`);
+      console.warn(`[open42] couldn't enable agent cursor: ${e}`);
     }
   }
 
@@ -190,7 +203,7 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
       const msg = message as any;
       if (msg.type === "tool_use") stepCount++;
       if (msg.type === "result" && "result" in msg) {
-        console.log(`[showme] ${msg.result}`);
+        console.log(`[open42] ${msg.result}`);
       }
     }
   } finally {
@@ -205,10 +218,10 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   }
   if (aborted) {
     process.exitCode = 130;
-    console.log(`[showme] aborted. ${stepCount} tool calls.`);
+    console.log(`[open42] aborted. ${stepCount} tool calls.`);
     return;
   }
-  console.log(`[showme] done. ${stepCount} tool calls.`);
+  console.log(`[open42] done. ${stepCount} tool calls.`);
 }
 
 /**
@@ -220,15 +233,15 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
 async function runTaskFast(opts: RunOptions): Promise<void> {
   if (!opts.live) {
     console.log(
-      "[showme] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
+      "[open42] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
     );
   }
-  console.log("[showme] press Ctrl-C to abort.");
-  console.log("[showme] mode: prompt planner (small batches, local executor)");
+  console.log("[open42] press Ctrl-C to abort.");
+  console.log("[open42] mode: prompt planner (small batches, local executor)");
   console.log(
     opts.allowForeground
-      ? "[showme] execution mode: foreground opt-in (may use global/foreground primitives)."
-      : "[showme] execution mode: shared-seat background (no real cursor/focus ownership).",
+      ? "[open42] execution mode: foreground opt-in (may use global/foreground primitives)."
+      : "[open42] execution mode: shared-seat background (no real cursor/focus ownership).",
   );
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -237,12 +250,18 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     prompt: opts.taskPrompt,
     criteria: opts.criteria,
   });
-  console.log(`[showme] run id: ${runId}`);
+  trace.event(
+    opts.live ? "mode" : "dry_run",
+    opts.live
+      ? "live execution mode"
+      : "dry-run mode; no cua-driver tools will execute",
+  );
+  console.log(`[open42] run id: ${runId}`);
   const lock = opts.live && !opts.stepRunner ? acquireRunLock(runId) : null;
   if (lock && !lock.ok) {
     trace.event("lock_blocked", lock.message);
     trace.finish("failed");
-    console.error(`[showme] ${lock.message}`);
+    console.error(`[open42] ${lock.message}`);
     process.exitCode = 15;
     return;
   }
@@ -264,39 +283,39 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
   let aborted = false;
   const onSigint = (): void => {
     if (aborted) {
-      console.log("\n[showme] hard-aborted (second Ctrl-C).");
+      console.log("\n[open42] hard-aborted (second Ctrl-C).");
       process.exit(130);
     }
     aborted = true;
     trace.event("abort_requested", "SIGINT received");
     console.log(
-      "\n[showme] aborting after current step finishes... (Ctrl-C again to force)",
+      "\n[open42] aborting after current step finishes... (Ctrl-C again to force)",
     );
   };
   process.on("SIGINT", onSigint);
 
-  const plannerClient = opts.plannerClient ?? new AnthropicPlannerClient();
+  const plannerClient =
+    opts.plannerClient ?? new RoutedPlannerClient("planner");
   const verifierClient =
     opts.verifierClient ??
     opts.plannerClient ??
-    new AnthropicPlannerClient({
-      model:
-        Bun.env.SHOWME_VERIFIER_MODEL ??
-        Bun.env.SHOWME_PLANNER_MODEL ??
-        "claude-sonnet-4-6",
-    });
+    new RoutedPlannerClient("verifier");
+  const resultClient =
+    opts.verifierClient ??
+    opts.plannerClient ??
+    new RoutedPlannerClient("result");
   if (!plannerClient) {
     throw new Error(
-      "run requires either ANTHROPIC_API_KEY or an injected plannerClient",
+      "run requires a configured provider API key or an injected plannerClient",
     );
   }
   const toggleCursor = opts.cursorToggleFn ?? defaultCursorToggle;
   const maxActionRetries = opts.maxReplans ?? 2;
   const maxBatches = opts.maxBatches ?? 6;
   const maxModelCalls =
-    opts.maxModelCalls ?? Number(Bun.env.SHOWME_MAX_MODEL_CALLS ?? 12);
+    opts.maxModelCalls ?? Number(Bun.env.OPEN42_MAX_MODEL_CALLS ?? 12);
   const maxScreenshots =
-    opts.maxScreenshots ?? Number(Bun.env.SHOWME_MAX_SCREENSHOTS ?? 8);
+    opts.maxScreenshots ?? Number(Bun.env.OPEN42_MAX_SCREENSHOTS ?? 8);
   const maxCriteriaRefinements = opts.criteria?.trim()
     ? 2
     : Number.POSITIVE_INFINITY;
@@ -310,13 +329,15 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     screenshotsAttached: 0,
     promptChars: 0,
   };
+  let finalContext: ExecutorContext | undefined;
+  let finalVerifierExplanation: string | undefined;
 
   if (opts.cursor && opts.live) {
     try {
       await toggleCursor(true);
-      console.log("[showme] agent cursor overlay: ON");
+      console.log("[open42] agent cursor overlay: ON");
     } catch (e) {
-      console.warn(`[showme] couldn't enable agent cursor: ${e}`);
+      console.warn(`[open42] couldn't enable agent cursor: ${e}`);
     }
   }
 
@@ -349,10 +370,163 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     trace.event("external_seat_activity", activity, { phase });
     if (!seatActivityReported) {
       console.warn(
-        `[showme] external seat activity detected (${activity}); continuing in background mode and disabling learning for this run.`,
+        `[open42] external seat activity detected (${activity}); continuing in background mode and disabling learning for this run.`,
       );
       seatActivityReported = true;
     }
+  };
+  const maxStepsPerPlan = 10;
+  const handleTakeoverResume = async (args: {
+    marker: TakeoverResumeMarker | null;
+    issue: string;
+    reasonType: InterventionReason;
+    failedStep: Plan["steps"][number];
+    failedStepIndex: number;
+    executedSteps?: Plan["steps"];
+    context?: ExecutorContext;
+  }): Promise<"continued" | "succeeded" | "stopped"> => {
+    const marker = args.marker;
+    if (!marker) return "stopped";
+
+    const snapshotSource = args.context ?? initialContext;
+    const enrichedMarker = enrichTakeoverMarker(
+      marker,
+      snapshotSource,
+      initialLiveState,
+    );
+    recordTakeoverResumeLearning({
+      marker: enrichedMarker,
+      fallbackState: initialLiveState,
+      learnEnabled: opts.learn !== false,
+      learningDisabled,
+    });
+    trace.event("takeover_marker", marker.summary, {
+      outcome: marker.outcome,
+      reason_type: marker.reason_type ?? args.reasonType,
+    });
+
+    if (marker.outcome !== "success") {
+      process.exitCode = marker.outcome === "cancelled" ? 130 : 1;
+      trace.event("takeover_unresolved", marker.summary, {
+        outcome: marker.outcome,
+      });
+      return "stopped";
+    }
+
+    runHistory.push(
+      `USER TAKEOVER (${marker.reason_type ?? args.reasonType}): ${marker.summary}`,
+    );
+
+    const takeoverSnapshot =
+      opts.live &&
+      !opts.stepRunner &&
+      snapshotSource?.pid !== undefined &&
+      snapshotSource.windowId !== undefined
+        ? {
+            ctx: snapshotSource,
+            pid: snapshotSource.pid,
+            windowId: snapshotSource.windowId,
+          }
+        : null;
+    const takeoverContext = takeoverSnapshot
+      ? await snapshotContextForPrompt(takeoverSnapshot.ctx)
+      : {};
+    const takeoverScreenshot = addScreenshotIfChanged(
+      takeoverContext.screenshot?.path,
+      tempPaths,
+      (hash) => {
+        if (hash === lastScreenshotHash) return false;
+        lastScreenshotHash = hash;
+        return true;
+      },
+    );
+
+    let verification: Awaited<ReturnType<typeof verifyStopWhen>> | undefined;
+    const activeStopWhen = plan?.stopWhen.trim() ?? "";
+    if (takeoverSnapshot && activeStopWhen.length > 0) {
+      verification = await budgetedVerifyStopWhen({
+        plannerClient: resultClient,
+        stopWhen: activeStopWhen,
+        criteria: opts.criteria,
+        pid: takeoverSnapshot.pid,
+        windowId: takeoverSnapshot.windowId,
+        intent: {
+          goal: opts.taskPrompt,
+          successSignals: successSignalsFor(
+            opts,
+            plan ?? {
+              steps: [],
+              stopWhen: activeStopWhen,
+            },
+          ),
+        },
+        executedStepPurposes: [
+          ...(args.executedSteps ?? []).map((step) => step.purpose),
+          `User takeover: ${marker.summary}`,
+        ],
+        telemetry,
+        maxModelCalls,
+        maxScreenshots,
+        tempPaths,
+      });
+      trace.event("takeover_verify", verification.explanation, {
+        verdict: verification.verdict,
+      });
+      if (verification.verdict === "yes") {
+        runSucceeded = true;
+        stopWhenVerified = true;
+        console.log(
+          `[open42] full task verified after takeover: ${verification.explanation}`,
+        );
+        return "succeeded";
+      }
+    }
+
+    const verificationLine = verification
+      ? `After takeover, full-task verifier returned ${verification.verdict}: ${verification.explanation}`
+      : "Full-task verification was not available after takeover; continue from the current observed state.";
+    const takeoverStateSummary = [
+      taskStateSummary(opts),
+      "",
+      "Latest user takeover:",
+      `- Blocked issue: ${args.issue}`,
+      `- User summary: ${marker.summary}`,
+      `- Outcome: ${marker.outcome}`,
+      `- ${verificationLine}`,
+      "- The original user request remains the source of truth. The takeover may have completed only the blocked step, not the full request.",
+    ].join("\n");
+
+    plan = await budgetedGeneratePlan({
+      taskPrompt: opts.taskPrompt,
+      currentStateSummary: takeoverStateSummary,
+      claudeClient: plannerClient,
+      replanContext: {
+        failedStepIndex: args.failedStepIndex,
+        failedStep: args.failedStep,
+        errorMessage: [
+          `User takeover completed a blocked step. Summary: ${marker.summary}.`,
+          verificationLine,
+          "Continue with only the remaining work needed for the original user request.",
+          "Do not repeat work already completed by automation or by the user takeover.",
+          "Only return status done if the current screen already satisfies the full request and success criteria.",
+        ].join("\n"),
+        executedSteps: args.executedSteps,
+        liveAxTree: takeoverContext.liveAxTree,
+        runHistory,
+      },
+      imagePaths: takeoverScreenshot ? [takeoverScreenshot] : [],
+      maxStepsPerPlan,
+      telemetry,
+      maxModelCalls,
+      maxScreenshots,
+    });
+    actionRetriesUsed = 0;
+    console.log(`[open42] replan: ${plan.steps.length} step(s)`);
+    trace.event("takeover_resumed", marker.summary, {
+      outcome: marker.outcome,
+      verifier_verdict: verification?.verdict,
+    });
+    return "continued";
   };
   try {
     let stateSummary = taskStateSummary(opts);
@@ -377,7 +551,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           },
         );
         console.log(
-          `[showme] discovered initial state (pid=${initialState.context.pid}, window=${initialState.context.windowId}, ax-entries=${initialState.context.axIndex?.length ?? 0}${discoveryScreenshot ? ", screenshot attached" : ""})`,
+          `[open42] discovered initial state (pid=${initialState.context.pid}, window=${initialState.context.windowId}, ax-entries=${initialState.context.axIndex?.length ?? 0}${discoveryScreenshot ? ", screenshot attached" : ""})`,
         );
         learnAppCapability({
           initialState,
@@ -390,20 +564,24 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       }
     }
 
-    const maxStepsPerPlan = 10;
-
-    trace.event("planning", "initial plan");
-    plan = await budgetedGeneratePlan({
-      taskPrompt: opts.taskPrompt,
-      currentStateSummary: stateSummary,
-      claudeClient: plannerClient,
-      imagePaths: discoveryScreenshot ? [discoveryScreenshot] : [],
-      maxStepsPerPlan,
-      telemetry,
-      maxModelCalls,
-      maxScreenshots,
-    });
-    console.log(`[showme] plan: ${plan.steps.length} step(s)`);
+    const deterministicPlan = buildBrowserNavigationPlan(opts.taskPrompt);
+    if (deterministicPlan) {
+      trace.event("planning", "deterministic browser navigation");
+      plan = deterministicPlan;
+    } else {
+      trace.event("planning", "initial plan");
+      plan = await budgetedGeneratePlan({
+        taskPrompt: opts.taskPrompt,
+        currentStateSummary: stateSummary,
+        claudeClient: plannerClient,
+        imagePaths: discoveryScreenshot ? [discoveryScreenshot] : [],
+        maxStepsPerPlan,
+        telemetry,
+        maxModelCalls,
+        maxScreenshots,
+      });
+    }
+    console.log(`[open42] plan: ${plan.steps.length} step(s)`);
     trace.event("plan", `${plan.steps.length} step(s)`, {
       steps: plan.steps.map((step) => ({
         tool: step.tool,
@@ -424,12 +602,12 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         break;
       }
       if (batchesUsed >= maxBatches) {
-        console.error(`[showme] max batch budget exhausted (${maxBatches}).`);
+        console.error(`[open42] max batch budget exhausted (${maxBatches}).`);
         break;
       }
       const remainingStepBudget = opts.maxSteps - totalExecuted;
       if (remainingStepBudget <= 0) {
-        console.error(`[showme] max step budget exhausted (${opts.maxSteps}).`);
+        console.error(`[open42] max step budget exhausted (${opts.maxSteps}).`);
         break;
       }
       let result: Awaited<ReturnType<typeof executePlan>>;
@@ -437,7 +615,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       try {
         if (plan.status === "done") {
           console.log(
-            `[showme] planner says done: ${plan.message ?? plan.stopWhen}`,
+            `[open42] planner says done: ${plan.message ?? plan.stopWhen}`,
           );
           if (
             opts.live &&
@@ -465,9 +643,11 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             if (ok.verdict === "yes") {
               runSucceeded = true;
               stopWhenVerified = true;
+              finalContext = initialContext;
+              finalVerifierExplanation = ok.explanation;
             } else {
               console.error(
-                `[showme] planner done was not verified (${ok.verdict}): ${ok.explanation}`,
+                `[open42] planner done was not verified (${ok.verdict}): ${ok.explanation}`,
               );
               process.exitCode = opts.criteria?.trim() ? 3 : 1;
             }
@@ -481,14 +661,50 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           plan.status === "blocked" ||
           plan.status === "needs_clarification"
         ) {
+          const reasonType: InterventionReason =
+            plan.status === "needs_clarification"
+              ? "needs_clarification"
+              : "planner_blocked";
+          emitInterventionRequired({
+            runId,
+            issue: plan.message ?? "Planner cannot safely continue",
+            reason: plan.status,
+            reasonType,
+            step: plan.stopWhen || undefined,
+            initialState: initialLiveState,
+            trace,
+          });
+          learnInterventionNeed({
+            initialState: initialLiveState,
+            taskPrompt: opts.taskPrompt,
+            issue: plan.message ?? "Planner cannot safely continue",
+            reasonType,
+            enabled: opts.learn !== false && !learningDisabled,
+            cause: `planner_${plan.status}`,
+          });
+          const takeover = await handleTakeoverResume({
+            marker: await waitForTakeoverResume({ runId, opts }),
+            issue: plan.message ?? "Planner cannot safely continue",
+            reasonType,
+            failedStep: {
+              tool: "user_takeover",
+              args: {},
+              purpose: "the user completed a blocked manual step",
+            },
+            failedStepIndex: 0,
+            executedSteps: [],
+            context: initialContext,
+          });
+          if (takeover === "continued") continue;
+          if (takeover === "succeeded") break;
           console.error(
-            `[showme] ${plan.status}: ${plan.message ?? "planner cannot safely continue"}`,
+            `[open42] ${plan.status}: ${plan.message ?? "planner cannot safely continue"}`,
           );
           break;
         }
         if (plan.steps.length === 0) {
           console.error(
-            "[showme] planner returned no actions and did not mark the task done.",
+            "[open42] planner returned no actions and did not mark the task done.",
           );
           break;
         }
@@ -511,7 +727,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           executionPolicy,
         });
       } catch (e) {
-        console.error(`[showme] executor crashed: ${e}`);
+        console.error(`[open42] executor crashed: ${e}`);
         throw e;
       }
       totalExecuted += result.stepsExecuted;
@@ -525,6 +741,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         trace.step(step, index);
       }
       if (result.error === undefined) {
+        finalContext = result.lastContext;
         if (!opts.live || opts.stepRunner) {
           runSucceeded = true;
           break;
@@ -535,15 +752,16 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           result.lastContext.windowId === undefined
         ) {
           console.error(
-            "[showme] batch completed but live context is missing; cannot verify success safely.",
+            "[open42] batch completed but live context is missing; cannot verify success safely.",
           );
           break;
         }
         if (isOpenFocusOnlyTask(opts.taskPrompt, plan)) {
           stopWhenVerified = true;
           runSucceeded = true;
+          finalContext = result.lastContext;
           console.log(
-            "[showme] app availability verified from launch context.",
+            "[open42] app availability verified from launch context.",
           );
           break;
         }
@@ -625,12 +843,14 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             }
             stopWhenVerified = true;
             runSucceeded = true;
-            console.log(`[showme] stopWhen verified: ${ok.explanation}`);
+            finalContext = result.lastContext;
+            finalVerifierExplanation = ok.explanation;
+            console.log(`[open42] stopWhen verified: ${ok.explanation}`);
             break;
           }
           if (batchesUsed >= maxBatches) {
             console.error(
-              `[showme] stopWhen not verified after ${batchesUsed} batch(es): ${ok.explanation}`,
+              `[open42] stopWhen not verified after ${batchesUsed} batch(es): ${ok.explanation}`,
             );
             break;
           }
@@ -640,7 +860,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             criteriaRefinementsUsed >= maxCriteriaRefinements
           ) {
             console.error(
-              `[showme] criteria not satisfied after ${criteriaRefinementsUsed} refinement round(s): ${ok.explanation}`,
+              `[open42] criteria not satisfied after ${criteriaRefinementsUsed} refinement round(s): ${ok.explanation}`,
             );
             process.exitCode = 3;
             break;
@@ -678,10 +898,10 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             });
           }
           console.log(
-            `[showme] stopWhen not verified (${ok.verdict}): ${ok.explanation}`,
+            `[open42] stopWhen not verified (${ok.verdict}): ${ok.explanation}`,
           );
           console.log(
-            `[showme] planning next batch (${batchesUsed + 1}/${maxBatches})...`,
+            `[open42] planning next batch (${batchesUsed + 1}/${maxBatches})...`,
           );
           plan = await budgetedGeneratePlan({
             taskPrompt: opts.taskPrompt,
@@ -710,12 +930,12 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             maxModelCalls,
             maxScreenshots,
           });
-          console.log(`[showme] replan: ${plan.steps.length} step(s)`);
+          console.log(`[open42] replan: ${plan.steps.length} step(s)`);
           trace.event("replan", `${plan.steps.length} step(s)`);
           continue;
         }
         console.log(
-          "[showme] visual delta check: no material screenshot change; asking planner to change strategy.",
+          "[open42] visual delta check: no material screenshot change; asking planner to change strategy.",
         );
         plan = await budgetedGeneratePlan({
           taskPrompt: opts.taskPrompt,
@@ -744,7 +964,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           maxModelCalls,
           maxScreenshots,
         });
-        console.log(`[showme] replan: ${plan.steps.length} step(s)`);
+        console.log(`[open42] replan: ${plan.steps.length} step(s)`);
         continue;
       }
       if (
@@ -752,28 +972,93 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         result.error.startsWith("max step budget exhausted")
       ) {
         console.error(
-          `[showme] step ${result.failedStepIndex} failed: ${result.error}`,
+          `[open42] step ${result.failedStepIndex} failed: ${result.error}`,
         );
         break;
       }
       if (isForegroundRequiredError(result.error) && actionRetriesUsed > 0) {
         trace.event("foreground_required", result.error);
-        console.error(`[showme] foreground control required: ${result.error}`);
+        emitInterventionRequired({
+          runId,
+          issue: "Foreground control is required",
+          reason: result.error,
+          reasonType: "foreground_required",
+          step: plan.steps[result.failedStepIndex ?? 0]?.purpose,
+          initialState: initialLiveState,
+          trace,
+        });
+        learnInterventionNeed({
+          initialState: initialLiveState,
+          taskPrompt: opts.taskPrompt,
+          issue: result.error,
+          reasonType: "foreground_required",
+          enabled: opts.learn !== false && !learningDisabled,
+          cause: "foreground_required",
+        });
+        const takeover = await handleTakeoverResume({
+          marker: await waitForTakeoverResume({ runId, opts }),
+          issue: result.error,
+          reasonType: "foreground_required",
+          failedStep: plan.steps[result.failedStepIndex ?? 0] ?? {
+            tool: "foreground_required",
+            args: {},
+            purpose: "foreground control was required",
+          },
+          failedStepIndex: result.failedStepIndex ?? 0,
+          executedSteps: plan.steps.slice(0, result.failedStepIndex ?? 0),
+          context: result.lastContext,
+        });
+        if (takeover === "continued") continue;
+        if (takeover === "succeeded") break;
+        console.error(`[open42] foreground control required: ${result.error}`);
         process.exitCode = 16;
         break;
       }
       if (actionRetriesUsed >= maxActionRetries) {
+        const failedStep = plan.steps[result.failedStepIndex ?? 0];
+        emitInterventionRequired({
+          runId,
+          issue: "Repeated action attempts failed",
+          reason: result.error,
+          reasonType: "repeated_action_failure",
+          step: failedStep?.purpose,
+          initialState: initialLiveState,
+          trace,
+        });
+        learnInterventionNeed({
+          initialState: initialLiveState,
+          taskPrompt: opts.taskPrompt,
+          issue: `${failedStep?.purpose ?? "step"} failed repeatedly: ${result.error}`,
+          reasonType: "repeated_action_failure",
+          enabled: opts.learn !== false && !learningDisabled,
+          cause: "max_action_retries",
+        });
+        const takeover = await handleTakeoverResume({
+          marker: await waitForTakeoverResume({ runId, opts }),
+          issue: `${failedStep?.purpose ?? "step"} failed repeatedly: ${result.error}`,
+          reasonType: "repeated_action_failure",
+          failedStep: failedStep ?? {
+            tool: "repeated_action_failure",
+            args: {},
+            purpose: "the previous action failed repeatedly",
+          },
+          failedStepIndex: result.failedStepIndex ?? 0,
+          executedSteps: plan.steps.slice(0, result.failedStepIndex ?? 0),
+          context: result.lastContext,
+        });
+        if (takeover === "continued") continue;
+        if (takeover === "succeeded") break;
         console.error(
-          `[showme] step ${result.failedStepIndex} failed after ${actionRetriesUsed} action retry/retries: ${result.error}`,
+          `[open42] step ${result.failedStepIndex} failed after ${actionRetriesUsed} action retry/retries: ${result.error}`,
         );
         break;
       }
       actionRetriesUsed++;
       console.log(
-        `[showme] step ${result.failedStepIndex} failed: ${result.error}`,
+        `[open42] step ${result.failedStepIndex} failed: ${result.error}`,
       );
       console.log(
-        `[showme] replanning action retry (${actionRetriesUsed}/${maxActionRetries})...`,
+        `[open42] replanning action retry (${actionRetriesUsed}/${maxActionRetries})...`,
       );
       const failedStep = plan.steps[result.failedStepIndex ?? 0];
       if (!failedStep) break;
@@ -831,7 +1116,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxModelCalls,
         maxScreenshots,
       });
-      console.log(`[showme] replan: ${plan.steps.length} step(s)`);
+      console.log(`[open42] replan: ${plan.steps.length} step(s)`);
       trace.event("replan", `${plan.steps.length} step(s)`);
     }
 
@@ -874,23 +1159,83 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       });
       if (ok.verdict === "no") {
         console.error(
-          `[showme] stopWhen verification FAILED: ${ok.explanation}`,
+          `[open42] stopWhen verification FAILED: ${ok.explanation}`,
         );
         process.exitCode = 3;
       } else if (ok.verdict === "unknown") {
         if (opts.criteria?.trim()) {
-          console.error(
-            `[showme] criteria verifier couldn't confirm success: ${ok.explanation}`,
-          );
-          process.exitCode = 3;
+          emitInterventionRequired({
+            runId,
+            issue:
+              "The result could not be verified against the required criteria",
+            reason: ok.explanation,
+            reasonType: "verification_failed",
+            step: "Verification",
+            initialState: initialLiveState,
+            trace,
+          });
+          const resumed = await waitForTakeoverResume({ runId, opts });
+          if (resumed?.outcome === "success") {
+            recordTakeoverResumeLearning({
+              marker: enrichTakeoverMarker(
+                resumed,
+                lastResult.lastContext,
+                initialLiveState,
+              ),
+              fallbackState: initialLiveState,
+              learnEnabled: opts.learn !== false,
+              learningDisabled,
+            });
+            stopWhenVerified = true;
+            process.exitCode = 0;
+            finalContext = lastResult.lastContext;
+            finalVerifierExplanation = resumed.summary;
+            console.log(
+              `[open42] criteria accepted after user takeover: ${resumed.summary}`,
+            );
+          } else {
+            if (resumed) {
+              recordTakeoverResumeLearning({
+                marker: enrichTakeoverMarker(
+                  resumed,
+                  lastResult.lastContext,
+                  initialLiveState,
+                ),
+                fallbackState: initialLiveState,
+                learnEnabled: opts.learn !== false,
+                learningDisabled,
+              });
+            }
+            process.exitCode = 3;
+            console.error(
+              `[open42] criteria verifier couldn't confirm success: ${ok.explanation}`,
+            );
+          }
         } else {
           console.warn(
-            `[showme] stopWhen verifier couldn't tell from the screenshot/AX (${ok.explanation}). All steps completed without errors — treating as success.`,
+            `[open42] stopWhen verifier couldn't tell from the screenshot/AX (${ok.explanation}). All steps completed without errors — treating as success.`,
           );
         }
       } else {
-        console.log(`[showme] stopWhen verified: ${ok.explanation}`);
+        finalContext = lastResult.lastContext;
+        finalVerifierExplanation = ok.explanation;
+        console.log(`[open42] stopWhen verified: ${ok.explanation}`);
       }
+    }
+    if (runSucceeded && opts.live && (process.exitCode ?? 0) === 0) {
+      const taskResult = await buildTaskResult({
+        taskPrompt: opts.taskPrompt,
+        criteria: opts.criteria,
+        context: finalContext,
+        verifierExplanation: finalVerifierExplanation,
+        plannerClient: verifierClient,
+        telemetry,
+        maxModelCalls,
+        maxScreenshots,
+        tempPaths,
+        canUseModel: !opts.stepRunner,
+      });
+      emitTaskResult(taskResult, trace);
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
@@ -910,7 +1255,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       isRunCancelRequested(runId) ? "cancelled" : "aborted",
       telemetryRecord(telemetry),
     );
-    console.log(`[showme] aborted. ${totalExecuted} tool calls.`);
+    console.log(`[open42] aborted. ${totalExecuted} tool calls.`);
     return;
   }
   if (!runSucceeded) {
@@ -930,8 +1275,15 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     });
   }
   console.log(formatTelemetry(telemetry));
+  if (!opts.live) {
+    trace.finish("succeeded", telemetryRecord(telemetry));
+    console.log(
+      "[open42] dry-run complete. No cua-driver tools executed; re-run with --live to act.",
+    );
+    return;
+  }
   trace.finish("succeeded", telemetryRecord(telemetry));
-  console.log(`[showme] done. ${totalExecuted} tool calls.`);
+  console.log(`[open42] done. ${totalExecuted} tool calls.`);
 }
 
 async function snapshotContextForPrompt(
@@ -982,6 +1334,13 @@ interface RunTelemetry {
   promptChars: number;
 }
 
+interface TaskResultPayload {
+  kind: "answer" | "confirmation";
+  title: string;
+  body: string;
+  created_at: string;
+}
+
 function telemetryRecord(t: RunTelemetry): Record<string, number> {
   return {
     modelCalls: t.modelCalls,
@@ -996,6 +1355,171 @@ interface CapturedScreenshot {
   path: string;
   width?: number;
   height?: number;
+}
+
+async function buildTaskResult(args: {
+  taskPrompt: string;
+  criteria?: string;
+  context?: ExecutorContext;
+  verifierExplanation?: string;
+  plannerClient: PlannerClient;
+  telemetry: RunTelemetry;
+  maxModelCalls: number;
+  maxScreenshots: number;
+  tempPaths: Set<string>;
+  canUseModel: boolean;
+}): Promise<TaskResultPayload> {
+  const wantsAnswer = taskRequestsOutput(args.taskPrompt, args.criteria);
+  const fallback = fallbackTaskResult({
+    wantsAnswer,
+    verifierExplanation: args.verifierExplanation,
+  });
+
+  if (
+    !wantsAnswer ||
+    !args.canUseModel ||
+    args.context?.pid === undefined ||
+    args.context.windowId === undefined ||
+    args.telemetry.modelCalls >= args.maxModelCalls
+  ) {
+    return fallback;
+  }
+
+  try {
+    const finalState = await snapshotContextForPrompt(args.context);
+    if (finalState.screenshot?.path)
+      args.tempPaths.add(finalState.screenshot.path);
+    if (!finalState.liveAxTree?.trim()) return fallback;
+    return await budgetedGenerateTaskResult({
+      taskPrompt: args.taskPrompt,
+      criteria: args.criteria,
+      liveState: finalState.liveAxTree,
+      imagePaths: finalState.screenshot?.path
+        ? [finalState.screenshot.path]
+        : [],
+      plannerClient: args.plannerClient,
+      telemetry: args.telemetry,
+      maxModelCalls: args.maxModelCalls,
+      maxScreenshots: args.maxScreenshots,
+      fallback,
+    });
+  } catch (e) {
+    return {
+      ...fallback,
+      body:
+        fallback.kind === "answer"
+          ? `I completed the task, but could not prepare a readable answer from the final screen (${String(e)}).`
+          : fallback.body,
+    };
+  }
+}
+
+function fallbackTaskResult(args: {
+  wantsAnswer: boolean;
+  verifierExplanation?: string;
+}): TaskResultPayload {
+  if (args.wantsAnswer) {
+    return {
+      kind: "answer",
+      title: "Result",
+      body:
+        args.verifierExplanation?.trim() ||
+        "I completed the task, but I do not have a readable answer to show.",
+      created_at: new Date().toISOString(),
+    };
+  }
+  return {
+    kind: "confirmation",
+    title: "Done",
+    body: "I have done what you asked.",
+    created_at: new Date().toISOString(),
+  };
+}
+
+function taskRequestsOutput(taskPrompt: string, criteria?: string): boolean {
+  const text = `${taskPrompt}\n${criteria ?? ""}`.toLowerCase();
+  return /\b(read|tell me|what(?:'s| is| are)?|summari[sz]e|extract|return|show me|report|give me|answer|contents?|details?)\b/.test(
+    text,
+  );
+}
+
+async function budgetedGenerateTaskResult(args: {
+  taskPrompt: string;
+  criteria?: string;
+  liveState: string;
+  imagePaths: string[];
+  plannerClient: PlannerClient;
+  telemetry: RunTelemetry;
+  maxModelCalls: number;
+  maxScreenshots: number;
+  fallback: TaskResultPayload;
+}): Promise<TaskResultPayload> {
+  enforceModelBudget(args.telemetry, args.maxModelCalls);
+  enforceScreenshotBudget(
+    args.telemetry,
+    args.maxScreenshots,
+    args.imagePaths.length,
+  );
+  args.telemetry.modelCalls++;
+  args.telemetry.promptChars += args.liveState.length + args.taskPrompt.length;
+  args.telemetry.screenshotsAttached += args.imagePaths.length;
+
+  const prompt = [
+    "You are preparing the final user-facing output for a completed macOS automation task.",
+    "Use only the visible final screen evidence below. Do not invent unseen content.",
+    "",
+    `User task: ${args.taskPrompt}`,
+    args.criteria?.trim() ? `User criteria: ${args.criteria.trim()}` : "",
+    "",
+    "Final visible state:",
+    args.liveState.slice(0, 12_000),
+    "",
+    "If the task asks for information (read, summarize, tell, extract, return, show, answer), return kind=answer and put the useful answer in body.",
+    "If the task is only an action, return kind=confirmation and body exactly: I have done what you asked.",
+    "For emails/messages/documents, include the sender/title/subject when visible and summarize the body concisely. If the content is not visible, say that plainly.",
+    "",
+    'Reply ONLY as JSON: {"kind":"answer|confirmation","title":"short title","body":"final text for the user"}',
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const reply = await args.plannerClient.generatePlanText(
+    prompt,
+    args.imagePaths,
+  );
+  return parseTaskResultJson(reply) ?? args.fallback;
+}
+
+function parseTaskResultJson(reply: string): TaskResultPayload | null {
+  const start = reply.indexOf("{");
+  const end = reply.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(reply.slice(start, end + 1)) as Record<
+      string,
+      unknown
+    >;
+    const kind = parsed.kind === "answer" ? "answer" : "confirmation";
+    const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+    const body = typeof parsed.body === "string" ? parsed.body.trim() : "";
+    if (!body) return null;
+    return {
+      kind,
+      title: title || (kind === "answer" ? "Result" : "Done"),
+      body,
+      created_at: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function emitTaskResult(result: TaskResultPayload, trace: TraceRecorder): void {
+  trace.event("task_result", result.body, {
+    kind: result.kind,
+    title: result.title,
+  });
+  console.log(`[open42] task_result ${JSON.stringify(result)}`);
 }
 
 function taskStateSummary(opts: RunOptions): string {
@@ -1018,6 +1542,78 @@ function taskStateSummary(opts: RunOptions): string {
     );
   }
   return lines.join("\n");
+}
+
+export function buildBrowserNavigationPlan(taskPrompt: string): Plan | null {
+  const lower = taskPrompt.toLowerCase();
+  const browser = browserTarget(lower);
+  const url = browserUrlTarget(taskPrompt);
+  if (!browser || !url) return null;
+  return {
+    status: "ready",
+    steps: [
+      {
+        tool: "open_url",
+        args: { bundle_id: browser.bundleId, url },
+        purpose: `Open ${url} in ${browser.name}`,
+        expected_change: `${browser.name} loads ${url}`,
+      },
+    ],
+    stopWhen: browserNavigationStopWhen(taskPrompt, browser.name, url),
+  };
+}
+
+function browserNavigationStopWhen(
+  taskPrompt: string,
+  browserName: string,
+  url: string,
+): string {
+  if (isSimpleBrowserNavigationTask(taskPrompt)) {
+    return `${browserName} is showing ${url} or the sign-in page for that site.`;
+  }
+  return [
+    `The full user task is complete: ${taskPrompt}.`,
+    `Opening ${url} in ${browserName} is only the first step; do not treat navigation alone as success if the user asked to open, click, find, read, download, save, or act on content after the page loads.`,
+  ].join(" ");
+}
+
+function isSimpleBrowserNavigationTask(taskPrompt: string): boolean {
+  const lower = taskPrompt.toLowerCase();
+  if (
+    /\b(unread|last|latest|first|email|message|invoice|download|save|attachment|search|find|click|open\s+(?:the|a|an)\b|read|reply|send|archive|delete|mark)\b/.test(
+      lower,
+    )
+  ) {
+    return false;
+  }
+  return /\b(open|launch|go to|navigate to|show)\b/.test(lower);
+}
+
+function browserTarget(
+  lowerTask: string,
+): { name: string; bundleId: string } | null {
+  if (/\b(google )?chrome\b/.test(lowerTask)) {
+    return { name: "Google Chrome", bundleId: "com.google.Chrome" };
+  }
+  if (/\bsafari\b/.test(lowerTask)) {
+    return { name: "Safari", bundleId: "com.apple.Safari" };
+  }
+  if (/\b(edge|microsoft edge)\b/.test(lowerTask)) {
+    return { name: "Microsoft Edge", bundleId: "com.microsoft.edgemac" };
+  }
+  if (/\bfirefox\b/.test(lowerTask)) {
+    return { name: "Firefox", bundleId: "org.mozilla.firefox" };
+  }
+  return null;
+}
+
+function browserUrlTarget(taskPrompt: string): string | null {
+  const explicit = taskPrompt.match(/https?:\/\/[^\s"'<>]+/i)?.[0];
+  if (explicit) return explicit;
+  const lower = taskPrompt.toLowerCase();
+  if (/\bgmail\b|\bmail\.google\b/.test(lower))
+    return "https://mail.google.com/";
+  return null;
 }
 
 function successSignalsFor(opts: RunOptions, plan: Plan): string[] {
@@ -1195,6 +1791,184 @@ function learnAppCapability(args: {
   });
 }
 
+function emitInterventionRequired(args: {
+  runId: string;
+  issue: string;
+  reason: string;
+  reasonType: InterventionReason;
+  step?: string;
+  initialState?: InitialLiveState | null;
+  trace?: TraceRecorder;
+}): InterventionPayload {
+  const payload: InterventionPayload = {
+    run_id: args.runId,
+    issue: args.issue,
+    reason: args.reason,
+    reason_type: args.reasonType,
+    step: args.step,
+    user_action:
+      "Take over with mouse and keyboard to complete this step; open42 will observe and resume afterward.",
+    learning:
+      "A successful takeover can be saved as local app memory for future runs.",
+    before: snapshotForIntervention(args.initialState),
+    created_at: new Date().toISOString(),
+  };
+  try {
+    writeRunIntervention(payload);
+    args.trace?.event("intervention_required", args.issue, {
+      reason_type: args.reasonType,
+      step: args.step,
+    });
+  } catch {
+    // The stdout event is the compatibility path; the file marker is best effort.
+  }
+  console.log(`[open42] intervention_required ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+function learnInterventionNeed(args: {
+  initialState: InitialLiveState | null;
+  taskPrompt: string;
+  issue: string;
+  reasonType?: InterventionReason;
+  enabled: boolean;
+  cause: string;
+}): void {
+  if (!args.enabled || !args.initialState) return;
+  try {
+    addAppMemoryFact({
+      bundleId: args.initialState.app.bundleId,
+      appName: args.initialState.app.name,
+      kind: "observation",
+      description: `Automation may need user takeover for this task shape: ${args.issue}`,
+      confidence: 0.5,
+      status: "candidate",
+      source: "local",
+      scope: "intervention",
+      cause: args.cause,
+      evidence: [
+        `task: ${args.taskPrompt}`,
+        `reason_type: ${args.reasonType ?? "unknown"}`,
+        `cause: ${args.cause}`,
+      ],
+    });
+  } catch {
+    // Memory is opportunistic; never fail a live automation because learning failed.
+  }
+}
+
+function snapshotForIntervention(
+  initialState?: InitialLiveState | null,
+): RunInterventionSnapshot | undefined {
+  if (!initialState) return undefined;
+  return {
+    app_name: initialState.app.name,
+    bundle_id: initialState.app.bundleId,
+    pid: initialState.context.pid,
+    window_id: initialState.context.windowId,
+  };
+}
+
+function enrichTakeoverMarker(
+  marker: TakeoverResumeMarker,
+  ctx: ExecutorContext | undefined,
+  initialState: InitialLiveState | null,
+): TakeoverResumeMarker {
+  const after = snapshotAfterTakeover(ctx, initialState);
+  return after ? { ...marker, after } : marker;
+}
+
+function snapshotAfterTakeover(
+  ctx: ExecutorContext | undefined,
+  initialState: InitialLiveState | null,
+): RunInterventionSnapshot | undefined {
+  if (!ctx && !initialState) return undefined;
+  return {
+    app_name: initialState?.app.name,
+    bundle_id: initialState?.app.bundleId,
+    pid: ctx?.pid ?? initialState?.context.pid,
+    window_id: ctx?.windowId ?? initialState?.context.windowId,
+  };
+}
+
+function appRunShouldWaitForTakeover(opts: RunOptions): boolean {
+  return (
+    opts.live &&
+    !opts.stepRunner &&
+    Bun.env.OPEN42_APP_USE_ENV === "1" &&
+    Number(Bun.env.OPEN42_TAKEOVER_WAIT_MS ?? 600_000) > 0
+  );
+}
+
+async function waitForTakeoverResume(args: {
+  runId: string;
+  opts: RunOptions;
+}): Promise<TakeoverResumeMarker | null> {
+  if (args.opts.takeoverResumeFn) {
+    return await args.opts.takeoverResumeFn(args.runId);
+  }
+  if (!appRunShouldWaitForTakeover(args.opts)) return null;
+  const timeoutMs = Number(Bun.env.OPEN42_TAKEOVER_WAIT_MS ?? 600_000);
+  const start = Date.now();
+  console.log(
+    `[open42] paused for user takeover. Waiting up to ${Math.round(timeoutMs / 1000)}s...`,
+  );
+  while (Date.now() - start < timeoutMs) {
+    if (isRunCancelRequested(args.runId)) return null;
+    const marker = readRunTakeoverResume(args.runId);
+    if (marker) {
+      clearRunTakeoverResume(args.runId);
+      console.log(
+        `[open42] takeover ${marker.outcome}: ${marker.summary || "no summary"}`,
+      );
+      return marker;
+    }
+    await sleep(500);
+  }
+  console.error("[open42] takeover wait timed out.");
+  return null;
+}
+
+function recordTakeoverResumeLearning(args: {
+  marker: TakeoverResumeMarker;
+  fallbackState: InitialLiveState | null;
+  learnEnabled: boolean;
+  learningDisabled: boolean;
+}): void {
+  if (!args.learnEnabled || args.learningDisabled) return;
+  const bundleId = args.marker.bundle_id ?? args.fallbackState?.app.bundleId;
+  if (!bundleId) return;
+  try {
+    recordTakeoverLearning({
+      bundleId,
+      appName: args.marker.app_name ?? args.fallbackState?.app.name,
+      task: args.marker.task,
+      issue: args.marker.issue,
+      summary: args.marker.summary,
+      reasonType: args.marker.reason_type,
+      outcome: args.marker.outcome,
+      feedback: args.marker.feedback,
+      evidence: [
+        ...(args.marker.before
+          ? [`before: ${JSON.stringify(args.marker.before)}`]
+          : []),
+        ...(args.marker.after
+          ? [`after: ${JSON.stringify(args.marker.after)}`]
+          : []),
+        ...(args.marker.trajectory_path
+          ? [`trajectory: ${args.marker.trajectory_path}`]
+          : []),
+      ],
+    });
+  } catch {
+    // Memory is opportunistic; never fail a live automation because learning failed.
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isOpenFocusOnlyTask(taskPrompt: string, plan: Plan): boolean {
   const task = normalizeForMatch(taskPrompt);
   if (
@@ -1315,7 +2089,7 @@ function enforceScreenshotBudget(
 }
 
 function formatTelemetry(t: RunTelemetry): string {
-  return `[showme] cost telemetry: model_calls=${t.modelCalls} planner_calls=${t.plannerCalls} verifier_calls=${t.verifierCalls} screenshots=${t.screenshotsAttached} prompt_chars~=${t.promptChars}`;
+  return `[open42] cost telemetry: model_calls=${t.modelCalls} planner_calls=${t.plannerCalls} verifier_calls=${t.verifierCalls} screenshots=${t.screenshotsAttached} prompt_chars~=${t.promptChars}`;
 }
 
 function addScreenshotIfChanged(
@@ -1368,7 +2142,7 @@ function cloneExecutorContext(ctx: ExecutorContext): ExecutorContext {
  * user is *watching*, that animation budget dominates. We tune to a snappier
  * preset on enable. The motion settings persist in cua-driver's config, so
  * we keep these values across runs (no need to restore — they're saner than
- * the defaults for users running showme).
+ * the defaults for users running open42).
  */
 const CURSOR_MOTION_PRESET = {
   glide_duration_ms: 250,
@@ -1417,7 +2191,7 @@ async function runCuaDriver(args: string[]): Promise<void> {
 async function ensureDaemonRunning(): Promise<void> {
   const cuaDriver = requireCuaDriverBinary();
   if (await isDaemonRunning(cuaDriver)) return;
-  console.log("[showme] cua-driver daemon not running; auto-starting...");
+  console.log("[open42] cua-driver daemon not running; auto-starting...");
   // Fire-and-forget. `open -n -g` is non-blocking — daemon starts in the
   // background while open exits immediately.
   Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
@@ -1428,12 +2202,12 @@ async function ensureDaemonRunning(): Promise<void> {
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 250));
     if (await isDaemonRunning(cuaDriver)) {
-      console.log("[showme] daemon up");
+      console.log("[open42] daemon up");
       return;
     }
   }
   throw new Error(
-    "cua-driver daemon failed to start within 6s. Try `open -n -g -a CuaDriver --args serve` manually, then re-run.",
+    "cua-driver helper failed to start automatically within 6s. Reopen open42 or check the CuaDriver installation.",
   );
 }
 
@@ -1471,10 +2245,10 @@ function makeVerboseStepRunner(
       executionPolicy,
     });
     if (!result.ok) {
-      console.log(`[showme]   ✗ ${trim(result.error ?? "unknown error")}`);
+      console.log(`[open42]   ✗ ${trim(result.error ?? "unknown error")}`);
       return result;
     }
-    console.log(`[showme]   ✓ ${trim(result.stdout ?? "", 160)}`);
+    console.log(`[open42]   ✓ ${trim(result.stdout ?? "", 160)}`);
     return result;
   };
 }
@@ -1502,7 +2276,7 @@ async function runCuaDriverCapture(
 
 async function collectProcess(
   proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = Number(Bun.env.SHOWME_SUBPROCESS_TIMEOUT_MS ?? 20_000),
+  timeoutMs = Number(Bun.env.OPEN42_SUBPROCESS_TIMEOUT_MS ?? 20_000),
 ): Promise<{
   exitCode: number | null;
   stdout: string;
@@ -1708,6 +2482,8 @@ export async function verifyStopWhen(args: {
     "",
     "For visual creation tasks, be strict: answer YES only when the requested artifact is clearly recognizable, complete, and decent. It must include the requested attributes (for example shape, parts, labels/time/marks, layout). If the output is partial, rough, malformed, misaligned, missing requested parts, or merely resembles the artifact loosely, answer NO with the concrete missing/poor parts. Do not give credit for progress.",
     "",
+    "For tasks that ask to open, read, or view a specific email/message/item/result, an inbox/list/search-results page is only progress. Answer YES only when the specific requested item is opened and its content/detail view is visible. If the screenshot merely shows unread emails/messages/items ready to click, answer NO or UNKNOWN.",
+    "",
     "Three possible verdicts:",
     "  YES — the screenshot (primary) or the AX tree (supplementary) shows clear evidence the goal was met.",
     "  NO — there is positive evidence of FAILURE (an error dialog, a captcha block, the wrong app in front, a known-bad state).",
@@ -1768,6 +2544,12 @@ export async function verifyStopWhen(args: {
       };
     }
     if (structured.verdict === "yes" && !args.criteria?.trim()) {
+      const weakOpenItemYes = rejectWeakOpenItemYes({
+        explanation: verifierExplanation(structured),
+        stopWhen: args.stopWhen,
+        intent: args.intent,
+      });
+      if (weakOpenItemYes) return weakOpenItemYes;
       const weakVisualYes = rejectWeakVisualArtifactYes({
         explanation: structured.explanation,
         stopWhen: args.stopWhen,
@@ -1801,6 +2583,12 @@ export async function verifyStopWhen(args: {
       stopWhen: args.stopWhen,
       intent: args.intent,
     });
+    const weakOpenItemYes = rejectWeakOpenItemYes({
+      explanation,
+      stopWhen: args.stopWhen,
+      intent: args.intent,
+    });
+    if (weakOpenItemYes) return weakOpenItemYes;
     if (weakVisualYes) return weakVisualYes;
     return {
       verdict: "yes",
@@ -1965,6 +2753,47 @@ function rejectWeakVisualArtifactYes(args: {
   };
 }
 
+function rejectWeakOpenItemYes(args: {
+  explanation: string;
+  stopWhen: string;
+  intent?: SkillIntent;
+}): { verdict: "unknown"; explanation: string } | null {
+  const taskText = normalizeForMatch(
+    [args.intent?.goal, args.stopWhen, ...(args.intent?.successSignals ?? [])]
+      .filter((part): part is string => typeof part === "string")
+      .join(" "),
+  );
+  if (
+    !/\b(open|opened|read|view|show|display)\b/.test(taskText) ||
+    !/\b(email|emails|mail|message|messages|conversation|thread|unread|result|item)\b/.test(
+      taskText,
+    )
+  ) {
+    return null;
+  }
+
+  const explanation = normalizeForMatch(args.explanation);
+  const onlyListVisible =
+    /\b(inbox|list|list view|search results|results page|unread emails?|unread messages?|messages? visible|emails? visible|ready to (?:be )?click(?:ed)?|ready to open|ready to select)\b/.test(
+      explanation,
+    );
+  const explicitNotOpened =
+    /\b(not opened|none (?:has|have) been (?:clicked|opened)|no individual|no specific|content (?:is )?not visible|not visible|only (?:the )?(?:inbox|list|list view|results?))\b/.test(
+      explanation,
+    );
+  const contentOpened =
+    /\b(opened|content visible|message body|email body|conversation view|thread view|detail view|reading pane|sender|subject|body)\b/.test(
+      explanation,
+    ) && !explicitNotOpened;
+
+  if (!explicitNotOpened && (!onlyListVisible || contentOpened)) return null;
+  return {
+    verdict: "unknown",
+    explanation:
+      "verifier YES only confirms an inbox/list/results state; the requested email/message/item content is not opened yet",
+  };
+}
+
 function visualArtifactTerms(text: string): string[] {
   const artifactText =
     text.match(/\b(?:draw|drawing|drawn)\b(.+?)(?:\bstop\b|$)/)?.[1] ?? text;
@@ -2077,6 +2906,7 @@ async function defaultSnapshot(
 export interface DiscoveryResult {
   pid: number;
   windowId: number;
+  windowTitle?: string;
   /** Structured AX entries from the target window. */
   axIndex: import("./executor.ts").AxIndexEntry[];
   /** Pretty-printed AX tree + ids to thread into the planner prompt. */
@@ -2121,13 +2951,13 @@ async function preDiscoverAppState(
     }
     if (bundleId) {
       console.warn(
-        "[showme] SKILL.md is missing structured `target.bundle_id` frontmatter; falling back to prose scan (deprecated). Re-run `showme compile` to regenerate.",
+        "[open42] SKILL.md is missing structured `target.bundle_id` frontmatter; falling back to prose scan (deprecated). Re-run `open42 compile` to regenerate.",
       );
     }
   }
   if (!bundleId) {
     console.warn(
-      "[showme] no bundle_id found in SKILL.md and no app name matched a running/installed app; skipping pre-discovery",
+      "[open42] no bundle_id found in SKILL.md and no app name matched a running/installed app; skipping pre-discovery",
     );
     return null;
   }
@@ -2140,18 +2970,19 @@ async function preDiscoverAppState(
   ]);
   if (!launch.ok) {
     console.warn(
-      `[showme] launch_app(${bundleId}) failed: ${launch.stderr.trim() || "(no stderr)"}`,
+      `[open42] launch_app(${bundleId}) failed: ${launch.stderr.trim() || "(no stderr)"}`,
     );
     return null;
   }
-  let launchData: { pid?: number; windows?: Array<{ window_id?: number }> };
+  let launchData: { pid?: number; windows?: WindowCandidate[] };
   try {
     launchData = JSON.parse(launch.stdout);
   } catch {
     return null;
   }
   const pid = launchData.pid;
-  const windowId = launchData.windows?.[0]?.window_id;
+  const windowId = pickInitialWindowId(launchData.windows ?? [], skillMd);
+  const windowTitle = windowTitleForId(launchData.windows ?? [], windowId);
   if (typeof pid !== "number" || typeof windowId !== "number") {
     return null;
   }
@@ -2188,6 +3019,7 @@ async function preDiscoverAppState(
   return {
     pid,
     windowId,
+    windowTitle,
     axIndex,
     promptText,
     screenshotPath: screenshot?.path,
@@ -2204,7 +3036,7 @@ async function preDiscoverAppState(
 async function captureFocusedWindowScreenshot(
   windowId: number,
 ): Promise<CapturedScreenshot | undefined> {
-  const path = `/tmp/showme-discovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+  const path = `/tmp/open42-discovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
   const out = await runCuaDriverCapture([
     "call",
     "screenshot",
@@ -2214,7 +3046,7 @@ async function captureFocusedWindowScreenshot(
   ]);
   if (!out.ok) {
     console.warn(
-      `[showme] screenshot capture failed (continuing text-only): ${out.stderr.trim() || "(no stderr)"}`,
+      `[open42] screenshot capture failed (continuing text-only): ${out.stderr.trim() || "(no stderr)"}`,
     );
     return undefined;
   }
@@ -2224,10 +3056,10 @@ async function captureFocusedWindowScreenshot(
 async function optimizeScreenshotForPlanner(
   path: string,
 ): Promise<CapturedScreenshot> {
-  if (Bun.env.SHOWME_SCREENSHOT_OPTIMIZE === "0") {
+  if (Bun.env.OPEN42_SCREENSHOT_OPTIMIZE === "0") {
     return { path, ...(await readImageDimensions(path)) };
   }
-  const maxEdge = Number(Bun.env.SHOWME_SCREENSHOT_MAX_EDGE ?? 1280);
+  const maxEdge = Number(Bun.env.OPEN42_SCREENSHOT_MAX_EDGE ?? 1280);
   if (!Number.isFinite(maxEdge) || maxEdge <= 0)
     return { path, ...(await readImageDimensions(path)) };
 
@@ -2247,7 +3079,7 @@ async function optimizeScreenshotForPlanner(
   await proc.exited;
   if (proc.exitCode !== 0) {
     console.warn(
-      `[showme] screenshot optimization failed (using original): ${stderr.trim() || "(no stderr)"}`,
+      `[open42] screenshot optimization failed (using original): ${stderr.trim() || "(no stderr)"}`,
     );
     return { path, ...(await readImageDimensions(path)) };
   }
@@ -2356,6 +3188,7 @@ export const _internals = {
   extractBundleId,
   parseListAppsOutput,
   pickBundleIdByEarliestMention,
+  pickInitialWindowId,
 };
 
 interface InitialLiveState {
@@ -2395,8 +3228,9 @@ async function discoverInitialLiveState(
     ]);
     if (!windowsOut.ok) continue;
     const blocker = blockingDialogFromWindows(windowsOut.stdout);
-    const windowId = firstWindowId(windowsOut.stdout);
+    const windowId = firstWindowId(windowsOut.stdout, taskPrompt);
     if (windowId === null) continue;
+    const windowTitle = windowTitleFromListWindows(windowsOut.stdout, windowId);
     const state = await runCuaDriverCapture(
       [
         "call",
@@ -2422,6 +3256,7 @@ async function discoverInitialLiveState(
       context: {
         pid,
         windowId,
+        windowTitle,
         axIndex,
         screenshotWidth: screenshot?.width,
         screenshotHeight: screenshot?.height,
@@ -2479,48 +3314,72 @@ async function pidForBundleId(bundleId: string): Promise<number | null> {
   return app?.pid ?? null;
 }
 
-function firstWindowId(stdout: string): number | null {
+interface WindowCandidate {
+  window_id?: number;
+  title?: string;
+  bounds?: { width?: number; height?: number };
+  is_on_screen?: boolean;
+  on_current_space?: boolean;
+  z_index?: number;
+  is_focused?: boolean;
+  focused?: boolean;
+  is_key?: boolean;
+  is_main?: boolean;
+}
+
+function firstWindowId(stdout: string, taskHint = ""): number | null {
   try {
     const parsed = JSON.parse(stdout) as {
-      windows?: Array<{
-        window_id?: number;
-        title?: string;
-        bounds?: { width?: number; height?: number };
-        is_on_screen?: boolean;
-        on_current_space?: boolean;
-        z_index?: number;
-      }>;
+      windows?: WindowCandidate[];
     };
-    const windows = parsed.windows ?? [];
-    const usable =
-      windows
-        .filter((window) => typeof window.window_id === "number")
-        .sort((a, b) => windowScore(b) - windowScore(a))
-        .find((window) => {
-          const width = Number(window.bounds?.width ?? 0);
-          const height = Number(window.bounds?.height ?? 0);
-          return (
-            width >= 240 &&
-            height >= 160 &&
-            window.is_on_screen !== false &&
-            window.on_current_space !== false
-          );
-        }) ??
-      windows
-        .filter((window) => typeof window.window_id === "number")
-        .sort((a, b) => windowScore(b) - windowScore(a))
-        .find((window) => {
-          const width = Number(window.bounds?.width ?? 0);
-          const height = Number(window.bounds?.height ?? 0);
-          return width >= 240 && height >= 160;
-        }) ??
-      windows.find((window) => typeof window.window_id === "number");
-    const id = usable?.window_id;
-    return typeof id === "number" ? id : null;
+    return pickInitialWindowId(parsed.windows ?? [], taskHint);
   } catch {
     const match = stdout.match(/\bwindow_id["=:\s]+(\d+)/);
     return match?.[1] ? Number(match[1]) : null;
   }
+}
+
+function windowTitleFromListWindows(
+  stdout: string,
+  windowId: number,
+): string | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as { windows?: WindowCandidate[] };
+    return windowTitleForId(parsed.windows ?? [], windowId);
+  } catch {
+    return undefined;
+  }
+}
+
+function windowTitleForId(
+  windows: WindowCandidate[],
+  windowId: number | null,
+): string | undefined {
+  if (windowId === null) return undefined;
+  const title = windows
+    .find((window) => window.window_id === windowId)
+    ?.title?.trim();
+  return title || undefined;
+}
+
+function pickInitialWindowId(
+  windows: WindowCandidate[],
+  taskHint = "",
+): number | null {
+  const withIds = windows.filter(
+    (window) => typeof window.window_id === "number",
+  );
+  const usable = withIds.filter((window) => {
+    const width = Number(window.bounds?.width ?? 0);
+    const height = Number(window.bounds?.height ?? 0);
+    return width >= 240 && height >= 160;
+  });
+  const candidates = usable.length > 0 ? usable : withIds;
+  const tokens = meaningfulWindowTokens(taskHint);
+  const selected = candidates.sort(
+    (a, b) => windowScore(b, tokens) - windowScore(a, tokens),
+  )[0];
+  return typeof selected?.window_id === "number" ? selected.window_id : null;
 }
 
 function blockingDialogFromWindows(
@@ -2533,16 +3392,12 @@ function blockingDialogFromWindows(
         title?: string;
         bounds?: { width?: number; height?: number };
         is_on_screen?: boolean;
-        on_current_space?: boolean;
         z_index?: number;
       }>;
     };
     const visible = (parsed.windows ?? [])
       .filter((window) => typeof window.window_id === "number")
-      .filter(
-        (window) =>
-          window.is_on_screen !== false && window.on_current_space !== false,
-      )
+      .filter((window) => window.is_on_screen !== false)
       .sort((a, b) => Number(b.z_index ?? 0) - Number(a.z_index ?? 0));
     const top = visible[0];
     const title = top?.title?.trim() ?? "";
@@ -2564,20 +3419,90 @@ function blockingDialogFromWindows(
   return null;
 }
 
-function windowScore(window: {
-  title?: string;
-  bounds?: { width?: number; height?: number };
-  is_on_screen?: boolean;
-  on_current_space?: boolean;
-  z_index?: number;
-}) {
+function windowScore(window: WindowCandidate, taskTokens: string[] = []) {
   const area =
     Number(window.bounds?.width ?? 0) * Number(window.bounds?.height ?? 0);
+  const boundedArea = Math.min(area, 1_000_000);
+  const usable = area >= 240 * 160 ? 1_000_000 : -1_000_000;
   const titleBonus = window.title?.trim() ? 50_000 : 0;
-  const visibleBonus = window.is_on_screen === false ? -1_000_000 : 500_000;
-  const spaceBonus = window.on_current_space === false ? -1_000_000 : 500_000;
-  const zBonus = Number(window.z_index ?? 0);
-  return area + titleBonus + visibleBonus + spaceBonus + zBonus;
+  const visibleBonus = window.is_on_screen === false ? -2_000_000 : 2_000_000;
+  const spaceBonus = window.on_current_space === true ? 500_000 : 0;
+  const focusedBonus =
+    window.is_focused === true ||
+    window.focused === true ||
+    window.is_key === true ||
+    window.is_main === true
+      ? 5_000_000
+      : 0;
+  const zBonus = Number(window.z_index ?? 0) * 100_000;
+  const taskTitleBonus = windowTitleTokenScore(window.title, taskTokens);
+  return (
+    usable +
+    taskTitleBonus +
+    focusedBonus +
+    visibleBonus +
+    spaceBonus +
+    zBonus +
+    titleBonus +
+    boundedArea
+  );
+}
+
+function windowTitleTokenScore(
+  title: string | undefined,
+  tokens: string[],
+): number {
+  if (!title || tokens.length === 0) return 0;
+  const lowerTitle = title.toLowerCase();
+  const hits = tokens.filter((token) => lowerTitle.includes(token)).length;
+  if (hits === 0) return 0;
+  return hits * 4_000_000 + (hits === tokens.length ? 2_000_000 : 0);
+}
+
+function meaningfulWindowTokens(text: string): string[] {
+  const stopwords = new Set([
+    "app",
+    "application",
+    "background",
+    "browser",
+    "chrome",
+    "click",
+    "create",
+    "current",
+    "document",
+    "file",
+    "figma",
+    "find",
+    "get",
+    "google",
+    "latest",
+    "mail",
+    "make",
+    "new",
+    "open",
+    "page",
+    "read",
+    "recent",
+    "save",
+    "screen",
+    "select",
+    "show",
+    "task",
+    "the",
+    "this",
+    "use",
+    "window",
+    "with",
+  ]);
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const token of text.toLowerCase().match(/[a-z0-9][a-z0-9._'-]*/g) ?? []) {
+    if (token.length < 3 || stopwords.has(token) || seen.has(token)) continue;
+    if (/^(com|org|io|net)\./.test(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+  }
+  return tokens.slice(0, 8);
 }
 
 function compactAxTreeForPrompt(stdout: string): string {

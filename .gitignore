@@ -5,4 +5,5 @@ node_modules/
 dist/
 recorder/.build/
 recorder/.swiftpm/
+mac-app/.build/
 *.log

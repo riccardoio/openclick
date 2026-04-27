@@ -4,6 +4,7 @@ import {
   classifyToolSafety,
   executePlan,
   parseAxTreeIndex,
+  pickOpenedUrlWindow,
   resolveSelector,
   runCuaDriverStep,
 } from "../src/executor.ts";
@@ -28,6 +29,7 @@ const SIMPLE_PLAN: Plan = {
 describe("executor", () => {
   test("classifies foreground-only primitives out of shared-seat mode", () => {
     expect(classifyToolSafety("click").category).toBe("background_safe");
+    expect(classifyToolSafety("open_url").category).toBe("background_safe");
     expect(classifyToolSafety("mcp__cua-driver__move_cursor").category).toBe(
       "foreground_required",
     );
@@ -284,6 +286,77 @@ describe("executor", () => {
     ]);
   });
 
+  test("converts unread email row coordinate clicks to descendant AX links", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 2793, window_id: 0, x: 700, y: 168 },
+          purpose: "Click the most recent unread email row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1838,
+        windowId: 10434,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [305] AXRow "unread, The Information , OpenAI’s AWS Push Comes As Customers Embrace Rivals , 14:36"',
+            "  - [306] AXCell",
+            "  - [320] AXCell",
+            "    - [321] AXLink",
+            '      - [323] AXStaticText "OpenAI’s AWS Push Comes As Customers Embrace Rivals"',
+            '- [332] AXRow "starred, unread, Holly , me , Holly 3 , Follow up <> Accel , 14:32"',
+            "  - [352] AXLink",
+          ].join("\n"),
+        ),
+      },
+    });
+    expect(calls).toEqual([
+      {
+        tool: "click",
+        args: { pid: 1838, window_id: 10434, element_index: 321 },
+      },
+    ]);
+  });
+
+  test("keeps non-message coordinate clicks unchanged", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 1, window_id: 2, x: 120, y: 160 },
+          purpose: "draw on canvas",
+        },
+      ],
+      stopWhen: "done",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1,
+        windowId: 2,
+        axIndex: parseAxTreeIndex('- [305] AXRow "unread, Example"\n'),
+      },
+    });
+    expect(calls).toEqual([
+      { tool: "click", args: { pid: 1, window_id: 2, x: 120, y: 160 } },
+    ]);
+  });
+
   test("repairs drag window_id from context before running", async () => {
     let captured: Record<string, unknown> = {};
     const runner: StepRunner = async (step) => {
@@ -369,7 +442,7 @@ describe("executor", () => {
     expect(capturedClickArgs.element_index).toBe(5);
   });
 
-  test("emits a `[showme] about to:` line for each step", async () => {
+  test("emits a `[open42] about to:` line for each step", async () => {
     const lines: string[] = [];
     const log = (s: string) => lines.push(s);
     const runner: StepRunner = async () => ({ ok: true });
@@ -524,6 +597,619 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(captured.window_id).toBe(3745);
   });
 
+  test("repairs a mismatched pid when the window_id matches context", async () => {
+    // Real-world failure: the planner confused an AX element count for a pid
+    // while keeping the correct window_id. The window identity is stronger:
+    // if it matches the current context, use the owning pid from context.
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: 2789, window_id: 16412, x: 780, y: 168 },
+          purpose: "click target despite a bogus pid",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 16412 },
+      refreshBeforeAxClick: false,
+    });
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(16412);
+  });
+
+  test("scrubs app-name discovery args when context has a concrete target", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { app_name: "Google Chrome" },
+          purpose: "snapshot the known target",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true, stdout: "- [1] AXButton (OK)\n" };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 16412 },
+    });
+    expect(captured).toEqual({ pid: 1838, window_id: 16412 });
+  });
+
+  test("absorbs pid and windowId from the selected list_windows record", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "list_windows",
+          args: {},
+          purpose: "discover windows",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "click in discovered window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 111,
+                window_id: 222,
+                bounds: { width: 1, height: 1 },
+              },
+              {
+                pid: 1838,
+                window_id: 16412,
+                bounds: { width: 1920, height: 975 },
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      refreshBeforeAxClick: false,
+    });
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(16412);
+  });
+
+  test("keeps explicit open_url window instead of stale app windows", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "open_url",
+          args: {
+            bundle_id: "com.google.Chrome",
+            url: "https://mail.google.com/",
+          },
+          purpose: "open Gmail in Chrome",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in opened tab",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "open_url") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            pid: 1838,
+            window_id: 456,
+            windows: [
+              {
+                pid: 1838,
+                window_id: 111,
+                title: "Inbox - Gmail",
+                bounds: { width: 1440, height: 900 },
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      refreshBeforeAxClick: false,
+    });
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(456);
+  });
+
+  test("open_url anchors to frontmost returned window over a larger stale window", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "open_url",
+          args: {
+            bundle_id: "com.google.Chrome",
+            url: "https://mail.google.com/",
+          },
+          purpose: "open Gmail in Chrome",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in opened tab",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "open_url") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            pid: 1838,
+            windows: [
+              {
+                pid: 1838,
+                window_id: 111,
+                title: "A different large Chrome window",
+                bounds: { width: 3000, height: 1200 },
+                on_current_space: true,
+                is_on_screen: true,
+                z_index: 1,
+              },
+              {
+                pid: 1838,
+                window_id: 456,
+                title: "Inbox - Gmail",
+                bounds: { width: 1000, height: 760 },
+                on_current_space: true,
+                is_on_screen: true,
+                z_index: 100,
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(456);
+  });
+
+  test("open_url selection prefers the window whose tab changed after navigation", () => {
+    const selected = pickOpenedUrlWindow(
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 20,
+        },
+        {
+          pid: 1838,
+          window_id: 456,
+          title: "New Tab",
+          bounds: { width: 1100, height: 800 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 10,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 20,
+        },
+        {
+          pid: 1838,
+          window_id: 456,
+          title: "Inbox - Gmail",
+          bounds: { width: 1100, height: 800 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 100,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.window_id).toBe(456);
+  });
+
+  test("open_url selection prefers a newly created matching window", () => {
+    const selected = pickOpenedUrlWindow(
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 20,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 20,
+        },
+        {
+          pid: 1838,
+          window_id: 789,
+          title: "Inbox - Gmail",
+          bounds: { width: 900, height: 700 },
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 100,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.window_id).toBe(789);
+  });
+
+  test("preserves the anchored window when later list_windows sees many usable windows", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "list_windows",
+          args: { pid: "$pid" },
+          purpose: "inspect windows",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in anchored window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 1838,
+                window_id: 111,
+                title: "Inbox - Gmail",
+                bounds: { width: 1920, height: 1000 },
+                on_current_space: true,
+                is_on_screen: true,
+                z_index: 100,
+              },
+              {
+                pid: 1838,
+                window_id: 456,
+                title: "Gmail",
+                bounds: { width: 1000, height: 800 },
+                on_current_space: true,
+                is_on_screen: true,
+                z_index: 1,
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 456 },
+      refreshBeforeAxClick: false,
+    });
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(456);
+  });
+
+  test("does not poison anchored context from list_windows on another pid", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "list_windows",
+          args: { pid: 2820 },
+          purpose: "inspect another Chrome process",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in the original task window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 2820,
+                window_id: 555,
+                title: "Different Chrome window",
+                bounds: { width: 1440, height: 900 },
+                on_current_space: true,
+                is_on_screen: true,
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 16412 },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured.pid).toBe(1838);
+    expect(captured.window_id).toBe(16412);
+  });
+
+  test("reacquires an anchored window by exact title when the window id changes", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "list_windows",
+          args: { pid: "$pid" },
+          purpose: "refresh windows after app recreated the document window",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in the same document window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 44,
+                window_id: 20,
+                title: "Target Figma file",
+                bounds: { width: 1200, height: 800 },
+              },
+              {
+                pid: 44,
+                window_id: 30,
+                title: "Other Figma file",
+                bounds: { width: 1400, height: 900 },
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 44,
+        windowId: 10,
+        windowTitle: "Target Figma file",
+      },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured.pid).toBe(44);
+    expect(captured.window_id).toBe(20);
+  });
+
+  test("does not reacquire by title when the replacement is ambiguous", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "list_windows",
+          args: { pid: "$pid" },
+          purpose: "refresh windows",
+        },
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "continue in pinned window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 44,
+                window_id: 20,
+                title: "Untitled",
+                bounds: { width: 1200, height: 800 },
+              },
+              {
+                pid: 44,
+                window_id: 30,
+                title: "Untitled",
+                bounds: { width: 1400, height: 900 },
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 44, windowId: 10, windowTitle: "Untitled" },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured.pid).toBe(44);
+    expect(captured.window_id).toBe(10);
+  });
+
+  test("revalidates the window lease before a targeted action", async () => {
+    const calls: string[] = [];
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "click in leased document window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      calls.push(step.tool);
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 44,
+                window_id: 20,
+                title: "Target Figma file",
+                bounds: { width: 1200, height: 800 },
+              },
+            ],
+          }),
+        };
+      }
+      captured = step.args;
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 44,
+        windowId: 10,
+        windowTitle: "Target Figma file",
+      },
+      refreshBeforeAxClick: false,
+      revalidateWindowLease: true,
+    });
+
+    expect(calls).toEqual(["list_windows", "click"]);
+    expect(captured.pid).toBe(44);
+    expect(captured.window_id).toBe(20);
+  });
+
+  test("refuses to act when window lease revalidation is ambiguous", async () => {
+    let clicked = false;
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", element_index: 12 },
+          purpose: "click in leased document window",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "list_windows") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            windows: [
+              {
+                pid: 44,
+                window_id: 20,
+                title: "Untitled",
+                bounds: { width: 1200, height: 800 },
+              },
+              {
+                pid: 44,
+                window_id: 30,
+                title: "Untitled",
+                bounds: { width: 1400, height: 900 },
+              },
+            ],
+          }),
+        };
+      }
+      clicked = true;
+      return { ok: true };
+    };
+
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 44, windowId: 10, windowTitle: "Untitled" },
+      refreshBeforeAxClick: false,
+      revalidateWindowLease: true,
+    });
+
+    expect(clicked).toBe(false);
+    expect(result.error).toContain("window lease lost");
+    expect(result.error).toContain("Refusing to switch");
+  });
+
   test("seeds pid and windowId from get_window_state args when stdout is text", async () => {
     let captured: Record<string, unknown> = {};
     const plan: Plan = {
@@ -663,6 +1349,43 @@ describe("resolveSelector", () => {
     expect(
       resolveSelector(entries, { title: "391", role: "AXStaticText" }),
     ).toBe(4);
+  });
+
+  test("title_contains + role resolves long AX row labels", () => {
+    const rowEntries = parseAxTreeIndex(
+      [
+        '- [267] AXRow "unread, Mobbin , Monday Mobile Drop , 12:14 , New mobile apps on Mobbin this week."',
+        '- [301] AXRow "unread, Pinterest , Ricc, back to your happy place , 12:03"',
+      ].join("\n"),
+    );
+    expect(
+      resolveSelector(rowEntries, {
+        title_contains: "Monday Mobile Drop",
+        role: "AXRow",
+      }),
+    ).toBe(267);
+  });
+
+  test("title_contains remains ambiguous without an ordinal", () => {
+    const rowEntries = parseAxTreeIndex(
+      [
+        '- [1] AXRow "unread, Pinterest , First"',
+        '- [2] AXRow "unread, Pinterest , Second"',
+      ].join("\n"),
+    );
+    expect(
+      resolveSelector(rowEntries, {
+        title_contains: "Pinterest",
+        role: "AXRow",
+      }),
+    ).toBeNull();
+    expect(
+      resolveSelector(rowEntries, {
+        title_contains: "Pinterest",
+        role: "AXRow",
+        ordinal: 1,
+      }),
+    ).toBe(2);
   });
 
   test("returns null when nothing matches", () => {

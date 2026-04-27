@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type SystemProbe,
   formatDoctorReport,
@@ -6,11 +9,27 @@ import {
   tryAutoStartDaemon,
 } from "../src/doctor.ts";
 
+let home: string;
+let originalHome: string | undefined;
+
+beforeEach(() => {
+  originalHome = Bun.env.OPEN42_HOME;
+  home = mkdtempSync(join(tmpdir(), "open42-doctor-"));
+  Bun.env.OPEN42_HOME = home;
+});
+
+afterEach(() => {
+  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
+  else Bun.env.OPEN42_HOME = originalHome;
+  rmSync(home, { recursive: true, force: true });
+});
+
 function makeProbe(overrides: Partial<SystemProbe> = {}): SystemProbe {
   return {
     bunVersion: () => "1.3.11",
     cuaDriverPath: () => "/usr/local/bin/cua-driver",
     cuaDriverDaemonRunning: async () => true,
+    accessibilityGranted: async () => true,
     screenRecordingGranted: async () => true,
     recorderBinaryExists: () => true,
     recorderHasAccessibility: async () => true,
@@ -50,6 +69,7 @@ describe("doctor", () => {
         recorderBinaryExists: () => false,
         recorderHasAccessibility: async () => true, // ignored when binary missing
       }),
+      { includeRecorder: true },
     );
     const ax = report.results.find(
       (r) => r.name === "Accessibility (recorder)",
@@ -58,13 +78,26 @@ describe("doctor", () => {
     expect(ax?.detail).toContain("recorder not built");
   });
 
+  test("default doctor does not require the legacy recorder for CLI-only installs", async () => {
+    const report = await runDoctor(
+      makeProbe({
+        recorderBinaryExists: () => false,
+        recorderHasAccessibility: async () => false,
+      }),
+    );
+    expect(report.allOk).toBe(true);
+    expect(report.results.some((r) => r.name === "Swift recorder built")).toBe(
+      false,
+    );
+  });
+
   test("missing API key flagged with shell-export hint", async () => {
     const report = await runDoctor(
       makeProbe({ anthropicApiKeySet: () => false }),
     );
     const k = report.results.find((r) => r.name === "ANTHROPIC_API_KEY");
     expect(k?.status).toBe("fail");
-    expect(k?.fixHint).toContain("export ANTHROPIC_API_KEY");
+    expect(k?.fixHint).toContain("open42 settings api-key set");
   });
 
   test("formatter prints check marks for ok and a fix hint for failures", async () => {
@@ -74,7 +107,7 @@ describe("doctor", () => {
     const text = formatDoctorReport(report);
     expect(text).toContain("✓ bun runtime");
     expect(text).toContain("✗ ANTHROPIC_API_KEY");
-    expect(text).toContain("→ export ANTHROPIC_API_KEY");
+    expect(text).toContain("→ Run `open42 settings api-key set");
     expect(text).toContain("Fix the");
   });
 
@@ -82,7 +115,7 @@ describe("doctor", () => {
     const report = await runDoctor(makeProbe());
     const text = formatDoctorReport(report);
     expect(text).toContain("All set");
-    expect(text).toContain("showme record");
+    expect(text).toContain("open42 record");
   });
 
   test("--fix path: tryAutoStartDaemon flips daemon ok on rerun", async () => {
@@ -103,6 +136,7 @@ describe("doctor", () => {
       // Pre-fix: daemon down implies SR check is skipped → also false; once
       // daemon is up, SR is reported as granted.
       screenRecordingGranted: async () => probeCalls >= 3,
+      accessibilityGranted: async () => probeCalls >= 3,
     });
 
     // First doctor pass — daemon not yet up.
@@ -142,13 +176,13 @@ describe("doctor", () => {
     expect(calls).toBe(1);
   });
 
-  test("daemon-down fix-hint mentions --fix as an option", async () => {
+  test("daemon-down fix-hint says open42 starts the helper automatically", async () => {
     const report = await runDoctor(
       makeProbe({ cuaDriverDaemonRunning: async () => false }),
     );
     const daemon = report.results.find((r) => r.name === "cua-driver daemon");
     expect(daemon?.status).toBe("fail");
-    expect(daemon?.fixHint).toContain("--fix");
+    expect(daemon?.fixHint).toContain("starts this automatically");
   });
 
   test("doctor report is JSON-serializable with stable shape (consumed by Swift onboarding)", async () => {
@@ -174,8 +208,8 @@ describe("doctor", () => {
     const names = round.results.map((r: { name: string }) => r.name);
     expect(names).toContain("cua-driver installed");
     expect(names).toContain("cua-driver daemon");
+    expect(names).toContain("Accessibility (via cua-driver)");
     expect(names).toContain("Screen Recording (via cua-driver)");
-    expect(names).toContain("Accessibility (recorder)");
     expect(names).toContain("ANTHROPIC_API_KEY");
   });
 

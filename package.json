@@ -1,19 +1,31 @@
 {
-  "name": "showme",
+  "name": "open42",
   "version": "0.1.0",
   "description": "Run macOS desktop tasks from natural-language prompts via cua-driver.",
   "type": "module",
-  "bin": { "showme": "./bin/showme" },
+  "bin": { "open42": "./bin/open42" },
+  "files": [
+    "bin/open42",
+    "src",
+    "!src/mac-app.ts",
+    "VERSION",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
-    "format": "biome format --write src tests"
+    "format": "biome format --write src tests",
+    "build:mac-app": "swift build --package-path mac-app",
+    "launch:mac-app": "bun src/mac-app.ts --detach"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
-    "yaml": "^2.5.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "yaml": "^2.5.0",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
