@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift --version
-      - name: Build recorder
-        run: cd recorder && swift build -c release
-      - name: Test recorder
-        run: cd recorder && swift test
+      - name: Build mac app package
+        run: swift build --package-path mac-app -c release
+      - name: Test mac app package
+        run: swift test --package-path mac-app

@@ -14,15 +14,15 @@ jobs:
 
       - name: Build per-arch and lipo into a universal binary
         run: |
-          cd recorder
+          cd mac-app
           swift build -c release --arch arm64
           swift build -c release --arch x86_64
           mkdir -p .build/release
           lipo -create \
-            .build/arm64-apple-macosx/release/showme-recorder \
-            .build/x86_64-apple-macosx/release/showme-recorder \
-            -output .build/release/showme-recorder
-          lipo -info .build/release/showme-recorder
+            .build/arm64-apple-macosx/release/open42-recorder \
+            .build/x86_64-apple-macosx/release/open42-recorder \
+            -output .build/release/open42-recorder
+          lipo -info .build/release/open42-recorder
 
       - name: Codesign
         env:
@@ -39,8 +39,8 @@ jobs:
           security set-keychain-settings -lut 21600 build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
-          codesign --sign "$DEV_ID" --options runtime --timestamp recorder/.build/release/showme-recorder
-          codesign --verify --verbose recorder/.build/release/showme-recorder
+          codesign --sign "$DEV_ID" --options runtime --timestamp mac-app/.build/release/open42-recorder
+          codesign --verify --verbose mac-app/.build/release/open42-recorder
 
       - name: Notarize and staple
         env:
@@ -49,16 +49,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           mkdir -p dmg-staging
-          cp recorder/.build/release/showme-recorder dmg-staging/
-          hdiutil create -volname "showme" -srcfolder dmg-staging -ov -format UDZO showme.dmg
-          xcrun notarytool submit showme.dmg \
+          cp mac-app/.build/release/open42-recorder dmg-staging/
+          hdiutil create -volname "open42" -srcfolder dmg-staging -ov -format UDZO open42.dmg
+          xcrun notarytool submit open42.dmg \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          xcrun stapler staple showme.dmg
+          xcrun stapler staple open42.dmg
 
       - name: Attach DMG to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: showme.dmg
+          files: open42.dmg
