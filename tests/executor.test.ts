@@ -4,6 +4,7 @@ import {
   classifyToolSafety,
   executePlan,
   parseAxTreeIndex,
+  pickOpenedUrlTab,
   pickOpenedUrlWindow,
   resolveSelector,
   runCuaDriverStep,
@@ -30,6 +31,9 @@ describe("executor", () => {
   test("classifies foreground-only primitives out of shared-seat mode", () => {
     expect(classifyToolSafety("click").category).toBe("background_safe");
     expect(classifyToolSafety("open_url").category).toBe("background_safe");
+    expect(classifyToolSafety("list_browser_tabs").category).toBe(
+      "background_safe",
+    );
     expect(classifyToolSafety("mcp__cua-driver__move_cursor").category).toBe(
       "foreground_required",
     );
@@ -175,12 +179,15 @@ describe("executor", () => {
       },
     });
     expect(calls).toEqual([
-      { tool: "press_key", args: { pid: 1, key: "1" } },
-      { tool: "press_key", args: { pid: 1, key: "8" } },
-      { tool: "hotkey", args: { pid: 1, keys: ["shift", "8"] } },
-      { tool: "press_key", args: { pid: 1, key: "2" } },
-      { tool: "press_key", args: { pid: 1, key: "4" } },
-      { tool: "press_key", args: { pid: 1, key: "return" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "1" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "8" } },
+      {
+        tool: "hotkey",
+        args: { pid: 1, window_id: 2, keys: ["shift", "8"] },
+      },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "2" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "4" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "return" } },
     ]);
   });
 
@@ -234,7 +241,11 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "type_text",
-        args: { pid: 1, text: "https://www.google.com/search?q=OpenAI\n" },
+        args: {
+          pid: 1,
+          window_id: 2,
+          text: "https://www.google.com/search?q=OpenAI\n",
+        },
       },
     ]);
   });
@@ -625,6 +636,52 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(captured.window_id).toBe(16412);
   });
 
+  test("fills leased window_id for keyboard-scoped tools", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "press_key",
+          args: { pid: "$pid", key: "return" },
+          purpose: "submit",
+        },
+        {
+          tool: "hotkey",
+          args: { pid: "$pid", keys: ["command", "l"] },
+          purpose: "focus address field",
+        },
+        {
+          tool: "type_text_chars",
+          args: { pid: "$pid", text: "hello" },
+          purpose: "type safely",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 44, windowId: 10 },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(calls).toEqual([
+      { tool: "press_key", args: { pid: 44, window_id: 10, key: "return" } },
+      {
+        tool: "hotkey",
+        args: { pid: 44, window_id: 10, keys: ["command", "l"] },
+      },
+      {
+        tool: "type_text_chars",
+        args: { pid: 44, window_id: 10, text: "hello" },
+      },
+    ]);
+  });
+
   test("scrubs app-name discovery args when context has a concrete target", async () => {
     let captured: Record<string, unknown> = {};
     const plan: Plan = {
@@ -892,6 +949,70 @@ describe("executor initialContext (pre-discovery)", () => {
     );
 
     expect(selected?.window_id).toBe(789);
+  });
+
+  test("open_url tab selection uses tab deltas and owning window ids", () => {
+    const selected = pickOpenedUrlTab(
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 111,
+        },
+        {
+          pid: 1838,
+          tab_id: 2,
+          title: "New Tab",
+          url: "chrome://newtab/",
+          is_active: true,
+          owning_window_id: 456,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 111,
+        },
+        {
+          pid: 1838,
+          tab_id: 2,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 456,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.tab_id).toBe(2);
+    expect(selected?.owning_window_id).toBe(456);
+  });
+
+  test("open_url tab selection returns undefined without a strong signal", () => {
+    const selected = pickOpenedUrlTab(
+      [],
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "A different app",
+          url: "https://example.com/",
+          is_active: true,
+          owning_window_id: 111,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected).toBeUndefined();
   });
 
   test("preserves the anchored window when later list_windows sees many usable windows", async () => {

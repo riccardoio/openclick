@@ -191,6 +191,8 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
           "mcp__cua-driver__hotkey",
           "mcp__cua-driver__list_apps",
           "mcp__cua-driver__list_windows",
+          "mcp__cua-driver__diff_windows",
+          "mcp__cua-driver__list_browser_tabs",
           "mcp__cua-driver__launch_app",
           "mcp__cua-driver__scroll",
         ],
@@ -3621,7 +3623,7 @@ function buildSystemPrompt(
     : "Non-blocking invariant: do not steal focus, do not require the target app to be frontmost, and do not rely on the human's real cursor. Use pid/window-targeted actions. If the task cannot be completed without foreground/global control, stop and explain that foreground control is required.";
   return `You are an agent completing the user's macOS task via cua-driver.
 
-You have access to cua-driver MCP tools: click, type_text, get_window_state, screenshot, press_key, hotkey, list_apps, list_windows, launch_app, scroll.
+You have access to cua-driver MCP tools: click, type_text, get_window_state, screenshot, press_key, hotkey, list_apps, list_windows, diff_windows, list_browser_tabs, launch_app, scroll.
 
 ${executionBlock}
 
