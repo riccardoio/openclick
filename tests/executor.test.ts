@@ -682,6 +682,59 @@ describe("executor initialContext (pre-discovery)", () => {
     ]);
   });
 
+  test("fills browser lease args for repeated open_url navigation", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "open_url",
+          args: {
+            url: "https://mail.google.com/mail/u/0/#search/is:unread",
+          },
+          purpose: "navigate within the task Gmail tab",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          pid: step.args.pid,
+          window_id: step.args.window_id,
+          window_uid: step.args.window_uid,
+          bundle_id: step.args.bundle_id,
+          browser_window_id: step.args.browser_window_id,
+          tab_id: step.args.tab_id,
+        }),
+      };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1838,
+        windowId: 16412,
+        windowUid: "cgwindow:16412:pid:1838:gen:1",
+        bundleId: "com.google.Chrome",
+        browserWindowId: 1377889767,
+        tabId: 1377889990,
+      },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured).toEqual({
+      url: "https://mail.google.com/mail/u/0/#search/is:unread",
+      pid: 1838,
+      window_id: 16412,
+      window_uid: "cgwindow:16412:pid:1838:gen:1",
+      bundle_id: "com.google.Chrome",
+      browser_window_id: 1377889767,
+      tab_id: 1377889990,
+    });
+  });
+
   test("scrubs app-name discovery args when context has a concrete target", async () => {
     let captured: Record<string, unknown> = {};
     const plan: Plan = {

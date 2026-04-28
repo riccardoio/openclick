@@ -88,6 +88,8 @@ export interface ExecutorContext {
   tabId?: number;
   tabUrl?: string;
   tabTitle?: string;
+  browserWindowId?: number;
+  browserWindowIndex?: number;
   /** Structured AX entries from the latest get_window_state. */
   axIndex?: AxIndexEntry[];
   /** Pixel size of the optimized screenshot most recently shown to the planner. */
@@ -363,6 +365,8 @@ export async function executePlan(
         tabId: opts.initialContext.tabId,
         tabUrl: opts.initialContext.tabUrl,
         tabTitle: opts.initialContext.tabTitle,
+        browserWindowId: opts.initialContext.browserWindowId,
+        browserWindowIndex: opts.initialContext.browserWindowIndex,
         axIndex: opts.initialContext.axIndex,
         screenshotWidth: opts.initialContext.screenshotWidth,
         screenshotHeight: opts.initialContext.screenshotHeight,
@@ -1112,6 +1116,29 @@ function repairArgsForContext(
   const normalizedTool = canonicalToolName(tool);
   const out = { ...args };
 
+  if (normalizedTool === "open_url") {
+    if (out.pid === undefined && ctx.pid !== undefined) out.pid = ctx.pid;
+    if (out.window_id === undefined && ctx.windowId !== undefined) {
+      out.window_id = ctx.windowId;
+    }
+    if (out.window_uid === undefined && ctx.windowUid) {
+      out.window_uid = ctx.windowUid;
+    }
+    if (out.bundle_id === undefined && ctx.bundleId) {
+      out.bundle_id = ctx.bundleId;
+    }
+    if (
+      out.browser_window_id === undefined &&
+      ctx.browserWindowId !== undefined
+    ) {
+      out.browser_window_id = ctx.browserWindowId;
+    }
+    if (out.tab_id === undefined && ctx.tabId !== undefined) {
+      out.tab_id = ctx.tabId;
+    }
+    return out;
+  }
+
   if (
     (PID_TARGETED_TOOLS.has(normalizedTool) ||
       WINDOW_TARGETED_TOOLS.has(normalizedTool)) &&
@@ -1234,6 +1261,12 @@ function absorbContext(
   }
   if (typeof obj.tab_title === "string" && obj.tab_title.trim()) {
     ctx.tabTitle = obj.tab_title.trim();
+  }
+  if (typeof obj.browser_window_id === "number") {
+    ctx.browserWindowId = obj.browser_window_id;
+  }
+  if (typeof obj.browser_window_index === "number") {
+    ctx.browserWindowIndex = obj.browser_window_index;
   }
   const explicitWindowId =
     typeof obj.window_id === "number" ? obj.window_id : undefined;
@@ -1532,6 +1565,15 @@ async function runOpenUrl(
     typeof step.args.bundle_id === "string" && step.args.bundle_id.trim()
       ? step.args.bundle_id.trim()
       : undefined;
+  const leasedPid = asFiniteNumber(step.args.pid) ?? undefined;
+  const leasedWindowId = asFiniteNumber(step.args.window_id) ?? undefined;
+  const leasedWindowUid =
+    typeof step.args.window_uid === "string" && step.args.window_uid.trim()
+      ? step.args.window_uid.trim()
+      : undefined;
+  const leasedBrowserWindowId =
+    asFiniteNumber(step.args.browser_window_id) ?? undefined;
+  const leasedTabId = asFiniteNumber(step.args.tab_id) ?? undefined;
 
   let launchInfo: Record<string, unknown> = {};
   if (bundleId) {
@@ -1561,63 +1603,115 @@ async function runOpenUrl(
     }
   }
 
-  const openArgs = ["/usr/bin/open"];
-  if (bundleId) openArgs.push("-b", bundleId);
-  openArgs.push(url);
   const pid = typeof launchInfo.pid === "number" ? launchInfo.pid : undefined;
+  const targetPid = leasedPid ?? pid;
   const preOpenWindows =
-    pid !== undefined ? await listWindowsForPid(cuaDriver, pid) : undefined;
+    targetPid !== undefined
+      ? await listWindowsForPid(cuaDriver, targetPid)
+      : undefined;
   const preOpenTabs =
-    pid !== undefined ? await listBrowserTabsForPid(cuaDriver, pid) : undefined;
-  const proc = Bun.spawn(openArgs, {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
-  if (timedOut) return { ok: false, error: "open_url timed out", stdout };
-  if (exitCode !== 0) {
-    return {
-      ok: false,
-      error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
-      stdout,
-    };
+    targetPid !== undefined
+      ? await listBrowserTabsForPid(cuaDriver, targetPid)
+      : undefined;
+  const leasedTab =
+    targetPid !== undefined && Array.isArray(preOpenTabs)
+      ? findLeasedBrowserTab(preOpenTabs, {
+          pid: targetPid,
+          windowId: leasedWindowId,
+          browserWindowId: leasedBrowserWindowId,
+          tabId: leasedTabId,
+        })
+      : undefined;
+  const targetBrowserWindowId =
+    asFiniteNumber(leasedTab?.browser_window_id) ?? leasedBrowserWindowId;
+  const navigatedInLeasedTab =
+    bundleId !== undefined &&
+    targetBrowserWindowId !== undefined &&
+    supportsBrowserWindowNavigation(bundleId)
+      ? await navigateExistingBrowserWindow(
+          bundleId,
+          targetBrowserWindowId,
+          url,
+        )
+      : undefined;
+
+  if (navigatedInLeasedTab?.ok === false) {
+    return navigatedInLeasedTab;
+  }
+  if (!navigatedInLeasedTab?.ok) {
+    const openArgs = ["/usr/bin/open"];
+    if (bundleId) openArgs.push("-b", bundleId);
+    openArgs.push(url);
+    const proc = Bun.spawn(openArgs, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
+    if (timedOut) return { ok: false, error: "open_url timed out", stdout };
+    if (exitCode !== 0) {
+      return {
+        ok: false,
+        error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
+        stdout,
+      };
+    }
   }
   let postOpenWindows: unknown[] | undefined;
   let postOpenTabs: unknown[] | undefined;
   let selectedTab: Record<string, unknown> | undefined;
   let selectedWindow: Record<string, unknown> | undefined;
-  if (pid !== undefined) {
+  if (targetPid !== undefined) {
     await new Promise((resolve) => setTimeout(resolve, 900));
-    postOpenWindows = await listWindowsForPid(cuaDriver, pid);
-    postOpenTabs = await listBrowserTabsForPid(cuaDriver, pid);
-    selectedTab = Array.isArray(postOpenTabs)
-      ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
-      : undefined;
+    postOpenWindows = await listWindowsForPid(cuaDriver, targetPid);
+    postOpenTabs = await listBrowserTabsForPid(cuaDriver, targetPid);
+    selectedTab = navigatedInLeasedTab?.ok
+      ? findLeasedBrowserTab(postOpenTabs ?? [], {
+          pid: targetPid,
+          windowId: leasedWindowId,
+          browserWindowId: targetBrowserWindowId,
+          tabId: leasedTabId,
+          url,
+        })
+      : Array.isArray(postOpenTabs)
+        ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
+        : undefined;
     const selectedTabWindowId = asFiniteNumber(selectedTab?.owning_window_id);
     if (selectedTabWindowId !== null && Array.isArray(postOpenWindows)) {
       selectedWindow = findWindowById(postOpenWindows, selectedTabWindowId);
     }
+    if (
+      selectedWindow === undefined &&
+      leasedWindowId !== undefined &&
+      Array.isArray(postOpenWindows)
+    ) {
+      selectedWindow = findWindowById(postOpenWindows, leasedWindowId);
+    }
     selectedWindow = Array.isArray(postOpenWindows)
       ? (selectedWindow ??
-        pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url))
+        (navigatedInLeasedTab?.ok
+          ? undefined
+          : pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)))
       : undefined;
   }
   const selectedWindowId =
     asFiniteNumber(selectedWindow?.window_id) ??
     asFiniteNumber(selectedTab?.owning_window_id) ??
+    (navigatedInLeasedTab?.ok ? leasedWindowId : undefined) ??
     undefined;
   const selectedWindowUid =
     typeof selectedWindow?.window_uid === "string"
       ? selectedWindow.window_uid
       : typeof selectedTab?.owning_window_uid === "string"
         ? selectedTab.owning_window_uid
-        : undefined;
+        : navigatedInLeasedTab?.ok
+          ? leasedWindowUid
+          : undefined;
   return {
     ok: true,
     stdout: JSON.stringify({
       ...launchInfo,
-      pid,
+      pid: targetPid,
       window_id: selectedWindowId,
       window_uid: selectedWindowUid,
       window_title:
@@ -1682,6 +1776,114 @@ async function listBrowserTabsForPid(
   } catch {
     return undefined;
   }
+}
+
+interface BrowserTabLease {
+  pid?: number;
+  windowId?: number;
+  browserWindowId?: number;
+  tabId?: number;
+  url?: string;
+}
+
+function findLeasedBrowserTab(
+  tabs: unknown[],
+  lease: BrowserTabLease,
+): Record<string, unknown> | undefined {
+  const records = tabRecords(tabs);
+  let candidates = records;
+  if (lease.pid !== undefined) {
+    candidates = candidates.filter(
+      (tab) => asFiniteNumber(tab.pid) === lease.pid,
+    );
+  }
+  if (lease.tabId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.tab_id) === lease.tabId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.browserWindowId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.browser_window_id) === lease.browserWindowId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.windowId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.owning_window_id) === lease.windowId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.url !== undefined) {
+    const matches = candidates.filter(
+      (tab) =>
+        requestedUrlMatchScore(lease.url ?? "", stringArg(tab.url) ?? "") > 0,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  return (
+    candidates.find((tab) => tab.is_active === true) ??
+    (candidates.length === 1 ? candidates[0] : undefined)
+  );
+}
+
+function supportsBrowserWindowNavigation(bundleId: string): boolean {
+  return (
+    bundleId === "com.google.Chrome" ||
+    bundleId === "com.brave.Browser" ||
+    bundleId === "com.microsoft.edgemac"
+  );
+}
+
+async function navigateExistingBrowserWindow(
+  bundleId: string,
+  browserWindowId: number,
+  url: string,
+): Promise<StepResult> {
+  const script = `
+tell application id "${escapeAppleScriptString(bundleId)}"
+  repeat with w in windows
+    if ((id of w) as text) is "${String(browserWindowId)}" then
+      set URL of active tab of w to "${escapeAppleScriptString(url)}"
+      return "ok"
+    end if
+  end repeat
+  return "missing"
+end tell
+`;
+  const proc = Bun.spawn(["/usr/bin/osascript", "-e", script], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const result = await collectProcess(proc);
+  if (result.timedOut) {
+    return { ok: false, error: "open_url leased browser navigation timed out" };
+  }
+  if (result.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `open_url leased browser navigation exited ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim()}`,
+      stdout: result.stdout,
+    };
+  }
+  if (result.stdout.trim() !== "ok") {
+    return {
+      ok: false,
+      error: `open_url leased browser window ${browserWindowId} was not found; refusing to navigate a different browser window silently`,
+      stdout: result.stdout,
+    };
+  }
+  return { ok: true, stdout: result.stdout };
+}
+
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 export function pickOpenedUrlTab(
