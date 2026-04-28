@@ -79,6 +79,8 @@ export interface ExecutePlanResult {
 export interface ExecutorContext {
   pid?: number;
   windowId?: number;
+  /** Daemon-stable cua-driver identity for the selected window, when available. */
+  windowUid?: string;
   /** Title of the selected window, used as a lease fingerprint if id changes. */
   windowTitle?: string;
   /** Structured AX entries from the latest get_window_state. */
@@ -154,6 +156,7 @@ const BACKGROUND_SAFE_TOOLS = new Set([
   "set_value",
   "type_text",
   "type_text_chars",
+  "validate_window",
   "zoom",
   "click_hold",
 ]);
@@ -347,6 +350,7 @@ export async function executePlan(
     ? {
         pid: opts.initialContext.pid,
         windowId: opts.initialContext.windowId,
+        windowUid: opts.initialContext.windowUid,
         windowTitle: opts.initialContext.windowTitle,
         axIndex: opts.initialContext.axIndex,
         screenshotWidth: opts.initialContext.screenshotWidth,
@@ -523,6 +527,7 @@ const PID_TARGETED_TOOLS = new Set([
   "type_text",
   "type_text_chars",
   "press_key",
+  "validate_window",
   "hotkey",
   "zoom",
   "paste_svg",
@@ -538,6 +543,7 @@ const WINDOW_TARGETED_TOOLS = new Set([
   "click_hold",
   "set_value",
   "screenshot",
+  "validate_window",
   "paste_svg",
 ]);
 
@@ -552,6 +558,7 @@ const PID_WINDOW_PAIRED_TOOLS = new Set([
   "scroll",
   "set_value",
   "type_text",
+  "validate_window",
   "paste_svg",
 ]);
 
@@ -595,6 +602,41 @@ async function revalidateCurrentWindowLease(
 ): Promise<StepResult> {
   if (ctx.pid === undefined || ctx.windowId === undefined) return { ok: true };
   const originalWindowId = ctx.windowId;
+  const validateArgs: Record<string, unknown> = {
+    pid: ctx.pid,
+    window_id: ctx.windowId,
+  };
+  if (ctx.windowUid) validateArgs.window_uid = ctx.windowUid;
+  if (ctx.windowTitle) validateArgs.expected_title = ctx.windowTitle;
+
+  const validateResult = await runner({
+    tool: "validate_window",
+    args: validateArgs,
+    purpose: "validate current window lease",
+  });
+  if (validateResult.ok && validateResult.stdout) {
+    const payload = parseValidateWindowPayload(validateResult.stdout);
+    if (payload) {
+      if (payload.status === "present") {
+        if (payload.window) rememberWindow(ctx, payload.window);
+        return { ok: true };
+      }
+      const replacement = findValidateWindowReplacement(payload);
+      if (replacement) {
+        rememberWindow(ctx, replacement);
+        log(
+          `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+        );
+        return { ok: true };
+      }
+      const title = ctx.windowTitle ? ` titled "${ctx.windowTitle}"` : "";
+      return {
+        ok: false,
+        error: `window lease lost: window_id ${originalWindowId}${title} is no longer present and no unambiguous replacement was found. Refusing to switch to another window silently.`,
+      };
+    }
+  }
+
   const result = await runner({
     tool: "list_windows",
     args: { pid: ctx.pid },
@@ -1189,9 +1231,51 @@ function rememberWindow(
 ): void {
   if (typeof window.pid === "number") ctx.pid = window.pid;
   if (typeof window.window_id === "number") ctx.windowId = window.window_id;
+  if (typeof window.window_uid === "string" && window.window_uid.trim()) {
+    ctx.windowUid = window.window_uid.trim();
+  }
   if (typeof window.title === "string" && window.title.trim()) {
     ctx.windowTitle = window.title.trim();
   }
+}
+
+interface ValidateWindowPayload {
+  status?: string;
+  reason?: string;
+  window?: Record<string, unknown>;
+  possibleReplacements?: Record<string, unknown>[];
+}
+
+function parseValidateWindowPayload(
+  stdout: string,
+): ValidateWindowPayload | null {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return null;
+    const payload: ValidateWindowPayload = {};
+    if (typeof parsed.status === "string") payload.status = parsed.status;
+    if (typeof parsed.reason === "string") payload.reason = parsed.reason;
+    if (parsed.window && typeof parsed.window === "object") {
+      payload.window = parsed.window as Record<string, unknown>;
+    }
+    if (Array.isArray(parsed.possible_replacements)) {
+      payload.possibleReplacements = windowRecords(
+        parsed.possible_replacements,
+      );
+    }
+    return payload.status ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function findValidateWindowReplacement(
+  payload: ValidateWindowPayload,
+): Record<string, unknown> | undefined {
+  const candidates = payload.possibleReplacements ?? [];
+  const usable = candidates.filter(isUsableWindowRecord);
+  const replacementPool = usable.length > 0 ? usable : candidates;
+  return replacementPool.length === 1 ? replacementPool[0] : undefined;
 }
 
 function findWindowLeaseReplacement(

@@ -95,9 +95,11 @@ function createAppBundle(options: {
   const resourcesPath = join(contentsPath, "Resources");
   const bundledExecutable = join(macOsPath, "open42-app");
   const bundledRecorder = join(resourcesPath, "open42-recorder");
+  const bundledCuaDriver = join(resourcesPath, "cua-driver");
   const bundledCliRoot = join(resourcesPath, "open42-cli");
   const bundledCliBinDir = join(bundledCliRoot, "bin");
   const bundledCli = join(bundledCliBinDir, "open42");
+  const cuaDriverSource = resolveCuaDriverBundleSource(options.repoRoot);
 
   mkdirSync(macOsPath, { recursive: true });
   mkdirSync(resourcesPath, { recursive: true });
@@ -111,6 +113,10 @@ function createAppBundle(options: {
   if (existsSync(recorderExecutable)) {
     copyFileSync(recorderExecutable, bundledRecorder);
     chmodSync(bundledRecorder, 0o755);
+  }
+  if (cuaDriverSource) {
+    copyFileSync(cuaDriverSource, bundledCuaDriver);
+    chmodSync(bundledCuaDriver, 0o755);
   }
   copyFileSync(options.open42Bin, bundledCli);
   cpSync(join(options.repoRoot, "src"), join(bundledCliRoot, "src"), {
@@ -148,6 +154,12 @@ function createAppBundle(options: {
     <string>${escapePlist(options.repoRoot)}</string>
     <key>OPEN42_BIN</key>
     <string>${escapePlist(bundledCli)}</string>
+    ${
+      cuaDriverSource
+        ? `<key>CUA_DRIVER</key>
+    <string>${escapePlist(bundledCuaDriver)}</string>`
+        : ""
+    }
   </dict>
 </dict>
 </plist>
@@ -155,6 +167,26 @@ function createAppBundle(options: {
   );
 
   return appPath;
+}
+
+function resolveCuaDriverBundleSource(repoRoot: string): string | null {
+  const candidates = [
+    Bun.env.OPEN42_CUA_DRIVER_BIN,
+    Bun.env.CUA_DRIVER,
+    join(
+      dirname(repoRoot),
+      "cua",
+      "libs",
+      "cua-driver",
+      ".build",
+      "release",
+      "cua-driver",
+    ),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 function escapePlist(value: string): string {
