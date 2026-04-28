@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Run macOS desktop tasks from natural-language prompts via cua-driver.",
   "type": "module",
-  "bin": { "openclick": "./bin/openclick" },
+  "bin": {
+    "openclick": "bin/openclick"
+  },
   "files": [
     "bin/openclick",
     "src",
