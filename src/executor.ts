@@ -83,6 +83,11 @@ export interface ExecutorContext {
   windowUid?: string;
   /** Title of the selected window, used as a lease fingerprint if id changes. */
   windowTitle?: string;
+  /** Browser bundle/tab identity for the selected task tab, when available. */
+  bundleId?: string;
+  tabId?: number;
+  tabUrl?: string;
+  tabTitle?: string;
   /** Structured AX entries from the latest get_window_state. */
   axIndex?: AxIndexEntry[];
   /** Pixel size of the optimized screenshot most recently shown to the planner. */
@@ -145,6 +150,8 @@ const BACKGROUND_SAFE_TOOLS = new Set([
   "get_window_state",
   "hotkey",
   "launch_app",
+  "diff_windows",
+  "list_browser_tabs",
   "list_apps",
   "list_windows",
   "multi_drag",
@@ -352,6 +359,10 @@ export async function executePlan(
         windowId: opts.initialContext.windowId,
         windowUid: opts.initialContext.windowUid,
         windowTitle: opts.initialContext.windowTitle,
+        bundleId: opts.initialContext.bundleId,
+        tabId: opts.initialContext.tabId,
+        tabUrl: opts.initialContext.tabUrl,
+        tabTitle: opts.initialContext.tabTitle,
         axIndex: opts.initialContext.axIndex,
         screenshotWidth: opts.initialContext.screenshotWidth,
         screenshotHeight: opts.initialContext.screenshotHeight,
@@ -515,6 +526,7 @@ const EDITABLE_ROLES = new Set([
 
 const PID_TARGETED_TOOLS = new Set([
   "get_window_state",
+  "list_browser_tabs",
   "list_windows",
   "click",
   "double_click",
@@ -558,6 +570,9 @@ const PID_WINDOW_PAIRED_TOOLS = new Set([
   "scroll",
   "set_value",
   "type_text",
+  "type_text_chars",
+  "press_key",
+  "hotkey",
   "validate_window",
   "paste_svg",
 ]);
@@ -590,8 +605,7 @@ function shouldRevalidateWindowLease(
   if (pid !== ctx.pid || windowId !== ctx.windowId) return false;
   return (
     WINDOW_TARGETED_TOOLS.has(tool) ||
-    (tool === "scroll" && windowId !== null) ||
-    (tool === "type_text" && windowId !== null)
+    (PID_WINDOW_PAIRED_TOOLS.has(tool) && windowId !== null)
   );
 }
 
@@ -703,7 +717,16 @@ async function runResolvedStep(
 
   log("[open42] (type_text fallback: sending key sequence)");
   let stdout = "";
-  for (const keyStep of textToKeySteps(step.args.pid, text, step.purpose)) {
+  const windowId =
+    typeof step.args.window_id === "number"
+      ? step.args.window_id
+      : ctx.windowId;
+  for (const keyStep of textToKeySteps(
+    step.args.pid,
+    text,
+    step.purpose,
+    windowId,
+  )) {
     const result = await runner(keyStep);
     stdout += result.stdout ?? "";
     if (!result.ok) return { ...result, stdout };
@@ -970,14 +993,17 @@ function textToKeySteps(
   pid: number,
   text: string,
   purpose: string,
+  windowId?: number,
 ): PlanStep[] {
   const steps: PlanStep[] = [];
+  const targetArgs =
+    windowId === undefined ? { pid } : { pid, window_id: windowId };
   for (const char of text) {
     const key = keyNameForChar(char);
     if (!key) {
       steps.push({
         tool: "type_text",
-        args: { pid, text: char },
+        args: { ...targetArgs, text: char },
         purpose,
       });
       continue;
@@ -985,7 +1011,7 @@ function textToKeySteps(
     steps.push(
       normalizePlanStep({
         tool: "press_key",
-        args: { pid, key },
+        args: { ...targetArgs, key },
         purpose,
       }),
     );
@@ -1128,6 +1154,14 @@ function shouldFillWindowIdForTool(
   args: Record<string, unknown>,
 ): boolean {
   if (WINDOW_TARGETED_TOOLS.has(tool)) return true;
+  if (
+    tool === "hotkey" ||
+    tool === "press_key" ||
+    tool === "type_text" ||
+    tool === "type_text_chars"
+  ) {
+    return true;
+  }
   return (
     (tool === "scroll" || tool === "type_text") &&
     args.element_index !== undefined
@@ -1191,10 +1225,26 @@ function absorbContext(
   if (!parsed || typeof parsed !== "object") return;
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.pid === "number" && tool !== "list_windows") ctx.pid = obj.pid;
+  if (typeof obj.bundle_id === "string" && obj.bundle_id.trim()) {
+    ctx.bundleId = obj.bundle_id.trim();
+  }
+  if (typeof obj.tab_id === "number") ctx.tabId = obj.tab_id;
+  if (typeof obj.tab_url === "string" && obj.tab_url.trim()) {
+    ctx.tabUrl = obj.tab_url.trim();
+  }
+  if (typeof obj.tab_title === "string" && obj.tab_title.trim()) {
+    ctx.tabTitle = obj.tab_title.trim();
+  }
   const explicitWindowId =
     typeof obj.window_id === "number" ? obj.window_id : undefined;
   if (explicitWindowId !== undefined && tool !== "list_windows") {
     ctx.windowId = explicitWindowId;
+  }
+  if (typeof obj.window_uid === "string" && obj.window_uid.trim()) {
+    ctx.windowUid = obj.window_uid.trim();
+  }
+  if (typeof obj.window_title === "string" && obj.window_title.trim()) {
+    ctx.windowTitle = obj.window_title.trim();
   }
   if (Array.isArray(obj.windows) && obj.windows.length > 0) {
     const preferredWindowId = explicitWindowId ?? anchoredWindowId;
@@ -1517,6 +1567,8 @@ async function runOpenUrl(
   const pid = typeof launchInfo.pid === "number" ? launchInfo.pid : undefined;
   const preOpenWindows =
     pid !== undefined ? await listWindowsForPid(cuaDriver, pid) : undefined;
+  const preOpenTabs =
+    pid !== undefined ? await listBrowserTabsForPid(cuaDriver, pid) : undefined;
   const proc = Bun.spawn(openArgs, {
     stdin: "ignore",
     stdout: "pipe",
@@ -1532,24 +1584,64 @@ async function runOpenUrl(
     };
   }
   let postOpenWindows: unknown[] | undefined;
+  let postOpenTabs: unknown[] | undefined;
+  let selectedTab: Record<string, unknown> | undefined;
   let selectedWindow: Record<string, unknown> | undefined;
   if (pid !== undefined) {
     await new Promise((resolve) => setTimeout(resolve, 900));
     postOpenWindows = await listWindowsForPid(cuaDriver, pid);
+    postOpenTabs = await listBrowserTabsForPid(cuaDriver, pid);
+    selectedTab = Array.isArray(postOpenTabs)
+      ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
+      : undefined;
+    const selectedTabWindowId = asFiniteNumber(selectedTab?.owning_window_id);
+    if (selectedTabWindowId !== null && Array.isArray(postOpenWindows)) {
+      selectedWindow = findWindowById(postOpenWindows, selectedTabWindowId);
+    }
     selectedWindow = Array.isArray(postOpenWindows)
-      ? pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)
+      ? (selectedWindow ??
+        pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url))
       : undefined;
   }
+  const selectedWindowId =
+    asFiniteNumber(selectedWindow?.window_id) ??
+    asFiniteNumber(selectedTab?.owning_window_id) ??
+    undefined;
+  const selectedWindowUid =
+    typeof selectedWindow?.window_uid === "string"
+      ? selectedWindow.window_uid
+      : typeof selectedTab?.owning_window_uid === "string"
+        ? selectedTab.owning_window_uid
+        : undefined;
   return {
     ok: true,
     stdout: JSON.stringify({
       ...launchInfo,
       pid,
-      window_id:
-        typeof selectedWindow?.window_id === "number"
-          ? selectedWindow.window_id
+      window_id: selectedWindowId,
+      window_uid: selectedWindowUid,
+      window_title:
+        typeof selectedWindow?.title === "string"
+          ? selectedWindow.title
+          : undefined,
+      tab_id:
+        typeof selectedTab?.tab_id === "number"
+          ? selectedTab.tab_id
+          : undefined,
+      tab_url:
+        typeof selectedTab?.url === "string" ? selectedTab.url : undefined,
+      tab_title:
+        typeof selectedTab?.title === "string" ? selectedTab.title : undefined,
+      browser_window_id:
+        typeof selectedTab?.browser_window_id === "number"
+          ? selectedTab.browser_window_id
+          : undefined,
+      browser_window_index:
+        typeof selectedTab?.browser_window_index === "number"
+          ? selectedTab.browser_window_index
           : undefined,
       windows: postOpenWindows,
+      tabs: postOpenTabs,
       bundle_id: bundleId,
       url,
     }),
@@ -1572,6 +1664,139 @@ async function listWindowsForPid(
   } catch {
     return undefined;
   }
+}
+
+async function listBrowserTabsForPid(
+  cuaDriver: string,
+  pid: number,
+): Promise<unknown[] | undefined> {
+  const tabs = Bun.spawn(
+    [cuaDriver, "call", "list_browser_tabs", JSON.stringify({ pid })],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  );
+  const result = await collectProcess(tabs);
+  if (result.timedOut || result.exitCode !== 0) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { tabs?: unknown[] };
+    return parsed.tabs;
+  } catch {
+    return undefined;
+  }
+}
+
+export function pickOpenedUrlTab(
+  beforeTabs: unknown[],
+  afterTabs: unknown[],
+  url: string,
+): Record<string, unknown> | undefined {
+  const after = tabRecords(afterTabs);
+  if (after.length === 0) return undefined;
+
+  const beforeByKey = new Map<string, Record<string, unknown>>();
+  for (const tab of tabRecords(beforeTabs)) {
+    const key = browserTabKey(tab);
+    if (key) beforeByKey.set(key, tab);
+  }
+
+  const tokens = urlWindowTokens(url);
+  let best: Record<string, unknown> | undefined;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestHasStrongSignal = false;
+  for (const tab of after) {
+    const key = browserTabKey(tab);
+    const before = key ? beforeByKey.get(key) : undefined;
+    const { score, strong } = openUrlTabScore(tab, before, url, tokens);
+    if (score > bestScore) {
+      best = tab;
+      bestScore = score;
+      bestHasStrongSignal = strong;
+    }
+  }
+
+  return bestHasStrongSignal ? best : undefined;
+}
+
+function tabRecords(tabs: unknown[]): Record<string, unknown>[] {
+  return tabs.filter(
+    (tab): tab is Record<string, unknown> => !!tab && typeof tab === "object",
+  );
+}
+
+function browserTabKey(tab: Record<string, unknown>): string | undefined {
+  const pid = asFiniteNumber(tab.pid);
+  const tabId = asFiniteNumber(tab.tab_id);
+  if (pid !== null && tabId !== null) return `pid:${pid}:tab:${tabId}`;
+  const bundleId = typeof tab.bundle_id === "string" ? tab.bundle_id : "";
+  const browserWindowId = asFiniteNumber(tab.browser_window_id);
+  const tabIndex = asFiniteNumber(tab.tab_index);
+  if (pid !== null && browserWindowId !== null && tabIndex !== null) {
+    return `pid:${pid}:window:${browserWindowId}:tab-index:${tabIndex}`;
+  }
+  if (bundleId && browserWindowId !== null && tabIndex !== null) {
+    return `${bundleId}:window:${browserWindowId}:tab-index:${tabIndex}`;
+  }
+  return undefined;
+}
+
+function openUrlTabScore(
+  tab: Record<string, unknown>,
+  before: Record<string, unknown> | undefined,
+  requestedUrl: string,
+  tokens: string[],
+): { score: number; strong: boolean } {
+  const tabUrl = typeof tab.url === "string" ? tab.url : "";
+  const beforeUrl = typeof before?.url === "string" ? before.url : "";
+  const title = typeof tab.title === "string" ? tab.title.toLowerCase() : "";
+  const isNew = !before;
+  const urlChanged = !!before && tabUrl !== beforeUrl;
+  const becameActive =
+    tab.is_active === true && before !== undefined && before.is_active !== true;
+  const urlMatchScore = requestedUrlMatchScore(requestedUrl, tabUrl);
+  const tokenHits = tokens.filter(
+    (token) => title.includes(token) || tabUrl.toLowerCase().includes(token),
+  ).length;
+  let score = 0;
+  if (isNew) score += 20_000_000;
+  if (urlChanged) score += 14_000_000;
+  if (becameActive) score += 10_000_000;
+  score += urlMatchScore;
+  score += tokenHits * 1_500_000;
+  if (tab.is_active === true) score += 3_000_000;
+  if (asFiniteNumber(tab.owning_window_id) !== null) score += 2_000_000;
+  const matchesRequestedIntent = urlMatchScore > 0 || tokenHits > 0;
+
+  return {
+    score,
+    strong:
+      ((isNew || urlChanged || becameActive) && matchesRequestedIntent) ||
+      urlMatchScore >= 12_000_000,
+  };
+}
+
+function requestedUrlMatchScore(
+  requestedUrl: string,
+  observedUrl: string,
+): number {
+  try {
+    const requested = new URL(requestedUrl);
+    const observed = new URL(observedUrl);
+    if (requested.href === observed.href) return 18_000_000;
+    if (
+      requested.hostname === observed.hostname &&
+      normalizePath(requested.pathname) === normalizePath(observed.pathname)
+    ) {
+      return 14_000_000;
+    }
+    if (requested.hostname === observed.hostname) return 8_000_000;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizePath(pathname: string): string {
+  const normalized = pathname.replace(/\/+$/g, "");
+  return normalized || "/";
 }
 
 export function pickOpenedUrlWindow(
@@ -1738,12 +1963,22 @@ if let tiff = NSImage(data: data)?.tiffRepresentation {
 
   if (replaceExisting) {
     for (const keys of [["meta", "a"], ["delete"]]) {
-      const clearResult = await runDriverHotkey(cuaDriver, pid, keys);
+      const clearResult = await runDriverHotkey(
+        cuaDriver,
+        pid,
+        keys,
+        windowId ?? undefined,
+      );
       if (!clearResult.ok) return clearResult;
     }
   }
 
-  const hotkeyResult = await runDriverHotkey(cuaDriver, pid, ["meta", "v"]);
+  const hotkeyResult = await runDriverHotkey(
+    cuaDriver,
+    pid,
+    ["meta", "v"],
+    windowId ?? undefined,
+  );
   if (!hotkeyResult.ok) return hotkeyResult;
 
   return {
@@ -1756,9 +1991,15 @@ async function runDriverHotkey(
   cuaDriver: string,
   pid: number,
   keys: string[],
+  windowId?: number,
 ): Promise<StepResult> {
   const tool = keys.length === 1 ? "press_key" : "hotkey";
-  const args = keys.length === 1 ? { pid, key: keys[0] } : { pid, keys };
+  const targetArgs =
+    windowId === undefined ? { pid } : { pid, window_id: windowId };
+  const args =
+    keys.length === 1
+      ? { ...targetArgs, key: keys[0] }
+      : { ...targetArgs, keys };
   const proc = Bun.spawn([cuaDriver, "call", tool, JSON.stringify(args)], {
     stdin: "ignore",
     stdout: "pipe",
