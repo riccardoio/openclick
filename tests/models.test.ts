@@ -11,23 +11,24 @@ let originalProvider: string | undefined;
 let originalFetch: typeof fetch;
 
 beforeEach(() => {
-  originalHome = Bun.env.OPEN42_HOME;
+  originalHome = Bun.env.OPENCLICK_HOME;
   originalOpenAIKey = Bun.env.OPENAI_API_KEY;
-  originalProvider = Bun.env.OPEN42_MODEL_PROVIDER;
+  originalProvider = Bun.env.OPENCLICK_MODEL_PROVIDER;
   originalFetch = globalThis.fetch;
-  home = mkdtempSync(join(tmpdir(), "open42-models-"));
-  Bun.env.OPEN42_HOME = home;
+  home = mkdtempSync(join(tmpdir(), "openclick-models-"));
+  Bun.env.OPENCLICK_HOME = home;
   Bun.env.OPENAI_API_KEY = "sk-test";
-  Bun.env.OPEN42_MODEL_PROVIDER = undefined;
+  Bun.env.OPENCLICK_MODEL_PROVIDER = undefined;
 });
 
 afterEach(() => {
-  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
-  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
   if (originalOpenAIKey === undefined) Bun.env.OPENAI_API_KEY = undefined;
   else Bun.env.OPENAI_API_KEY = originalOpenAIKey;
-  if (originalProvider === undefined) Bun.env.OPEN42_MODEL_PROVIDER = undefined;
-  else Bun.env.OPEN42_MODEL_PROVIDER = originalProvider;
+  if (originalProvider === undefined)
+    Bun.env.OPENCLICK_MODEL_PROVIDER = undefined;
+  else Bun.env.OPENCLICK_MODEL_PROVIDER = originalProvider;
   globalThis.fetch = originalFetch;
   rmSync(home, { recursive: true, force: true });
 });

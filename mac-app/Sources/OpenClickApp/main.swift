@@ -4,7 +4,7 @@ import Foundation
 import SwiftUI
 
 @MainActor
-final class Open42AppDelegate: NSObject, NSApplicationDelegate {
+final class OpenClickAppDelegate: NSObject, NSApplicationDelegate {
   private var statusController: StatusController?
   private var hotKeyController: HotKeyController?
   private var onboardingController: OnboardingController?
@@ -36,7 +36,7 @@ final class Open42AppDelegate: NSObject, NSApplicationDelegate {
 
 MainActor.assumeIsolated {
   let app = NSApplication.shared
-  let delegate = Open42AppDelegate()
+  let delegate = OpenClickAppDelegate()
   app.delegate = delegate
   app.setActivationPolicy(.accessory)
   app.run()
@@ -56,9 +56,9 @@ final class StatusController: NSObject {
     super.init()
 
     if let button = statusItem.button {
-      button.image = NSImage(systemSymbolName: "cursorarrow.click.2", accessibilityDescription: "open42")
+      button.image = NSImage(systemSymbolName: "cursorarrow.click.2", accessibilityDescription: "openclick")
       button.image?.isTemplate = true
-      button.title = " open42"
+      button.title = " openclick"
       button.action = #selector(toggleChatBar)
       button.target = self
     }
@@ -87,7 +87,7 @@ final class StatusController: NSObject {
 
     menu.addItem(.separator())
 
-    let quitItem = NSMenuItem(title: "Quit open42", action: #selector(quit), keyEquivalent: "q")
+    let quitItem = NSMenuItem(title: "Quit openclick", action: #selector(quit), keyEquivalent: "q")
     quitItem.target = self
     menu.addItem(quitItem)
 
@@ -193,7 +193,7 @@ final class ChatBarController: NSObject {
   }
 
   private func wireViewModel() {
-    viewModel.onSubmit = { [weak self] prompt in self?.startOpen42(prompt: prompt) }
+    viewModel.onSubmit = { [weak self] prompt in self?.startOpenClick(prompt: prompt) }
     viewModel.onCancel = { [weak self] in self?.cancelCurrentRun() }
     viewModel.onOpenOnboarding = { [weak self] in self?.openOnboarding?() }
     viewModel.onToggleForeground = { [weak self] in
@@ -215,7 +215,7 @@ final class ChatBarController: NSObject {
 
   // MARK: - Process pipeline (logic unchanged, only callbacks moved to viewModel)
 
-  private func startOpen42(prompt: String) {
+  private func startOpenClick(prompt: String) {
     viewModel.isRunning = true
     viewModel.status = viewModel.allowForeground
       ? "Running with foreground control…"
@@ -223,7 +223,7 @@ final class ChatBarController: NSObject {
     viewModel.prompt = ""
     activityLog.start(prompt: prompt)
 
-    let launch = open42Launch(prompt: prompt)
+    let launch = openclickLaunch(prompt: prompt)
     let process = Process()
     process.executableURL = launch.executableURL
     process.arguments = launch.arguments
@@ -247,7 +247,7 @@ final class ChatBarController: NSObject {
         controller.viewModel.status =
           terminationStatus == 0
           ? "Finished"
-          : "open42 exited with status \(terminationStatus)"
+          : "openclick exited with status \(terminationStatus)"
         controller.runningProcess = nil
         controller.show()
       }
@@ -259,7 +259,7 @@ final class ChatBarController: NSObject {
     } catch {
       stopStreaming()
       viewModel.isRunning = false
-      let detail = "Could not launch open42: \(error.localizedDescription)"
+      let detail = "Could not launch openclick: \(error.localizedDescription)"
       viewModel.status = detail
       activityLog.append(detail)
       activityLog.finish(exitCode: 1)
@@ -271,7 +271,7 @@ final class ChatBarController: NSObject {
   private func cancelCurrentRun() {
     guard let process = runningProcess else { return }
     activityLog.append("Cancellation requested.")
-    viewModel.status = "Stopping open42…"
+    viewModel.status = "Stopping openclick…"
     process.terminate()
   }
 
@@ -302,33 +302,30 @@ final class ChatBarController: NSObject {
     outputPipes = []
   }
 
-  private func open42Launch(prompt: String) -> (executableURL: URL, arguments: [String]) {
+  private func openclickLaunch(prompt: String) -> (executableURL: URL, arguments: [String]) {
     let runArgs = ["run", prompt, "--live"] + (viewModel.allowForeground ? ["--allow-foreground"] : [])
-    if let explicit = ProcessInfo.processInfo.environment["OPEN42_BIN"], !explicit.isEmpty {
+    if let explicit = ProcessInfo.processInfo.environment["OPENCLICK_BIN"], !explicit.isEmpty {
       return (URL(fileURLWithPath: explicit), runArgs)
     }
-    if let explicit = ProcessInfo.processInfo.environment["SHOWME_BIN"], !explicit.isEmpty {
-      return (URL(fileURLWithPath: explicit), runArgs)
-    }
-    if let repoRoot = ProcessInfo.processInfo.environment["OPEN42_REPO_ROOT"], !repoRoot.isEmpty {
+    if let repoRoot = ProcessInfo.processInfo.environment["OPENCLICK_REPO_ROOT"], !repoRoot.isEmpty {
       return (
-        URL(fileURLWithPath: repoRoot).appendingPathComponent("bin/open42"),
+        URL(fileURLWithPath: repoRoot).appendingPathComponent("bin/openclick"),
         runArgs
       )
     }
-    if let bundled = Bundle.main.url(forResource: "open42-cli/bin/open42", withExtension: nil) {
+    if let bundled = Bundle.main.url(forResource: "openclick-cli/bin/openclick", withExtension: nil) {
       return (bundled, runArgs)
     }
-    return (URL(fileURLWithPath: "/usr/bin/env"), ["open42"] + runArgs)
+    return (URL(fileURLWithPath: "/usr/bin/env"), ["openclick"] + runArgs)
   }
 
   private func processEnvironment() -> [String: String] {
     var env = ProcessInfo.processInfo.environment
-    env["OPEN42_APP_USE_ENV"] = "1"
-    if let apiKey = Open42Keychain.apiKey(provider: .anthropic), !apiKey.isEmpty {
+    env["OPENCLICK_APP_USE_ENV"] = "1"
+    if let apiKey = OpenClickKeychain.apiKey(provider: .anthropic), !apiKey.isEmpty {
       env["ANTHROPIC_API_KEY"] = apiKey
     }
-    if let apiKey = Open42Keychain.apiKey(provider: .openai), !apiKey.isEmpty {
+    if let apiKey = OpenClickKeychain.apiKey(provider: .openai), !apiKey.isEmpty {
       env["OPENAI_API_KEY"] = apiKey
     }
     if env["CUA_DRIVER"] == nil,
@@ -337,8 +334,8 @@ final class ChatBarController: NSObject {
     {
       env["CUA_DRIVER"] = bundledDriver.path
     }
-    if env["OPEN42_BIN"] == nil && env["OPEN42_REPO_ROOT"] == nil {
-      env["OPEN42_TAKEOVER_WAIT_MS"] = env["OPEN42_TAKEOVER_WAIT_MS"] ?? "600000"
+    if env["OPENCLICK_BIN"] == nil && env["OPENCLICK_REPO_ROOT"] == nil {
+      env["OPENCLICK_TAKEOVER_WAIT_MS"] = env["OPENCLICK_TAKEOVER_WAIT_MS"] ?? "600000"
     }
     return env
   }
@@ -351,7 +348,7 @@ enum CliInstaller {
     let binDir = fileManager.homeDirectoryForCurrentUser
       .appendingPathComponent(".local")
       .appendingPathComponent("bin")
-    let destination = binDir.appendingPathComponent("open42")
+    let destination = binDir.appendingPathComponent("openclick")
 
     do {
       try fileManager.createDirectory(at: binDir, withIntermediateDirectories: true)
@@ -366,13 +363,10 @@ enum CliInstaller {
   }
 
   private static func bundledCliURL() -> URL? {
-    if let explicit = ProcessInfo.processInfo.environment["OPEN42_BIN"], !explicit.isEmpty {
+    if let explicit = ProcessInfo.processInfo.environment["OPENCLICK_BIN"], !explicit.isEmpty {
       return URL(fileURLWithPath: explicit)
     }
-    if let explicit = ProcessInfo.processInfo.environment["SHOWME_BIN"], !explicit.isEmpty {
-      return URL(fileURLWithPath: explicit)
-    }
-    return Bundle.main.url(forResource: "open42-cli/bin/open42", withExtension: nil)
+    return Bundle.main.url(forResource: "openclick-cli/bin/openclick", withExtension: nil)
   }
 }
 
@@ -561,8 +555,8 @@ final class ActivityLogController: NSObject {
     if (lower.contains("screen recording") || lower.contains("screen-recording") || lower.contains("screencapture")) && (lower.contains("denied") || lower.contains("not granted") || lower.contains("blocked") || lower.contains("permission")) {
       return "Screen Recording looks blocked. Open Permissions to grant it to CuaDriver."
     }
-    if lower.contains("could not launch open42") || lower.contains("executable not found") || lower.contains("no such file") {
-      return "open42 could not launch. Open Permissions to check setup."
+    if lower.contains("could not launch openclick") || lower.contains("executable not found") || lower.contains("no such file") {
+      return "openclick could not launch. Open Permissions to check setup."
     }
     if lower.contains("anthropic_api_key") && (lower.contains("not set") || lower.contains("missing") || lower.contains("unset")) {
       return "ANTHROPIC_API_KEY isn’t set. Open Permissions for the export command."
@@ -585,7 +579,7 @@ final class ActivityLogController: NSObject {
       return ("Issue", "The planner stopped without completing the task.", "Planner stopped before acting.")
     }
     if lower.contains("replanning") || lower.contains("planning next batch") {
-      return ("Adjusting", "The last attempt was not enough, so open42 is changing strategy.", "Changing strategy from the latest result.")
+      return ("Adjusting", "The last attempt was not enough, so openclick is changing strategy.", "Changing strategy from the latest result.")
     }
     if lower.contains("stopwhen not verified") {
       return ("Adjusting", "The result did not fully match the request yet.", "Result was not verified; preparing another step.")
@@ -594,16 +588,16 @@ final class ActivityLogController: NSObject {
       return ("Looking", "Reading the current app and window state.", "Discovered the current app state.")
     }
     if lower.contains("step") && lower.contains("failed after") {
-      return ("Adjusting", "That approach did not work, so open42 is preparing a different path.", "Preparing another approach.")
+      return ("Adjusting", "That approach did not work, so openclick is preparing a different path.", "Preparing another approach.")
     }
     if lower.contains("step") && lower.contains("failed") {
-      return ("Adjusting", "That attempt did not work, so open42 is trying another way.", "Trying another approach.")
+      return ("Adjusting", "That attempt did not work, so openclick is trying another way.", "Trying another approach.")
     }
     if lower.contains("aborted") {
-      return ("Issue", "The task was stopped before it finished.", line.replacingOccurrences(of: "[open42]", with: "").trimmingCharacters(in: .whitespaces))
+      return ("Issue", "The task was stopped before it finished.", line.replacingOccurrences(of: "[openclick]", with: "").trimmingCharacters(in: .whitespaces))
     }
     if lower.contains("error") {
-      return ("Adjusting", "Something changed, so open42 is reevaluating the next step.", "Reevaluating the next step.")
+      return ("Adjusting", "Something changed, so openclick is reevaluating the next step.", "Reevaluating the next step.")
     }
     if lower.contains("mode: prompt planner") {
       return ("Planning", "Choosing the next step from the current screen.", "Planning the next step.")
@@ -615,7 +609,7 @@ final class ActivityLogController: NSObject {
       return ("Planning", "The next action is ready.", "Prepared the next action.")
     }
     if lower.contains("about to:") {
-      let action = line.replacingOccurrences(of: "[open42] about to:", with: "").trimmingCharacters(in: .whitespaces)
+      let action = line.replacingOccurrences(of: "[openclick] about to:", with: "").trimmingCharacters(in: .whitespaces)
       let detail = action.isEmpty ? "Taking an action." : action
       return ("Acting", detail, detail)
     }
@@ -631,14 +625,14 @@ final class ActivityLogController: NSObject {
     if lower.contains("cost telemetry") {
       return nil
     }
-    if lower.hasPrefix("[open42] done") {
+    if lower.hasPrefix("[openclick] done") {
       return ("Complete", "The runner reported completion.", "Runner completed.")
     }
     return nil
   }
 
   private func interventionEvent(from line: String) -> InterventionEvent? {
-    let marker = "[open42] intervention_required "
+    let marker = "[openclick] intervention_required "
     guard let range = line.range(of: marker) else { return nil }
     let json = String(line[range.upperBound...])
     guard let data = json.data(using: .utf8) else { return nil }
@@ -646,7 +640,7 @@ final class ActivityLogController: NSObject {
   }
 
   private func taskResultEvent(from line: String) -> TaskResultEvent? {
-    let marker = "[open42] task_result "
+    let marker = "[openclick] task_result "
     guard let range = line.range(of: marker) else { return nil }
     let json = String(line[range.upperBound...])
     guard let data = json.data(using: .utf8) else { return nil }
@@ -654,7 +648,7 @@ final class ActivityLogController: NSObject {
   }
 
   private func runId(from line: String) -> String? {
-    let marker = "[open42] run id:"
+    let marker = "[openclick] run id:"
     guard let range = line.range(of: marker) else { return nil }
     let runId = line[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
     return runId.isEmpty ? nil : runId
@@ -666,7 +660,7 @@ final class ActivityLogController: NSObject {
       viewModel.appendLog("Takeover recording unavailable: recorder binary not found.")
       return
     }
-    let outputPath = open42Home()
+    let outputPath = openclickHome()
       .appendingPathComponent("runs")
       .appendingPathComponent(currentRunId)
       .appendingPathComponent("takeover-trajectory")
@@ -755,7 +749,7 @@ final class ActivityLogController: NSObject {
       return
     }
 
-    let launch = open42Command()
+    let launch = openclickCommand()
     let process = Process()
     process.executableURL = launch.url
     let sentResumeMarker = currentRunId != nil
@@ -804,7 +798,7 @@ final class ActivityLogController: NSObject {
       ]
     }
     var env = ProcessInfo.processInfo.environment
-    env["OPEN42_APP_USE_ENV"] = "1"
+    env["OPENCLICK_APP_USE_ENV"] = "1"
     process.environment = env
     do {
       try process.run()
@@ -816,57 +810,57 @@ final class ActivityLogController: NSObject {
             : "Saved takeover learning for \(appName ?? bundleId)."
         )
       } else {
-        viewModel.appendLog("Could not save takeover learning: open42 exited with status \(process.terminationStatus).")
+        viewModel.appendLog("Could not save takeover learning: openclick exited with status \(process.terminationStatus).")
       }
     } catch {
       viewModel.appendLog("Could not save takeover learning: \(error.localizedDescription)")
     }
   }
 
-  private func open42Command() -> (url: URL, args: [String]) {
+  private func openclickCommand() -> (url: URL, args: [String]) {
     let env = ProcessInfo.processInfo.environment
-    if let explicit = env["OPEN42_BIN"], !explicit.isEmpty {
+    if let explicit = env["OPENCLICK_BIN"], !explicit.isEmpty {
       return (URL(fileURLWithPath: explicit), [])
     }
-    if let repoRoot = env["OPEN42_REPO_ROOT"], !repoRoot.isEmpty {
-      return (URL(fileURLWithPath: repoRoot).appendingPathComponent("bin/open42"), [])
+    if let repoRoot = env["OPENCLICK_REPO_ROOT"], !repoRoot.isEmpty {
+      return (URL(fileURLWithPath: repoRoot).appendingPathComponent("bin/openclick"), [])
     }
-    if let bundled = Bundle.main.url(forResource: "open42-cli/bin/open42", withExtension: nil) {
+    if let bundled = Bundle.main.url(forResource: "openclick-cli/bin/openclick", withExtension: nil) {
       return (bundled, [])
     }
-    return (URL(fileURLWithPath: "/usr/bin/env"), ["open42"])
+    return (URL(fileURLWithPath: "/usr/bin/env"), ["openclick"])
   }
 
   private func recorderCommand() -> URL? {
     let env = ProcessInfo.processInfo.environment
-    if let explicit = env["OPEN42_RECORDER_BIN"], !explicit.isEmpty {
+    if let explicit = env["OPENCLICK_RECORDER_BIN"], !explicit.isEmpty {
       return URL(fileURLWithPath: explicit)
     }
-    if let repoRoot = env["OPEN42_REPO_ROOT"], !repoRoot.isEmpty {
+    if let repoRoot = env["OPENCLICK_REPO_ROOT"], !repoRoot.isEmpty {
       let root = URL(fileURLWithPath: repoRoot)
       let debug = root
-        .appendingPathComponent("mac-app/.build/arm64-apple-macosx/debug/open42-recorder")
+        .appendingPathComponent("mac-app/.build/arm64-apple-macosx/debug/openclick-recorder")
       if FileManager.default.fileExists(atPath: debug.path) {
         return debug
       }
       let release = root
-        .appendingPathComponent("mac-app/.build/release/open42-recorder")
+        .appendingPathComponent("mac-app/.build/release/openclick-recorder")
       if FileManager.default.fileExists(atPath: release.path) {
         return release
       }
     }
-    if let bundled = Bundle.main.url(forResource: "open42-recorder", withExtension: nil) {
+    if let bundled = Bundle.main.url(forResource: "openclick-recorder", withExtension: nil) {
       return bundled
     }
     return nil
   }
 
-  private func open42Home() -> URL {
+  private func openclickHome() -> URL {
     let env = ProcessInfo.processInfo.environment
-    if let explicit = env["OPEN42_HOME"], !explicit.isEmpty {
+    if let explicit = env["OPENCLICK_HOME"], !explicit.isEmpty {
       return URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
     }
-    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".open42")
+    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".openclick")
   }
 
   private func positionTopRight() {

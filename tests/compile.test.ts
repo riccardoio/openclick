@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CompileValidationError, compileSkillMd } from "../src/compile.ts";
 
-const tmpOut = (): string => mkdtempSync(join(tmpdir(), "open42-compile-"));
+const tmpOut = (): string => mkdtempSync(join(tmpdir(), "openclick-compile-"));
 
 describe("compile", () => {
   test("produces a valid SKILL.md from a trajectory", async () => {

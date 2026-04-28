@@ -19,9 +19,9 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
   }
 
   console.log(
-    "[open42] this recording will capture screenshots of your screen.",
+    "[openclick] this recording will capture screenshots of your screen.",
   );
-  console.log("[open42] close anything sensitive. Starting in 3...");
+  console.log("[openclick] close anything sensitive. Starting in 3...");
   await sleep(1000);
   console.log("2...");
   await sleep(1000);
@@ -43,7 +43,7 @@ export async function recordCommand(opts: RecordOptions): Promise<void> {
 
   await waitForRecorderExit(proc);
 
-  console.log(`[open42] trajectory written to ${dir}`);
+  console.log(`[openclick] trajectory written to ${dir}`);
 }
 
 export async function waitForRecorderExit(

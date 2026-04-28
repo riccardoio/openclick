@@ -1,11 +1,11 @@
 {
-  "name": "open42",
+  "name": "openclick",
   "version": "0.1.0",
   "description": "Run macOS desktop tasks from natural-language prompts via cua-driver.",
   "type": "module",
-  "bin": { "open42": "./bin/open42" },
+  "bin": { "openclick": "./bin/openclick" },
   "files": [
-    "bin/open42",
+    "bin/openclick",
     "src",
     "!src/mac-app.ts",
     "VERSION",

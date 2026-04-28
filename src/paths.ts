@@ -10,14 +10,12 @@ export function resolveSkillRoot(skillName: string): string {
   return join(homedir(), ".cua", "skills", skillName);
 }
 
-export function resolveOpen42Home(): string {
-  return (
-    Bun.env.OPEN42_HOME ?? Bun.env.SHOWME_HOME ?? join(homedir(), ".open42")
-  );
+export function resolveOpenClickHome(): string {
+  return Bun.env.OPENCLICK_HOME ?? join(homedir(), ".openclick");
 }
 
 export function resolveAppMemoryRoot(): string {
-  return join(resolveOpen42Home(), "apps");
+  return join(resolveOpenClickHome(), "apps");
 }
 
 export function resolveAppMemoryPath(bundleId: string): string {
@@ -29,16 +27,21 @@ export function resolveAppMemoryPath(bundleId: string): string {
 }
 
 export function resolveRunLockPath(): string {
-  return join(resolveOpen42Home(), "run.lock");
+  return join(resolveOpenClickHome(), "run.lock");
 }
 
 export function resolveRunCancelPath(runId: string): string {
-  return join(resolveOpen42Home(), "runs", sanitizeBundleId(runId), "cancel");
+  return join(
+    resolveOpenClickHome(),
+    "runs",
+    sanitizeBundleId(runId),
+    "cancel",
+  );
 }
 
 export function resolveRunInterventionPath(runId: string): string {
   return join(
-    resolveOpen42Home(),
+    resolveOpenClickHome(),
     "runs",
     sanitizeBundleId(runId),
     "intervention.json",
@@ -47,7 +50,7 @@ export function resolveRunInterventionPath(runId: string): string {
 
 export function resolveRunTakeoverResumePath(runId: string): string {
   return join(
-    resolveOpen42Home(),
+    resolveOpenClickHome(),
     "runs",
     sanitizeBundleId(runId),
     "takeover-resume.json",
@@ -56,7 +59,7 @@ export function resolveRunTakeoverResumePath(runId: string): string {
 
 export function resolveRunTracePath(runId: string): string {
   return join(
-    resolveOpen42Home(),
+    resolveOpenClickHome(),
     "runs",
     sanitizeBundleId(runId),
     "trace.json",
@@ -69,7 +72,7 @@ function sanitizeBundleId(bundleId: string): string {
 
 export function resolveCuaDriverBinary(): string | null {
   const candidates = [
-    Bun.env.OPEN42_CUA_DRIVER_BIN,
+    Bun.env.OPENCLICK_CUA_DRIVER_BIN,
     Bun.env.CUA_DRIVER,
     resolveBundledCuaDriverBinary(),
     Bun.which("cua-driver"),
@@ -91,7 +94,7 @@ export function requireCuaDriverBinary(): string {
   const path = resolveCuaDriverBinary();
   if (!path) {
     throw new Error(
-      "cua-driver not found. Re-run `open42 doctor` and install/configure cua-driver first.",
+      "cua-driver not found. Re-run `openclick doctor` and install/configure cua-driver first.",
     );
   }
   return path;
@@ -105,7 +108,7 @@ export function resolveRecorderBinary(): string {
     "mac-app",
     ".build",
     "release",
-    "open42-recorder",
+    "openclick-recorder",
   );
   return repoBin;
 }

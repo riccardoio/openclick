@@ -68,7 +68,7 @@ export interface RunOptions {
   cursorToggleFn?: (enabled: boolean) => Promise<void>;
   /** Injectable for tests / production override of the Sonnet planner client. */
   plannerClient?: PlannerClient;
-  /** Injectable/configurable verifier client. Defaults to OPEN42_VERIFIER_MODEL. */
+  /** Injectable/configurable verifier client. Defaults to OPENCLICK_VERIFIER_MODEL. */
   verifierClient?: PlannerClient;
   /** Injectable for tests. In production, leave unset to shell out to cua-driver. */
   stepRunner?: StepRunner;
@@ -105,10 +105,10 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
 
   if (!opts.live) {
     console.log(
-      "[open42] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
+      "[openclick] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
     );
   }
-  console.log("[open42] press Ctrl-C to abort.");
+  console.log("[openclick] press Ctrl-C to abort.");
 
   // Abort flag pattern: SIGINT sets the flag and lets the loop notice it.
   // The previous handler called process.exit(130) immediately, which bypassed
@@ -118,12 +118,12 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   const onSigint = (): void => {
     if (aborted) {
       // Second Ctrl-C: user is impatient, exit hard.
-      console.log("\n[open42] hard-aborted (second Ctrl-C).");
+      console.log("\n[openclick] hard-aborted (second Ctrl-C).");
       process.exit(130);
     }
     aborted = true;
     console.log(
-      "\n[open42] aborting after current step finishes... (Ctrl-C again to force)",
+      "\n[openclick] aborting after current step finishes... (Ctrl-C again to force)",
     );
   };
   process.on("SIGINT", onSigint);
@@ -133,7 +133,7 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
     const tool = input.tool_name ?? "<unknown>";
     const args = input.tool_input ?? {};
     const summary = summarizeToolCall(tool, args);
-    console.log(`[open42] about to: ${summary}`);
+    console.log(`[openclick] about to: ${summary}`);
     if (!opts.live) {
       // Block execution by returning a "denied" decision.
       return { decision: "block", reason: "dry-run mode" };
@@ -169,9 +169,9 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   if (opts.cursor && opts.live) {
     try {
       await toggleCursor(true);
-      console.log("[open42] agent cursor overlay: ON");
+      console.log("[openclick] agent cursor overlay: ON");
     } catch (e) {
-      console.warn(`[open42] couldn't enable agent cursor: ${e}`);
+      console.warn(`[openclick] couldn't enable agent cursor: ${e}`);
     }
   }
 
@@ -191,6 +191,8 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
           "mcp__cua-driver__hotkey",
           "mcp__cua-driver__list_apps",
           "mcp__cua-driver__list_windows",
+          "mcp__cua-driver__diff_windows",
+          "mcp__cua-driver__list_browser_tabs",
           "mcp__cua-driver__launch_app",
           "mcp__cua-driver__scroll",
         ],
@@ -203,7 +205,7 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
       const msg = message as any;
       if (msg.type === "tool_use") stepCount++;
       if (msg.type === "result" && "result" in msg) {
-        console.log(`[open42] ${msg.result}`);
+        console.log(`[openclick] ${msg.result}`);
       }
     }
   } finally {
@@ -218,10 +220,10 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
   }
   if (aborted) {
     process.exitCode = 130;
-    console.log(`[open42] aborted. ${stepCount} tool calls.`);
+    console.log(`[openclick] aborted. ${stepCount} tool calls.`);
     return;
   }
-  console.log(`[open42] done. ${stepCount} tool calls.`);
+  console.log(`[openclick] done. ${stepCount} tool calls.`);
 }
 
 /**
@@ -233,15 +235,17 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
 async function runTaskFast(opts: RunOptions): Promise<void> {
   if (!opts.live) {
     console.log(
-      "[open42] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
+      "[openclick] DRY RUN — no cua-driver tools will execute. Pass --live to actually run.",
     );
   }
-  console.log("[open42] press Ctrl-C to abort.");
-  console.log("[open42] mode: prompt planner (small batches, local executor)");
+  console.log("[openclick] press Ctrl-C to abort.");
+  console.log(
+    "[openclick] mode: prompt planner (small batches, local executor)",
+  );
   console.log(
     opts.allowForeground
-      ? "[open42] execution mode: foreground opt-in (may use global/foreground primitives)."
-      : "[open42] execution mode: shared-seat background (no real cursor/focus ownership).",
+      ? "[openclick] execution mode: foreground opt-in (may use global/foreground primitives)."
+      : "[openclick] execution mode: shared-seat background (no real cursor/focus ownership).",
   );
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -256,12 +260,12 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       ? "live execution mode"
       : "dry-run mode; no cua-driver tools will execute",
   );
-  console.log(`[open42] run id: ${runId}`);
+  console.log(`[openclick] run id: ${runId}`);
   const lock = opts.live && !opts.stepRunner ? acquireRunLock(runId) : null;
   if (lock && !lock.ok) {
     trace.event("lock_blocked", lock.message);
     trace.finish("failed");
-    console.error(`[open42] ${lock.message}`);
+    console.error(`[openclick] ${lock.message}`);
     process.exitCode = 15;
     return;
   }
@@ -283,13 +287,13 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
   let aborted = false;
   const onSigint = (): void => {
     if (aborted) {
-      console.log("\n[open42] hard-aborted (second Ctrl-C).");
+      console.log("\n[openclick] hard-aborted (second Ctrl-C).");
       process.exit(130);
     }
     aborted = true;
     trace.event("abort_requested", "SIGINT received");
     console.log(
-      "\n[open42] aborting after current step finishes... (Ctrl-C again to force)",
+      "\n[openclick] aborting after current step finishes... (Ctrl-C again to force)",
     );
   };
   process.on("SIGINT", onSigint);
@@ -313,9 +317,9 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
   const maxActionRetries = opts.maxReplans ?? 2;
   const maxBatches = opts.maxBatches ?? 6;
   const maxModelCalls =
-    opts.maxModelCalls ?? Number(Bun.env.OPEN42_MAX_MODEL_CALLS ?? 12);
+    opts.maxModelCalls ?? Number(Bun.env.OPENCLICK_MAX_MODEL_CALLS ?? 12);
   const maxScreenshots =
-    opts.maxScreenshots ?? Number(Bun.env.OPEN42_MAX_SCREENSHOTS ?? 8);
+    opts.maxScreenshots ?? Number(Bun.env.OPENCLICK_MAX_SCREENSHOTS ?? 8);
   const maxCriteriaRefinements = opts.criteria?.trim()
     ? 2
     : Number.POSITIVE_INFINITY;
@@ -328,16 +332,25 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     verifierCalls: 0,
     screenshotsAttached: 0,
     promptChars: 0,
+    modelMs: 0,
+    plannerMs: 0,
+    verifierMs: 0,
+    resultMs: 0,
+    cuaDriverMs: 0,
+    screenshotMs: 0,
+    snapshotMs: 0,
   };
   let finalContext: ExecutorContext | undefined;
   let finalVerifierExplanation: string | undefined;
+  let finalLiveState: LivePromptSnapshot | undefined;
+  let setupVerifierSkipsUsed = 0;
 
   if (opts.cursor && opts.live) {
     try {
       await toggleCursor(true);
-      console.log("[open42] agent cursor overlay: ON");
+      console.log("[openclick] agent cursor overlay: ON");
     } catch (e) {
-      console.warn(`[open42] couldn't enable agent cursor: ${e}`);
+      console.warn(`[openclick] couldn't enable agent cursor: ${e}`);
     }
   }
 
@@ -370,7 +383,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
     trace.event("external_seat_activity", activity, { phase });
     if (!seatActivityReported) {
       console.warn(
-        `[open42] external seat activity detected (${activity}); continuing in background mode and disabling learning for this run.`,
+        `[openclick] external seat activity detected (${activity}); continuing in background mode and disabling learning for this run.`,
       );
       seatActivityReported = true;
     }
@@ -429,7 +442,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           }
         : null;
     const takeoverContext = takeoverSnapshot
-      ? await snapshotContextForPrompt(takeoverSnapshot.ctx)
+      ? await snapshotContextForPrompt(takeoverSnapshot.ctx, telemetry)
       : {};
     const takeoverScreenshot = addScreenshotIfChanged(
       takeoverContext.screenshot?.path,
@@ -468,6 +481,12 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxModelCalls,
         maxScreenshots,
         tempPaths,
+        snapshot: cachedSnapshot(takeoverContext),
+        captureScreenshot: cachedScreenshot(takeoverContext),
+        settleMs:
+          takeoverContext.rawAxTree || takeoverContext.screenshot
+            ? 0
+            : undefined,
       });
       trace.event("takeover_verify", verification.explanation, {
         verdict: verification.verdict,
@@ -476,7 +495,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         runSucceeded = true;
         stopWhenVerified = true;
         console.log(
-          `[open42] full task verified after takeover: ${verification.explanation}`,
+          `[openclick] full task verified after takeover: ${verification.explanation}`,
         );
         return "succeeded";
       }
@@ -521,7 +540,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       maxScreenshots,
     });
     actionRetriesUsed = 0;
-    console.log(`[open42] replan: ${plan.steps.length} step(s)`);
+    console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
     trace.event("takeover_resumed", marker.summary, {
       outcome: marker.outcome,
       verifier_verdict: verification?.verdict,
@@ -551,7 +570,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           },
         );
         console.log(
-          `[open42] discovered initial state (pid=${initialState.context.pid}, window=${initialState.context.windowId}, ax-entries=${initialState.context.axIndex?.length ?? 0}${discoveryScreenshot ? ", screenshot attached" : ""})`,
+          `[openclick] discovered initial state (pid=${initialState.context.pid}, window=${initialState.context.windowId}, ax-entries=${initialState.context.axIndex?.length ?? 0}${discoveryScreenshot ? ", screenshot attached" : ""})`,
         );
         learnAppCapability({
           initialState,
@@ -581,7 +600,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxScreenshots,
       });
     }
-    console.log(`[open42] plan: ${plan.steps.length} step(s)`);
+    console.log(`[openclick] plan: ${plan.steps.length} step(s)`);
     trace.event("plan", `${plan.steps.length} step(s)`, {
       steps: plan.steps.map((step) => ({
         tool: step.tool,
@@ -602,12 +621,16 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         break;
       }
       if (batchesUsed >= maxBatches) {
-        console.error(`[open42] max batch budget exhausted (${maxBatches}).`);
+        console.error(
+          `[openclick] max batch budget exhausted (${maxBatches}).`,
+        );
         break;
       }
       const remainingStepBudget = opts.maxSteps - totalExecuted;
       if (remainingStepBudget <= 0) {
-        console.error(`[open42] max step budget exhausted (${opts.maxSteps}).`);
+        console.error(
+          `[openclick] max step budget exhausted (${opts.maxSteps}).`,
+        );
         break;
       }
       let result: Awaited<ReturnType<typeof executePlan>>;
@@ -615,7 +638,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       try {
         if (plan.status === "done") {
           console.log(
-            `[open42] planner says done: ${plan.message ?? plan.stopWhen}`,
+            `[openclick] planner says done: ${plan.message ?? plan.stopWhen}`,
           );
           if (
             opts.live &&
@@ -647,7 +670,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
               finalVerifierExplanation = ok.explanation;
             } else {
               console.error(
-                `[open42] planner done was not verified (${ok.verdict}): ${ok.explanation}`,
+                `[openclick] planner done was not verified (${ok.verdict}): ${ok.explanation}`,
               );
               process.exitCode = opts.criteria?.trim() ? 3 : 1;
             }
@@ -698,13 +721,13 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           if (takeover === "continued") continue;
           if (takeover === "succeeded") break;
           console.error(
-            `[open42] ${plan.status}: ${plan.message ?? "planner cannot safely continue"}`,
+            `[openclick] ${plan.status}: ${plan.message ?? "planner cannot safely continue"}`,
           );
           break;
         }
         if (plan.steps.length === 0) {
           console.error(
-            "[open42] planner returned no actions and did not mark the task done.",
+            "[openclick] planner returned no actions and did not mark the task done.",
           );
           break;
         }
@@ -713,13 +736,18 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           !opts.stepRunner &&
           initialContext?.windowId !== undefined &&
           hasHighRiskVisualStep(plan)
-            ? await captureFocusedWindowScreenshot(initialContext.windowId)
+            ? await captureFocusedWindowScreenshot(
+                initialContext.windowId,
+                telemetry,
+              )
             : undefined;
         if (preBatchShot?.path) tempPaths.add(preBatchShot.path);
         preBatchHash = preBatchShot?.path ? hashFile(preBatchShot.path) : null;
         batchesUsed++;
         result = await executePlan(plan, {
-          stepRunner: opts.stepRunner ?? makeVerboseStepRunner(executionPolicy),
+          stepRunner:
+            opts.stepRunner ??
+            makeVerboseStepRunner(executionPolicy, telemetry),
           dryRun: !opts.live,
           confirm: opts.confirm,
           initialContext,
@@ -727,7 +755,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           executionPolicy,
         });
       } catch (e) {
-        console.error(`[open42] executor crashed: ${e}`);
+        console.error(`[openclick] executor crashed: ${e}`);
         throw e;
       }
       totalExecuted += result.stepsExecuted;
@@ -752,7 +780,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           result.lastContext.windowId === undefined
         ) {
           console.error(
-            "[open42] batch completed but live context is missing; cannot verify success safely.",
+            "[openclick] batch completed but live context is missing; cannot verify success safely.",
           );
           break;
         }
@@ -761,11 +789,15 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           runSucceeded = true;
           finalContext = result.lastContext;
           console.log(
-            "[open42] app availability verified from launch context.",
+            "[openclick] app availability verified from launch context.",
           );
           break;
         }
-        const liveState = await snapshotContextForPrompt(result.lastContext);
+        const liveState = await snapshotContextForPrompt(
+          result.lastContext,
+          telemetry,
+        );
+        finalLiveState = liveState;
         const postBatchHash = liveState.screenshot?.path
           ? hashFile(liveState.screenshot.path)
           : null;
@@ -810,6 +842,51 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           critiqueHistory.push(pendingCritique);
           trace.event("critique", pendingCritique);
         }
+        if (
+          !unchanged &&
+          setupVerifierSkipsUsed < 1 &&
+          isSetupOnlyBatch(plan, opts.taskPrompt)
+        ) {
+          setupVerifierSkipsUsed++;
+          console.log(
+            "[openclick] setup batch completed; planning next action without verifier.",
+          );
+          trace.event(
+            "setup_progress",
+            "setup-only batch completed; skipped verifier",
+          );
+          plan = await budgetedGeneratePlan({
+            taskPrompt: opts.taskPrompt,
+            currentStateSummary: taskStateSummary(opts),
+            claudeClient: plannerClient,
+            replanContext: {
+              failedStepIndex: plan.steps.length,
+              failedStep: {
+                tool: "setup_progress",
+                args: {},
+                purpose:
+                  "completed setup/navigation that cannot satisfy the full task by itself",
+              },
+              errorMessage:
+                "The previous batch only prepared the target app/window/page. Continue from the current state and plan the next concrete user-task action.",
+              executedSteps: plan.steps.slice(0, result.stepsExecuted),
+              liveAxTree: liveState.liveAxTree,
+              runHistory,
+            },
+            imagePaths: await visualEvidenceImages({
+              screenshot: liveState.screenshot,
+              step: lastHighRiskVisualStep(plan),
+              tempPaths,
+            }),
+            maxStepsPerPlan,
+            telemetry,
+            maxModelCalls,
+            maxScreenshots,
+          });
+          console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
+          trace.event("replan", `${plan.steps.length} step(s)`);
+          continue;
+        }
         if (!unchanged) {
           const ok = await budgetedVerifyStopWhen({
             plannerClient: verifierClient,
@@ -828,6 +905,9 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             maxModelCalls,
             maxScreenshots,
             tempPaths,
+            snapshot: cachedSnapshot(liveState),
+            captureScreenshot: cachedScreenshot(liveState),
+            settleMs: 0,
           });
           trace.event("verify", ok.explanation, { verdict: ok.verdict });
           if (ok.verdict === "yes") {
@@ -844,13 +924,14 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             stopWhenVerified = true;
             runSucceeded = true;
             finalContext = result.lastContext;
+            finalLiveState = liveState;
             finalVerifierExplanation = ok.explanation;
-            console.log(`[open42] stopWhen verified: ${ok.explanation}`);
+            console.log(`[openclick] stopWhen verified: ${ok.explanation}`);
             break;
           }
           if (batchesUsed >= maxBatches) {
             console.error(
-              `[open42] stopWhen not verified after ${batchesUsed} batch(es): ${ok.explanation}`,
+              `[openclick] stopWhen not verified after ${batchesUsed} batch(es): ${ok.explanation}`,
             );
             break;
           }
@@ -860,7 +941,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             criteriaRefinementsUsed >= maxCriteriaRefinements
           ) {
             console.error(
-              `[open42] criteria not satisfied after ${criteriaRefinementsUsed} refinement round(s): ${ok.explanation}`,
+              `[openclick] criteria not satisfied after ${criteriaRefinementsUsed} refinement round(s): ${ok.explanation}`,
             );
             process.exitCode = 3;
             break;
@@ -898,10 +979,10 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             });
           }
           console.log(
-            `[open42] stopWhen not verified (${ok.verdict}): ${ok.explanation}`,
+            `[openclick] stopWhen not verified (${ok.verdict}): ${ok.explanation}`,
           );
           console.log(
-            `[open42] planning next batch (${batchesUsed + 1}/${maxBatches})...`,
+            `[openclick] planning next batch (${batchesUsed + 1}/${maxBatches})...`,
           );
           plan = await budgetedGeneratePlan({
             taskPrompt: opts.taskPrompt,
@@ -930,12 +1011,12 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             maxModelCalls,
             maxScreenshots,
           });
-          console.log(`[open42] replan: ${plan.steps.length} step(s)`);
+          console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
           trace.event("replan", `${plan.steps.length} step(s)`);
           continue;
         }
         console.log(
-          "[open42] visual delta check: no material screenshot change; asking planner to change strategy.",
+          "[openclick] visual delta check: no material screenshot change; asking planner to change strategy.",
         );
         plan = await budgetedGeneratePlan({
           taskPrompt: opts.taskPrompt,
@@ -964,7 +1045,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           maxModelCalls,
           maxScreenshots,
         });
-        console.log(`[open42] replan: ${plan.steps.length} step(s)`);
+        console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
         continue;
       }
       if (
@@ -972,7 +1053,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         result.error.startsWith("max step budget exhausted")
       ) {
         console.error(
-          `[open42] step ${result.failedStepIndex} failed: ${result.error}`,
+          `[openclick] step ${result.failedStepIndex} failed: ${result.error}`,
         );
         break;
       }
@@ -1010,7 +1091,9 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         });
         if (takeover === "continued") continue;
         if (takeover === "succeeded") break;
-        console.error(`[open42] foreground control required: ${result.error}`);
+        console.error(
+          `[openclick] foreground control required: ${result.error}`,
+        );
         process.exitCode = 16;
         break;
       }
@@ -1049,16 +1132,16 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         if (takeover === "continued") continue;
         if (takeover === "succeeded") break;
         console.error(
-          `[open42] step ${result.failedStepIndex} failed after ${actionRetriesUsed} action retry/retries: ${result.error}`,
+          `[openclick] step ${result.failedStepIndex} failed after ${actionRetriesUsed} action retry/retries: ${result.error}`,
         );
         break;
       }
       actionRetriesUsed++;
       console.log(
-        `[open42] step ${result.failedStepIndex} failed: ${result.error}`,
+        `[openclick] step ${result.failedStepIndex} failed: ${result.error}`,
       );
       console.log(
-        `[open42] replanning action retry (${actionRetriesUsed}/${maxActionRetries})...`,
+        `[openclick] replanning action retry (${actionRetriesUsed}/${maxActionRetries})...`,
       );
       const failedStep = plan.steps[result.failedStepIndex ?? 0];
       if (!failedStep) break;
@@ -1081,8 +1164,8 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         ctxAtFailure.windowId !== undefined
       ) {
         const liveState = isWindowStateTimeout(failedStep, result.error)
-          ? await screenshotOnlyContextForPrompt(ctxAtFailure)
-          : await snapshotContextForPrompt(ctxAtFailure);
+          ? await screenshotOnlyContextForPrompt(ctxAtFailure, telemetry)
+          : await snapshotContextForPrompt(ctxAtFailure, telemetry);
         liveAxTree = liveState.liveAxTree;
         replanScreenshot = addScreenshotIfChanged(
           liveState.screenshot?.path,
@@ -1116,7 +1199,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxModelCalls,
         maxScreenshots,
       });
-      console.log(`[open42] replan: ${plan.steps.length} step(s)`);
+      console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
       trace.event("replan", `${plan.steps.length} step(s)`);
     }
 
@@ -1156,10 +1239,15 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxModelCalls,
         maxScreenshots,
         tempPaths,
+        snapshot: finalLiveState ? cachedSnapshot(finalLiveState) : undefined,
+        captureScreenshot: finalLiveState
+          ? cachedScreenshot(finalLiveState)
+          : undefined,
+        settleMs: finalLiveState ? 0 : undefined,
       });
       if (ok.verdict === "no") {
         console.error(
-          `[open42] stopWhen verification FAILED: ${ok.explanation}`,
+          `[openclick] stopWhen verification FAILED: ${ok.explanation}`,
         );
         process.exitCode = 3;
       } else if (ok.verdict === "unknown") {
@@ -1191,7 +1279,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             finalContext = lastResult.lastContext;
             finalVerifierExplanation = resumed.summary;
             console.log(
-              `[open42] criteria accepted after user takeover: ${resumed.summary}`,
+              `[openclick] criteria accepted after user takeover: ${resumed.summary}`,
             );
           } else {
             if (resumed) {
@@ -1208,18 +1296,18 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             }
             process.exitCode = 3;
             console.error(
-              `[open42] criteria verifier couldn't confirm success: ${ok.explanation}`,
+              `[openclick] criteria verifier couldn't confirm success: ${ok.explanation}`,
             );
           }
         } else {
           console.warn(
-            `[open42] stopWhen verifier couldn't tell from the screenshot/AX (${ok.explanation}). All steps completed without errors — treating as success.`,
+            `[openclick] stopWhen verifier couldn't tell from the screenshot/AX (${ok.explanation}). All steps completed without errors — treating as success.`,
           );
         }
       } else {
         finalContext = lastResult.lastContext;
         finalVerifierExplanation = ok.explanation;
-        console.log(`[open42] stopWhen verified: ${ok.explanation}`);
+        console.log(`[openclick] stopWhen verified: ${ok.explanation}`);
       }
     }
     if (runSucceeded && opts.live && (process.exitCode ?? 0) === 0) {
@@ -1227,6 +1315,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         taskPrompt: opts.taskPrompt,
         criteria: opts.criteria,
         context: finalContext,
+        finalState: finalLiveState,
         verifierExplanation: finalVerifierExplanation,
         plannerClient: verifierClient,
         telemetry,
@@ -1255,7 +1344,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       isRunCancelRequested(runId) ? "cancelled" : "aborted",
       telemetryRecord(telemetry),
     );
-    console.log(`[open42] aborted. ${totalExecuted} tool calls.`);
+    console.log(`[openclick] aborted. ${totalExecuted} tool calls.`);
     return;
   }
   if (!runSucceeded) {
@@ -1278,27 +1367,34 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
   if (!opts.live) {
     trace.finish("succeeded", telemetryRecord(telemetry));
     console.log(
-      "[open42] dry-run complete. No cua-driver tools executed; re-run with --live to act.",
+      "[openclick] dry-run complete. No cua-driver tools executed; re-run with --live to act.",
     );
     return;
   }
   trace.finish("succeeded", telemetryRecord(telemetry));
-  console.log(`[open42] done. ${totalExecuted} tool calls.`);
+  console.log(`[openclick] done. ${totalExecuted} tool calls.`);
 }
 
 async function snapshotContextForPrompt(
   ctx: ExecutorContext,
-): Promise<{ liveAxTree?: string; screenshot?: CapturedScreenshot }> {
+  telemetry?: RunTelemetry,
+): Promise<LivePromptSnapshot> {
   if (ctx.pid === undefined || ctx.windowId === undefined) return {};
+  const startedAt = Date.now();
   const snap = await runCuaDriverCapture([
     "call",
     "get_window_state",
     JSON.stringify({
       pid: ctx.pid,
       window_id: ctx.windowId,
+      capture_mode: "ax",
     }),
   ]);
-  const screenshot = await captureFocusedWindowScreenshot(ctx.windowId);
+  const screenshot = await captureFocusedWindowScreenshot(
+    ctx.windowId,
+    telemetry,
+  );
+  if (telemetry) telemetry.snapshotMs += Date.now() - startedAt;
   const dimensionBlock =
     screenshot?.width && screenshot.height
       ? `Attached screenshot metadata:\n  screenshot_width: ${screenshot.width}\n  screenshot_height: ${screenshot.height}\nUse these exact dimensions in drag args when using screenshot coordinates.\n\n`
@@ -1307,15 +1403,22 @@ async function snapshotContextForPrompt(
     liveAxTree: snap.ok
       ? `${dimensionBlock}${snap.stdout.slice(0, 12_000)}`
       : dimensionBlock || undefined,
+    rawAxTree: snap.ok ? snap.stdout : undefined,
     screenshot,
   };
 }
 
 async function screenshotOnlyContextForPrompt(
   ctx: ExecutorContext,
-): Promise<{ liveAxTree?: string; screenshot?: CapturedScreenshot }> {
+  telemetry?: RunTelemetry,
+): Promise<LivePromptSnapshot> {
   if (ctx.windowId === undefined) return {};
-  const screenshot = await captureFocusedWindowScreenshot(ctx.windowId);
+  const startedAt = Date.now();
+  const screenshot = await captureFocusedWindowScreenshot(
+    ctx.windowId,
+    telemetry,
+  );
+  if (telemetry) telemetry.snapshotMs += Date.now() - startedAt;
   const dimensionBlock =
     screenshot?.width && screenshot.height
       ? `Attached screenshot metadata:\n  screenshot_width: ${screenshot.width}\n  screenshot_height: ${screenshot.height}\nUse these exact dimensions in drag args when using screenshot coordinates.\n\n`
@@ -1326,12 +1429,38 @@ async function screenshotOnlyContextForPrompt(
   };
 }
 
+function cachedSnapshot(
+  state: LivePromptSnapshot,
+):
+  | ((
+      pid: number,
+      windowId: number,
+    ) => Promise<{ ok: boolean; stdout: string; error?: string }>)
+  | undefined {
+  if (state.rawAxTree === undefined) return undefined;
+  return async () => ({ ok: true, stdout: state.rawAxTree ?? "" });
+}
+
+function cachedScreenshot(
+  state: LivePromptSnapshot,
+): ((windowId: number) => Promise<CapturedScreenshot | undefined>) | undefined {
+  if (!state.screenshot) return undefined;
+  return async () => state.screenshot;
+}
+
 interface RunTelemetry {
   modelCalls: number;
   plannerCalls: number;
   verifierCalls: number;
   screenshotsAttached: number;
   promptChars: number;
+  modelMs: number;
+  plannerMs: number;
+  verifierMs: number;
+  resultMs: number;
+  cuaDriverMs: number;
+  screenshotMs: number;
+  snapshotMs: number;
 }
 
 interface TaskResultPayload {
@@ -1348,6 +1477,13 @@ function telemetryRecord(t: RunTelemetry): Record<string, number> {
     verifierCalls: t.verifierCalls,
     screenshotsAttached: t.screenshotsAttached,
     promptChars: t.promptChars,
+    modelMs: Math.round(t.modelMs),
+    plannerMs: Math.round(t.plannerMs),
+    verifierMs: Math.round(t.verifierMs),
+    resultMs: Math.round(t.resultMs),
+    cuaDriverMs: Math.round(t.cuaDriverMs),
+    screenshotMs: Math.round(t.screenshotMs),
+    snapshotMs: Math.round(t.snapshotMs),
   };
 }
 
@@ -1357,10 +1493,17 @@ interface CapturedScreenshot {
   height?: number;
 }
 
+interface LivePromptSnapshot {
+  liveAxTree?: string;
+  rawAxTree?: string;
+  screenshot?: CapturedScreenshot;
+}
+
 async function buildTaskResult(args: {
   taskPrompt: string;
   criteria?: string;
   context?: ExecutorContext;
+  finalState?: LivePromptSnapshot;
   verifierExplanation?: string;
   plannerClient: PlannerClient;
   telemetry: RunTelemetry;
@@ -1386,7 +1529,9 @@ async function buildTaskResult(args: {
   }
 
   try {
-    const finalState = await snapshotContextForPrompt(args.context);
+    const finalState =
+      args.finalState ??
+      (await snapshotContextForPrompt(args.context, args.telemetry));
     if (finalState.screenshot?.path)
       args.tempPaths.add(finalState.screenshot.path);
     if (!finalState.liveAxTree?.trim()) return fallback;
@@ -1454,6 +1599,7 @@ async function budgetedGenerateTaskResult(args: {
   maxScreenshots: number;
   fallback: TaskResultPayload;
 }): Promise<TaskResultPayload> {
+  const startedAt = Date.now();
   enforceModelBudget(args.telemetry, args.maxModelCalls);
   enforceScreenshotBudget(
     args.telemetry,
@@ -1483,11 +1629,17 @@ async function budgetedGenerateTaskResult(args: {
     .filter(Boolean)
     .join("\n");
 
-  const reply = await args.plannerClient.generatePlanText(
-    prompt,
-    args.imagePaths,
-  );
-  return parseTaskResultJson(reply) ?? args.fallback;
+  try {
+    const modelStartedAt = Date.now();
+    const reply = await args.plannerClient.generatePlanText(
+      prompt,
+      args.imagePaths,
+    );
+    args.telemetry.modelMs += Date.now() - modelStartedAt;
+    return parseTaskResultJson(reply) ?? args.fallback;
+  } finally {
+    args.telemetry.resultMs += Date.now() - startedAt;
+  }
 }
 
 function parseTaskResultJson(reply: string): TaskResultPayload | null {
@@ -1519,7 +1671,7 @@ function emitTaskResult(result: TaskResultPayload, trace: TraceRecorder): void {
     kind: result.kind,
     title: result.title,
   });
-  console.log(`[open42] task_result ${JSON.stringify(result)}`);
+  console.log(`[openclick] task_result ${JSON.stringify(result)}`);
 }
 
 function taskStateSummary(opts: RunOptions): string {
@@ -1758,10 +1910,12 @@ async function budgetedCritiqueVisualFailure(args: {
     "Answer in one concise paragraph: why the action likely did not persist or visibly change the app, and what the next strategy should change. Mention concrete UI state if visible.",
   ].join("\n");
   args.telemetry.promptChars += prompt.length;
+  const startedAt = Date.now();
   const text = await args.plannerClient.generatePlanText(
     prompt,
     args.imagePaths,
   );
+  args.telemetry.modelMs += Date.now() - startedAt;
   return text.trim().replace(/\s+/g, " ").slice(0, 800);
 }
 
@@ -1807,7 +1961,7 @@ function emitInterventionRequired(args: {
     reason_type: args.reasonType,
     step: args.step,
     user_action:
-      "Take over with mouse and keyboard to complete this step; open42 will observe and resume afterward.",
+      "Take over with mouse and keyboard to complete this step; openclick will observe and resume afterward.",
     learning:
       "A successful takeover can be saved as local app memory for future runs.",
     before: snapshotForIntervention(args.initialState),
@@ -1822,7 +1976,7 @@ function emitInterventionRequired(args: {
   } catch {
     // The stdout event is the compatibility path; the file marker is best effort.
   }
-  console.log(`[open42] intervention_required ${JSON.stringify(payload)}`);
+  console.log(`[openclick] intervention_required ${JSON.stringify(payload)}`);
   return payload;
 }
 
@@ -1895,8 +2049,8 @@ function appRunShouldWaitForTakeover(opts: RunOptions): boolean {
   return (
     opts.live &&
     !opts.stepRunner &&
-    Bun.env.OPEN42_APP_USE_ENV === "1" &&
-    Number(Bun.env.OPEN42_TAKEOVER_WAIT_MS ?? 600_000) > 0
+    Bun.env.OPENCLICK_APP_USE_ENV === "1" &&
+    Number(Bun.env.OPENCLICK_TAKEOVER_WAIT_MS ?? 600_000) > 0
   );
 }
 
@@ -1908,10 +2062,10 @@ async function waitForTakeoverResume(args: {
     return await args.opts.takeoverResumeFn(args.runId);
   }
   if (!appRunShouldWaitForTakeover(args.opts)) return null;
-  const timeoutMs = Number(Bun.env.OPEN42_TAKEOVER_WAIT_MS ?? 600_000);
+  const timeoutMs = Number(Bun.env.OPENCLICK_TAKEOVER_WAIT_MS ?? 600_000);
   const start = Date.now();
   console.log(
-    `[open42] paused for user takeover. Waiting up to ${Math.round(timeoutMs / 1000)}s...`,
+    `[openclick] paused for user takeover. Waiting up to ${Math.round(timeoutMs / 1000)}s...`,
   );
   while (Date.now() - start < timeoutMs) {
     if (isRunCancelRequested(args.runId)) return null;
@@ -1919,13 +2073,13 @@ async function waitForTakeoverResume(args: {
     if (marker) {
       clearRunTakeoverResume(args.runId);
       console.log(
-        `[open42] takeover ${marker.outcome}: ${marker.summary || "no summary"}`,
+        `[openclick] takeover ${marker.outcome}: ${marker.summary || "no summary"}`,
       );
       return marker;
     }
     await sleep(500);
   }
-  console.error("[open42] takeover wait timed out.");
+  console.error("[openclick] takeover wait timed out.");
   return null;
 }
 
@@ -1982,6 +2136,19 @@ function isOpenFocusOnlyTask(taskPrompt: string, plan: Plan): boolean {
   return plan.steps.some((step) => step.tool === "launch_app");
 }
 
+function isSetupOnlyBatch(plan: Plan, taskPrompt: string): boolean {
+  if (plan.steps.length === 0) return false;
+  const setupTools = new Set(["launch_app", "open_url"]);
+  if (!plan.steps.every((step) => setupTools.has(step.tool))) return false;
+  const task = normalizeForMatch(taskPrompt);
+  const asksForMoreThanSetup =
+    /\b(read|find|search|click|select|choose|download|save|send|reply|extract|return|summari[sz]e|tell|answer|fill|edit|create|delete|archive|mark|open\s+(?:the|a|an)\b)\b/.test(
+      task,
+    );
+  if (!asksForMoreThanSetup) return false;
+  return !isOpenFocusOnlyTask(taskPrompt, plan);
+}
+
 async function budgetedGeneratePlan(
   opts: GeneratePlanOptions & {
     telemetry: RunTelemetry;
@@ -1989,6 +2156,7 @@ async function budgetedGeneratePlan(
     maxScreenshots: number;
   },
 ): Promise<Plan> {
+  const startedAt = Date.now();
   enforceModelBudget(opts.telemetry, opts.maxModelCalls);
   enforceScreenshotBudget(
     opts.telemetry,
@@ -1996,14 +2164,18 @@ async function budgetedGeneratePlan(
     opts.imagePaths?.length ?? 0,
   );
   opts.telemetry.plannerCalls++;
-  return await generatePlan({
-    ...opts,
-    claudeClient: wrapPlannerClientForTelemetry(
-      opts.claudeClient,
-      opts.telemetry,
-      opts.maxScreenshots,
-    ),
-  });
+  try {
+    return await generatePlan({
+      ...opts,
+      claudeClient: wrapPlannerClientForTelemetry(
+        opts.claudeClient,
+        opts.telemetry,
+        opts.maxScreenshots,
+      ),
+    });
+  } finally {
+    opts.telemetry.plannerMs += Date.now() - startedAt;
+  }
 }
 
 function wrapPlannerClientForTelemetry(
@@ -2017,7 +2189,12 @@ function wrapPlannerClientForTelemetry(
       telemetry.modelCalls++;
       telemetry.promptChars += prompt.length;
       telemetry.screenshotsAttached += imagePaths.length;
-      return await client.generatePlanText(prompt, imagePaths);
+      const startedAt = Date.now();
+      try {
+        return await client.generatePlanText(prompt, imagePaths);
+      } finally {
+        telemetry.modelMs += Date.now() - startedAt;
+      }
     },
   };
 }
@@ -2030,27 +2207,35 @@ async function budgetedVerifyStopWhen(
     tempPaths?: Set<string>;
   },
 ): Promise<Awaited<ReturnType<typeof verifyStopWhen>>> {
+  const startedAt = Date.now();
   enforceModelBudget(args.telemetry, args.maxModelCalls);
   args.telemetry.verifierCalls++;
   args.telemetry.promptChars +=
     args.stopWhen.length +
     (args.intent?.goal.length ?? 0) +
     (args.executedStepPurposes ?? []).join("\n").length;
-  return await verifyStopWhen({
-    ...args,
-    plannerClient: wrapPlannerClientForVerifier(
-      args.plannerClient,
-      args.telemetry,
-      args.maxScreenshots,
-    ),
-    captureScreenshot: args.captureScreenshot
-      ? args.captureScreenshot
-      : async (windowId) => {
-          const shot = await captureFocusedWindowScreenshot(windowId);
-          if (shot) args.tempPaths?.add(shot.path);
-          return shot;
-        },
-  });
+  try {
+    return await verifyStopWhen({
+      ...args,
+      plannerClient: wrapPlannerClientForVerifier(
+        args.plannerClient,
+        args.telemetry,
+        args.maxScreenshots,
+      ),
+      captureScreenshot: args.captureScreenshot
+        ? args.captureScreenshot
+        : async (windowId) => {
+            const shot = await captureFocusedWindowScreenshot(
+              windowId,
+              args.telemetry,
+            );
+            if (shot) args.tempPaths?.add(shot.path);
+            return shot;
+          },
+    });
+  } finally {
+    args.telemetry.verifierMs += Date.now() - startedAt;
+  }
 }
 
 function wrapPlannerClientForVerifier(
@@ -2064,7 +2249,12 @@ function wrapPlannerClientForVerifier(
       telemetry.modelCalls++;
       telemetry.promptChars += prompt.length;
       telemetry.screenshotsAttached += imagePaths.length;
-      return await client.generatePlanText(prompt, imagePaths);
+      const startedAt = Date.now();
+      try {
+        return await client.generatePlanText(prompt, imagePaths);
+      } finally {
+        telemetry.modelMs += Date.now() - startedAt;
+      }
     },
   };
 }
@@ -2089,7 +2279,7 @@ function enforceScreenshotBudget(
 }
 
 function formatTelemetry(t: RunTelemetry): string {
-  return `[open42] cost telemetry: model_calls=${t.modelCalls} planner_calls=${t.plannerCalls} verifier_calls=${t.verifierCalls} screenshots=${t.screenshotsAttached} prompt_chars~=${t.promptChars}`;
+  return `[openclick] cost telemetry: model_calls=${t.modelCalls} planner_calls=${t.plannerCalls} verifier_calls=${t.verifierCalls} screenshots=${t.screenshotsAttached} prompt_chars~=${t.promptChars} timings_ms={model:${Math.round(t.modelMs)},planner:${Math.round(t.plannerMs)},verifier:${Math.round(t.verifierMs)},result:${Math.round(t.resultMs)},cua:${Math.round(t.cuaDriverMs)},snapshot:${Math.round(t.snapshotMs)},screenshot:${Math.round(t.screenshotMs)}}`;
 }
 
 function addScreenshotIfChanged(
@@ -2130,6 +2320,14 @@ function cloneExecutorContext(ctx: ExecutorContext): ExecutorContext {
   return {
     pid: ctx.pid,
     windowId: ctx.windowId,
+    windowUid: ctx.windowUid,
+    windowTitle: ctx.windowTitle,
+    bundleId: ctx.bundleId,
+    tabId: ctx.tabId,
+    tabUrl: ctx.tabUrl,
+    tabTitle: ctx.tabTitle,
+    browserWindowId: ctx.browserWindowId,
+    browserWindowIndex: ctx.browserWindowIndex,
     axIndex: ctx.axIndex ? [...ctx.axIndex] : undefined,
     screenshotWidth: ctx.screenshotWidth,
     screenshotHeight: ctx.screenshotHeight,
@@ -2142,7 +2340,7 @@ function cloneExecutorContext(ctx: ExecutorContext): ExecutorContext {
  * user is *watching*, that animation budget dominates. We tune to a snappier
  * preset on enable. The motion settings persist in cua-driver's config, so
  * we keep these values across runs (no need to restore — they're saner than
- * the defaults for users running open42).
+ * the defaults for users running openclick).
  */
 const CURSOR_MOTION_PRESET = {
   glide_duration_ms: 250,
@@ -2178,10 +2376,10 @@ async function runCuaDriver(args: string[]): Promise<void> {
 }
 
 /**
- * Verifies the cua-driver daemon is up. If not, launches it via LaunchServices
- * (`open -n -g -a CuaDriver --args serve`) and polls `cua-driver status` until
- * the socket appears. Throws if the daemon doesn't come up within ~6 seconds —
- * that's an environment problem the user has to fix.
+ * Verifies the cua-driver daemon is up. If not, launches the resolved bundled
+ * cua-driver directly and polls `cua-driver status` until the socket appears.
+ * Throws if the daemon doesn't come up within ~6 seconds — that's an
+ * environment problem the user has to fix.
  *
  * Why this matters: element-indexed clicks read an AX cache populated by
  * `get_window_state`. The cache lives in the daemon process. If the daemon
@@ -2191,23 +2389,25 @@ async function runCuaDriver(args: string[]): Promise<void> {
 async function ensureDaemonRunning(): Promise<void> {
   const cuaDriver = requireCuaDriverBinary();
   if (await isDaemonRunning(cuaDriver)) return;
-  console.log("[open42] cua-driver daemon not running; auto-starting...");
-  // Fire-and-forget. `open -n -g` is non-blocking — daemon starts in the
-  // background while open exits immediately.
-  Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
+  console.log("[openclick] cua-driver daemon not running; auto-starting...");
+  // Fire-and-forget. Force the resolved binary to serve in-process so an older
+  // /Applications/CuaDriver.app install cannot shadow the bundled driver.
+  Bun.spawn([cuaDriver, "serve"], {
+    stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
+    env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
   });
   const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 250));
     if (await isDaemonRunning(cuaDriver)) {
-      console.log("[open42] daemon up");
+      console.log("[openclick] daemon up");
       return;
     }
   }
   throw new Error(
-    "cua-driver helper failed to start automatically within 6s. Reopen open42 or check the CuaDriver installation.",
+    "cua-driver helper failed to start automatically within 6s. Reopen openclick or check the CuaDriver installation.",
   );
 }
 
@@ -2236,19 +2436,20 @@ async function isDaemonRunning(
  */
 function makeVerboseStepRunner(
   executionPolicy: ExecutionPolicy,
+  telemetry?: RunTelemetry,
 ): import("./executor.ts").StepRunner {
   return async (step) => {
     const cuaDriver = requireCuaDriverBinary();
     const trim = (s: string, n = 200): string =>
       s.length <= n ? s.trim() : `${s.slice(0, n).trim()}…`;
-    const result = await runCuaDriverStep(step, cuaDriver, {
-      executionPolicy,
-    });
+    const startedAt = Date.now();
+    const result = await runCuaDriverStep(step, cuaDriver, { executionPolicy });
+    if (telemetry) telemetry.cuaDriverMs += Date.now() - startedAt;
     if (!result.ok) {
-      console.log(`[open42]   ✗ ${trim(result.error ?? "unknown error")}`);
+      console.log(`[openclick]   ✗ ${trim(result.error ?? "unknown error")}`);
       return result;
     }
-    console.log(`[open42]   ✓ ${trim(result.stdout ?? "", 160)}`);
+    console.log(`[openclick]   ✓ ${trim(result.stdout ?? "", 160)}`);
     return result;
   };
 }
@@ -2276,7 +2477,7 @@ async function runCuaDriverCapture(
 
 async function collectProcess(
   proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = Number(Bun.env.OPEN42_SUBPROCESS_TIMEOUT_MS ?? 20_000),
+  timeoutMs = Number(Bun.env.OPENCLICK_SUBPROCESS_TIMEOUT_MS ?? 20_000),
 ): Promise<{
   exitCode: number | null;
   stdout: string;
@@ -2894,7 +3095,7 @@ async function defaultSnapshot(
   const snap = await runCuaDriverCapture([
     "call",
     "get_window_state",
-    JSON.stringify({ pid, window_id: windowId }),
+    JSON.stringify({ pid, window_id: windowId, capture_mode: "ax" }),
   ]);
   return {
     ok: snap.ok,
@@ -2951,13 +3152,13 @@ async function preDiscoverAppState(
     }
     if (bundleId) {
       console.warn(
-        "[open42] SKILL.md is missing structured `target.bundle_id` frontmatter; falling back to prose scan (deprecated). Re-run `open42 compile` to regenerate.",
+        "[openclick] SKILL.md is missing structured `target.bundle_id` frontmatter; falling back to prose scan (deprecated). Re-run `openclick compile` to regenerate.",
       );
     }
   }
   if (!bundleId) {
     console.warn(
-      "[open42] no bundle_id found in SKILL.md and no app name matched a running/installed app; skipping pre-discovery",
+      "[openclick] no bundle_id found in SKILL.md and no app name matched a running/installed app; skipping pre-discovery",
     );
     return null;
   }
@@ -2970,7 +3171,7 @@ async function preDiscoverAppState(
   ]);
   if (!launch.ok) {
     console.warn(
-      `[open42] launch_app(${bundleId}) failed: ${launch.stderr.trim() || "(no stderr)"}`,
+      `[openclick] launch_app(${bundleId}) failed: ${launch.stderr.trim() || "(no stderr)"}`,
     );
     return null;
   }
@@ -2991,7 +3192,7 @@ async function preDiscoverAppState(
   const state = await runCuaDriverCapture([
     "call",
     "get_window_state",
-    JSON.stringify({ pid, window_id: windowId }),
+    JSON.stringify({ pid, window_id: windowId, capture_mode: "ax" }),
   ]);
   if (!state.ok) return null;
 
@@ -3035,31 +3236,37 @@ async function preDiscoverAppState(
  */
 async function captureFocusedWindowScreenshot(
   windowId: number,
+  telemetry?: RunTelemetry,
 ): Promise<CapturedScreenshot | undefined> {
-  const path = `/tmp/open42-discovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-  const out = await runCuaDriverCapture([
-    "call",
-    "screenshot",
-    JSON.stringify({ window_id: windowId }),
-    "--image-out",
-    path,
-  ]);
-  if (!out.ok) {
-    console.warn(
-      `[open42] screenshot capture failed (continuing text-only): ${out.stderr.trim() || "(no stderr)"}`,
-    );
-    return undefined;
+  const startedAt = Date.now();
+  try {
+    const path = `/tmp/openclick-discovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+    const out = await runCuaDriverCapture([
+      "call",
+      "screenshot",
+      JSON.stringify({ window_id: windowId }),
+      "--image-out",
+      path,
+    ]);
+    if (!out.ok) {
+      console.warn(
+        `[openclick] screenshot capture failed (continuing text-only): ${out.stderr.trim() || "(no stderr)"}`,
+      );
+      return undefined;
+    }
+    return await optimizeScreenshotForPlanner(path);
+  } finally {
+    if (telemetry) telemetry.screenshotMs += Date.now() - startedAt;
   }
-  return await optimizeScreenshotForPlanner(path);
 }
 
 async function optimizeScreenshotForPlanner(
   path: string,
 ): Promise<CapturedScreenshot> {
-  if (Bun.env.OPEN42_SCREENSHOT_OPTIMIZE === "0") {
+  if (Bun.env.OPENCLICK_SCREENSHOT_OPTIMIZE === "0") {
     return { path, ...(await readImageDimensions(path)) };
   }
-  const maxEdge = Number(Bun.env.OPEN42_SCREENSHOT_MAX_EDGE ?? 1280);
+  const maxEdge = Number(Bun.env.OPENCLICK_SCREENSHOT_MAX_EDGE ?? 1280);
   if (!Number.isFinite(maxEdge) || maxEdge <= 0)
     return { path, ...(await readImageDimensions(path)) };
 
@@ -3079,7 +3286,7 @@ async function optimizeScreenshotForPlanner(
   await proc.exited;
   if (proc.exitCode !== 0) {
     console.warn(
-      `[open42] screenshot optimization failed (using original): ${stderr.trim() || "(no stderr)"}`,
+      `[openclick] screenshot optimization failed (using original): ${stderr.trim() || "(no stderr)"}`,
     );
     return { path, ...(await readImageDimensions(path)) };
   }
@@ -3235,7 +3442,7 @@ async function discoverInitialLiveState(
       [
         "call",
         "get_window_state",
-        JSON.stringify({ pid, window_id: windowId }),
+        JSON.stringify({ pid, window_id: windowId, capture_mode: "ax" }),
       ],
       5_000,
     );
@@ -3621,7 +3828,7 @@ function buildSystemPrompt(
     : "Non-blocking invariant: do not steal focus, do not require the target app to be frontmost, and do not rely on the human's real cursor. Use pid/window-targeted actions. If the task cannot be completed without foreground/global control, stop and explain that foreground control is required.";
   return `You are an agent completing the user's macOS task via cua-driver.
 
-You have access to cua-driver MCP tools: click, type_text, get_window_state, screenshot, press_key, hotkey, list_apps, list_windows, launch_app, scroll.
+You have access to cua-driver MCP tools: click, type_text, get_window_state, screenshot, press_key, hotkey, list_apps, list_windows, diff_windows, list_browser_tabs, launch_app, scroll.
 
 ${executionBlock}
 

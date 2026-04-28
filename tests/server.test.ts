@@ -8,31 +8,32 @@ let home: string;
 let originalHome: string | undefined;
 let originalDisableKeychain: string | undefined;
 let originalAnthropicApiKey: string | undefined;
-let originalOpen42ApiKey: string | undefined;
+let originalOpenClickApiKey: string | undefined;
 
 beforeEach(() => {
-  originalHome = Bun.env.OPEN42_HOME;
-  originalDisableKeychain = Bun.env.OPEN42_DISABLE_KEYCHAIN;
+  originalHome = Bun.env.OPENCLICK_HOME;
+  originalDisableKeychain = Bun.env.OPENCLICK_DISABLE_KEYCHAIN;
   originalAnthropicApiKey = Bun.env.ANTHROPIC_API_KEY;
-  originalOpen42ApiKey = Bun.env.OPEN42_API_KEY;
-  home = mkdtempSync(join(tmpdir(), "open42-server-"));
-  Bun.env.OPEN42_HOME = home;
-  Bun.env.OPEN42_DISABLE_KEYCHAIN = "1";
+  originalOpenClickApiKey = Bun.env.OPENCLICK_API_KEY;
+  home = mkdtempSync(join(tmpdir(), "openclick-server-"));
+  Bun.env.OPENCLICK_HOME = home;
+  Bun.env.OPENCLICK_DISABLE_KEYCHAIN = "1";
   Bun.env.ANTHROPIC_API_KEY = undefined;
-  Bun.env.OPEN42_API_KEY = undefined;
+  Bun.env.OPENCLICK_API_KEY = undefined;
 });
 
 afterEach(() => {
-  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
-  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
   if (originalDisableKeychain === undefined)
-    Bun.env.OPEN42_DISABLE_KEYCHAIN = undefined;
-  else Bun.env.OPEN42_DISABLE_KEYCHAIN = originalDisableKeychain;
+    Bun.env.OPENCLICK_DISABLE_KEYCHAIN = undefined;
+  else Bun.env.OPENCLICK_DISABLE_KEYCHAIN = originalDisableKeychain;
   if (originalAnthropicApiKey === undefined)
     Bun.env.ANTHROPIC_API_KEY = undefined;
   else Bun.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
-  if (originalOpen42ApiKey === undefined) Bun.env.OPEN42_API_KEY = undefined;
-  else Bun.env.OPEN42_API_KEY = originalOpen42ApiKey;
+  if (originalOpenClickApiKey === undefined)
+    Bun.env.OPENCLICK_API_KEY = undefined;
+  else Bun.env.OPENCLICK_API_KEY = originalOpenClickApiKey;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -44,7 +45,7 @@ describe("api server", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.ok).toBe(true);
-    expect(body.name).toBe("open42");
+    expect(body.name).toBe("openclick");
   });
 
   test("token-protected requests reject missing credentials", async () => {

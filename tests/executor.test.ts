@@ -4,6 +4,7 @@ import {
   classifyToolSafety,
   executePlan,
   parseAxTreeIndex,
+  pickOpenedUrlTab,
   pickOpenedUrlWindow,
   resolveSelector,
   runCuaDriverStep,
@@ -30,6 +31,9 @@ describe("executor", () => {
   test("classifies foreground-only primitives out of shared-seat mode", () => {
     expect(classifyToolSafety("click").category).toBe("background_safe");
     expect(classifyToolSafety("open_url").category).toBe("background_safe");
+    expect(classifyToolSafety("list_browser_tabs").category).toBe(
+      "background_safe",
+    );
     expect(classifyToolSafety("mcp__cua-driver__move_cursor").category).toBe(
       "foreground_required",
     );
@@ -72,6 +76,41 @@ describe("executor", () => {
 
     expect(called).toBe(false);
     expect(result.error).toContain("foreground-required tool blocked");
+  });
+
+  test("aborts when a driver action receipt reports unsafe background effects", async () => {
+    const result = await executePlan(
+      {
+        steps: [
+          {
+            tool: "click",
+            args: { pid: 1, window_id: 2, element_index: 5 },
+            purpose: "press button",
+          },
+        ],
+        stopWhen: "button is pressed",
+      },
+      {
+        stepRunner: async () => ({
+          ok: true,
+          stdout: JSON.stringify({
+            ok: false,
+            route: "cua-driver.click",
+            lane: "leased_window",
+            background_safe: false,
+            cursor_moved: false,
+            foreground_changed: true,
+            session: "pid=1 window_id=2",
+            reason: "foreground_changed",
+          }),
+        }),
+      },
+    );
+
+    expect(result.stepsExecuted).toBe(0);
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("background-safety violation");
+    expect(result.error).toContain("foreground_changed");
   });
 
   test("walks the plan via the injected step runner", async () => {
@@ -175,12 +214,15 @@ describe("executor", () => {
       },
     });
     expect(calls).toEqual([
-      { tool: "press_key", args: { pid: 1, key: "1" } },
-      { tool: "press_key", args: { pid: 1, key: "8" } },
-      { tool: "hotkey", args: { pid: 1, keys: ["shift", "8"] } },
-      { tool: "press_key", args: { pid: 1, key: "2" } },
-      { tool: "press_key", args: { pid: 1, key: "4" } },
-      { tool: "press_key", args: { pid: 1, key: "return" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "1" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "8" } },
+      {
+        tool: "hotkey",
+        args: { pid: 1, window_id: 2, keys: ["shift", "8"] },
+      },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "2" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "4" } },
+      { tool: "press_key", args: { pid: 1, window_id: 2, key: "return" } },
     ]);
   });
 
@@ -234,7 +276,11 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "type_text",
-        args: { pid: 1, text: "https://www.google.com/search?q=OpenAI\n" },
+        args: {
+          pid: 1,
+          window_id: 2,
+          text: "https://www.google.com/search?q=OpenAI\n",
+        },
       },
     ]);
   });
@@ -290,6 +336,20 @@ describe("executor", () => {
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const runner: StepRunner = async (step) => {
       calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: [
+            '- [305] AXRow "unread, The Information , OpenAI’s AWS Push Comes As Customers Embrace Rivals , 14:36"',
+            "  - [306] AXCell",
+            "  - [320] AXCell",
+            "    - [321] AXLink",
+            '      - [323] AXStaticText "OpenAI’s AWS Push Comes As Customers Embrace Rivals"',
+            '- [332] AXRow "starred, unread, Holly , me , Holly 3 , Follow up <> Accel , 14:32"',
+            "  - [352] AXLink",
+          ].join("\n"),
+        };
+      }
       return { ok: true };
     };
     const plan: Plan = {
@@ -322,8 +382,218 @@ describe("executor", () => {
     });
     expect(calls).toEqual([
       {
-        tool: "click",
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
+      },
+      {
+        tool: "double_click",
         args: { pid: 1838, window_id: 10434, element_index: 321 },
+      },
+    ]);
+  });
+
+  test("refreshes AX before opening message rows from coordinates", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: [
+            '- [305] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:40"',
+            "  - [320] AXCell",
+            "    - [321] AXLink",
+            '      - [323] AXStaticText "Idea of the Day: Vendor breach bureau"',
+          ].join("\n"),
+        };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Open the most recent unread email from Ideabrowser",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 10434 },
+    });
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
+      },
+      {
+        tool: "double_click",
+        args: { pid: 1838, window_id: 10434, element_index: 321 },
+      },
+    ]);
+  });
+
+  test("refuses blind coordinate clicks for unresolved message rows", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return { ok: true, stdout: "- [1] AXButton (Compose)" };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Click the most recent unread email row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 10434 },
+    });
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("message row click");
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
+      },
+    ]);
+  });
+
+  test("does not reuse stale AX rows when message row refresh fails", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return { ok: false, error: "window no longer available" };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Click the most recent unread email row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1838,
+        windowId: 10434,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [305] AXRow "unread, Stale Sender , Stale Subject , 14:36"',
+            "  - [321] AXLink",
+          ].join("\n"),
+        ),
+      },
+    });
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("message row click");
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
+      },
+    ]);
+  });
+
+  test("resolves untargeted message row clicks from the current AX tree", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id" },
+          purpose: "Click the first most recent unread email Ideabrowser row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 94555,
+        windowId: 21363,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [264] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+            "  - [265] AXCell",
+            "  - [276] AXCell",
+            "    - [277] AXLink",
+            '      - [278] AXStaticText "Idea of the Day: Vendor breach bureau"',
+          ].join("\n"),
+        ),
+      },
+      refreshBeforeAxClick: false,
+    });
+    expect(calls).toEqual([
+      {
+        tool: "double_click",
+        args: { pid: 94555, window_id: 21363, element_index: 277 },
+      },
+    ]);
+  });
+
+  test("resolves generic message row selectors by row text instead of bare ordinal", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            __selector: { role: "AXRow", ordinal: 1 },
+          },
+          purpose: "Click the first unread email row (Ideabrowser) to open it",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 94555,
+        windowId: 21363,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [210] AXRow "Primary tab header"',
+            '- [286] AXRow "unread, Team Tailscale , Here\'s your April newsletter from Tailscale , 15:17"',
+            "  - [287] AXCell",
+            "  - [298] AXLink",
+            '- [305] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+            "  - [306] AXCell",
+            "  - [320] AXLink",
+          ].join("\n"),
+        ),
+      },
+      refreshBeforeAxClick: false,
+    });
+    expect(calls).toEqual([
+      {
+        tool: "double_click",
+        args: { pid: 94555, window_id: 21363, element_index: 320 },
       },
     ]);
   });
@@ -442,7 +712,7 @@ describe("executor", () => {
     expect(capturedClickArgs.element_index).toBe(5);
   });
 
-  test("emits a `[open42] about to:` line for each step", async () => {
+  test("emits a `[openclick] about to:` line for each step", async () => {
     const lines: string[] = [];
     const log = (s: string) => lines.push(s);
     const runner: StepRunner = async () => ({ ok: true });
@@ -623,6 +893,105 @@ describe("executor initialContext (pre-discovery)", () => {
     });
     expect(captured.pid).toBe(1838);
     expect(captured.window_id).toBe(16412);
+  });
+
+  test("fills leased window_id for keyboard-scoped tools", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "press_key",
+          args: { pid: "$pid", key: "return" },
+          purpose: "submit",
+        },
+        {
+          tool: "hotkey",
+          args: { pid: "$pid", keys: ["command", "l"] },
+          purpose: "focus address field",
+        },
+        {
+          tool: "type_text_chars",
+          args: { pid: "$pid", text: "hello" },
+          purpose: "type safely",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 44, windowId: 10 },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(calls).toEqual([
+      { tool: "press_key", args: { pid: 44, window_id: 10, key: "return" } },
+      {
+        tool: "hotkey",
+        args: { pid: 44, window_id: 10, keys: ["command", "l"] },
+      },
+      {
+        tool: "type_text_chars",
+        args: { pid: 44, window_id: 10, text: "hello" },
+      },
+    ]);
+  });
+
+  test("fills browser lease args for repeated open_url navigation", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "open_url",
+          args: {
+            url: "https://mail.google.com/mail/u/0/#search/is:unread",
+          },
+          purpose: "navigate within the task Gmail tab",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          pid: step.args.pid,
+          window_id: step.args.window_id,
+          window_uid: step.args.window_uid,
+          bundle_id: step.args.bundle_id,
+          browser_window_id: step.args.browser_window_id,
+          tab_id: step.args.tab_id,
+        }),
+      };
+    };
+
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1838,
+        windowId: 16412,
+        windowUid: "cgwindow:16412:pid:1838:gen:1",
+        bundleId: "com.google.Chrome",
+        browserWindowId: 1377889767,
+        tabId: 1377889990,
+      },
+      refreshBeforeAxClick: false,
+    });
+
+    expect(captured).toEqual({
+      url: "https://mail.google.com/mail/u/0/#search/is:unread",
+      pid: 1838,
+      window_id: 16412,
+      window_uid: "cgwindow:16412:pid:1838:gen:1",
+      bundle_id: "com.google.Chrome",
+      browser_window_id: 1377889767,
+      tab_id: 1377889990,
+    });
   });
 
   test("scrubs app-name discovery args when context has a concrete target", async () => {
@@ -892,6 +1261,115 @@ describe("executor initialContext (pre-discovery)", () => {
     );
 
     expect(selected?.window_id).toBe(789);
+  });
+
+  test("open_url selection keeps a newly created window despite focus drift", () => {
+    const selected = pickOpenedUrlWindow(
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_focused: true,
+          is_key: true,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 900,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_focused: true,
+          is_key: true,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 1000,
+        },
+        {
+          pid: 1838,
+          window_id: 789,
+          title: "Inbox - Gmail",
+          bounds: { width: 900, height: 700 },
+          is_focused: false,
+          is_key: false,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 1,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.window_id).toBe(789);
+  });
+
+  test("open_url tab selection uses tab deltas and owning window ids", () => {
+    const selected = pickOpenedUrlTab(
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 111,
+        },
+        {
+          pid: 1838,
+          tab_id: 2,
+          title: "New Tab",
+          url: "chrome://newtab/",
+          is_active: true,
+          owning_window_id: 456,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 111,
+        },
+        {
+          pid: 1838,
+          tab_id: 2,
+          title: "Inbox - Gmail",
+          url: "https://mail.google.com/mail/u/1/#inbox",
+          is_active: true,
+          owning_window_id: 456,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.tab_id).toBe(2);
+    expect(selected?.owning_window_id).toBe(456);
+  });
+
+  test("open_url tab selection returns undefined without a strong signal", () => {
+    const selected = pickOpenedUrlTab(
+      [],
+      [
+        {
+          pid: 1838,
+          tab_id: 1,
+          title: "A different app",
+          url: "https://example.com/",
+          is_active: true,
+          owning_window_id: 111,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected).toBeUndefined();
   });
 
   test("preserves the anchored window when later list_windows sees many usable windows", async () => {
@@ -1246,6 +1724,71 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(captured.pid).toBe(14002);
     expect(captured.window_id).toBe(3745);
     expect(captured.element_index).toBe(16);
+  });
+
+  test("parses JSON get_window_state tree_markdown into the AX index", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 94555, window_id: 21363 },
+          purpose: "snapshot",
+        },
+        {
+          tool: "click",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            __selector: { title_contains: "Ideabrowser", role: "AXRow" },
+          },
+          purpose: "click Ideabrowser row",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "click") captured = step.args;
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            pid: 94555,
+            tree_markdown:
+              '- [264] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+          }),
+        };
+      }
+      return { ok: true };
+    };
+    await executePlan(plan, { stepRunner: runner });
+    expect(captured.pid).toBe(94555);
+    expect(captured.window_id).toBe(21363);
+    expect(captured.element_index).toBe(264);
+  });
+
+  test("keeps the leased window when planner confuses window_id with display id", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 94555, window_id: 2 },
+          purpose: "inspect target",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true, stdout: "- [1] AXButton (OK)" };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 94555, windowId: 21363 },
+      revalidateWindowLease: false,
+    });
+    expect(captured).toEqual({ pid: 94555, window_id: 21363 });
   });
 
   test("does not mutate the caller's initialContext object", async () => {

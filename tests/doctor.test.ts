@@ -13,14 +13,14 @@ let home: string;
 let originalHome: string | undefined;
 
 beforeEach(() => {
-  originalHome = Bun.env.OPEN42_HOME;
-  home = mkdtempSync(join(tmpdir(), "open42-doctor-"));
-  Bun.env.OPEN42_HOME = home;
+  originalHome = Bun.env.OPENCLICK_HOME;
+  home = mkdtempSync(join(tmpdir(), "openclick-doctor-"));
+  Bun.env.OPENCLICK_HOME = home;
 });
 
 afterEach(() => {
-  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
-  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -97,7 +97,7 @@ describe("doctor", () => {
     );
     const k = report.results.find((r) => r.name === "ANTHROPIC_API_KEY");
     expect(k?.status).toBe("fail");
-    expect(k?.fixHint).toContain("open42 settings api-key set");
+    expect(k?.fixHint).toContain("openclick settings api-key set");
   });
 
   test("formatter prints check marks for ok and a fix hint for failures", async () => {
@@ -107,7 +107,7 @@ describe("doctor", () => {
     const text = formatDoctorReport(report);
     expect(text).toContain("✓ bun runtime");
     expect(text).toContain("✗ ANTHROPIC_API_KEY");
-    expect(text).toContain("→ Run `open42 settings api-key set");
+    expect(text).toContain("→ Run `openclick settings api-key set");
     expect(text).toContain("Fix the");
   });
 
@@ -115,7 +115,7 @@ describe("doctor", () => {
     const report = await runDoctor(makeProbe());
     const text = formatDoctorReport(report);
     expect(text).toContain("All set");
-    expect(text).toContain("open42 record");
+    expect(text).toContain("openclick record");
   });
 
   test("--fix path: tryAutoStartDaemon flips daemon ok on rerun", async () => {
@@ -176,7 +176,7 @@ describe("doctor", () => {
     expect(calls).toBe(1);
   });
 
-  test("daemon-down fix-hint says open42 starts the helper automatically", async () => {
+  test("daemon-down fix-hint says openclick starts the helper automatically", async () => {
     const report = await runDoctor(
       makeProbe({ cuaDriverDaemonRunning: async () => false }),
     );

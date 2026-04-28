@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 export async function launchMacApp(options: { detach?: boolean } = {}) {
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const open42Bin = join(repoRoot, "bin", "open42");
+  const openclickBin = join(repoRoot, "bin", "openclick");
   const packagePath = join(repoRoot, "mac-app");
 
   const build = Bun.spawn(["swift", "build", "--package-path", packagePath], {
@@ -23,7 +23,7 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
   });
   const buildCode = await build.exited;
   if (buildCode !== 0) {
-    throw new Error(`Open42 app build failed with status ${buildCode}`);
+    throw new Error(`OpenClick app build failed with status ${buildCode}`);
   }
 
   const executable = join(
@@ -31,14 +31,14 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
     ".build",
     process.arch === "arm64" ? "arm64-apple-macosx" : "x86_64-apple-macosx",
     "debug",
-    "open42-app",
+    "openclick-app",
   );
 
   if (options.detach) {
     const appPath = createAppBundle({
       repoRoot,
       executable,
-      open42Bin,
+      openclickBin,
     });
     const launch = Bun.spawn(["/usr/bin/open", "-n", appPath], {
       cwd: repoRoot,
@@ -48,9 +48,9 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
     });
     const code = await launch.exited;
     if (code !== 0) {
-      throw new Error(`Open42 app launch failed with status ${code}`);
+      throw new Error(`OpenClick app launch failed with status ${code}`);
     }
-    console.log("[open42] Mac app launched.");
+    console.log("[openclick] Mac app launched.");
     return;
   }
 
@@ -58,8 +58,8 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
     cwd: repoRoot,
     env: {
       ...Bun.env,
-      OPEN42_REPO_ROOT: repoRoot,
-      OPEN42_BIN: open42Bin,
+      OPENCLICK_REPO_ROOT: repoRoot,
+      OPENCLICK_BIN: openclickBin,
     },
     stdout: options.detach ? "ignore" : "inherit",
     stderr: options.detach ? "ignore" : "inherit",
@@ -69,7 +69,7 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
   const code = await proc.exited;
   // 130 (SIGINT) and 143 (SIGTERM) mean "user closed the attached run" — not a crash.
   if (code !== 0 && code !== 130 && code !== 143) {
-    throw new Error(`Open42 app exited with status ${code}`);
+    throw new Error(`OpenClick app exited with status ${code}`);
   }
 }
 
@@ -87,18 +87,18 @@ if (import.meta.main) {
 function createAppBundle(options: {
   repoRoot: string;
   executable: string;
-  open42Bin: string;
+  openclickBin: string;
 }): string {
-  const appPath = join(options.repoRoot, ".build", "Open42App.app");
+  const appPath = join(options.repoRoot, ".build", "OpenClickApp.app");
   const contentsPath = join(appPath, "Contents");
   const macOsPath = join(contentsPath, "MacOS");
   const resourcesPath = join(contentsPath, "Resources");
-  const bundledExecutable = join(macOsPath, "open42-app");
-  const bundledRecorder = join(resourcesPath, "open42-recorder");
+  const bundledExecutable = join(macOsPath, "openclick-app");
+  const bundledRecorder = join(resourcesPath, "openclick-recorder");
   const bundledCuaDriver = join(resourcesPath, "cua-driver");
-  const bundledCliRoot = join(resourcesPath, "open42-cli");
+  const bundledCliRoot = join(resourcesPath, "openclick-cli");
   const bundledCliBinDir = join(bundledCliRoot, "bin");
-  const bundledCli = join(bundledCliBinDir, "open42");
+  const bundledCli = join(bundledCliBinDir, "openclick");
   const cuaDriverSource = resolveCuaDriverBundleSource(options.repoRoot);
 
   mkdirSync(macOsPath, { recursive: true });
@@ -108,7 +108,7 @@ function createAppBundle(options: {
   copyFileSync(options.executable, bundledExecutable);
   const recorderExecutable = join(
     dirname(options.executable),
-    "open42-recorder",
+    "openclick-recorder",
   );
   if (existsSync(recorderExecutable)) {
     copyFileSync(recorderExecutable, bundledRecorder);
@@ -118,7 +118,7 @@ function createAppBundle(options: {
     copyFileSync(cuaDriverSource, bundledCuaDriver);
     chmodSync(bundledCuaDriver, 0o755);
   }
-  copyFileSync(options.open42Bin, bundledCli);
+  copyFileSync(options.openclickBin, bundledCli);
   cpSync(join(options.repoRoot, "src"), join(bundledCliRoot, "src"), {
     recursive: true,
     filter: (source) => !source.endsWith("mac-app.ts"),
@@ -137,11 +137,11 @@ function createAppBundle(options: {
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>open42-app</string>
+  <string>openclick-app</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.open42.app</string>
+  <string>dev.openclick.app</string>
   <key>CFBundleName</key>
-  <string>open42</string>
+  <string>openclick</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
@@ -150,9 +150,9 @@ function createAppBundle(options: {
   <true/>
   <key>LSEnvironment</key>
   <dict>
-    <key>OPEN42_REPO_ROOT</key>
+    <key>OPENCLICK_REPO_ROOT</key>
     <string>${escapePlist(options.repoRoot)}</string>
-    <key>OPEN42_BIN</key>
+    <key>OPENCLICK_BIN</key>
     <string>${escapePlist(bundledCli)}</string>
     ${
       cuaDriverSource
@@ -171,7 +171,7 @@ function createAppBundle(options: {
 
 function resolveCuaDriverBundleSource(repoRoot: string): string | null {
   const candidates = [
-    Bun.env.OPEN42_CUA_DRIVER_BIN,
+    Bun.env.OPENCLICK_CUA_DRIVER_BIN,
     Bun.env.CUA_DRIVER,
     join(
       dirname(repoRoot),

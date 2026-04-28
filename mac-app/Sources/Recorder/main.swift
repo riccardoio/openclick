@@ -4,7 +4,7 @@ import RecorderCore
 
 func usage() -> Never {
   print("""
-  Usage: open42-recorder --output <dir> --task <name> --description <text>
+  Usage: openclick-recorder --output <dir> --task <name> --description <text>
 
   Captures CGEvents + AX snapshots + periodic screenshots into <dir>/events.jsonl
   and <dir>/session.json. Stop with Ctrl-C.
@@ -13,9 +13,9 @@ func usage() -> Never {
 }
 
 let args = CommandLine.arguments
-if args.contains("--version") { print("open42-recorder 0.0.1"); exit(0) }
+if args.contains("--version") { print("openclick-recorder 0.0.1"); exit(0) }
 if args.contains("--help") { usage() }
-// Lightweight self-probe used by `open42 doctor` to ask the recorder binary
+// Lightweight self-probe used by `openclick doctor` to ask the recorder binary
 // whether Accessibility is granted to ITS cdhash. Exits 0 if granted, 1 if not.
 if args.contains("--check-accessibility") {
   exit(Permissions.hasAccessibility() ? 0 : 1)
@@ -42,7 +42,7 @@ let screenshotter = Screenshotter(writer: writer)
 // NOT on the CGEventTap callback's run-loop thread. CGEventTap has a kernel
 // timeout (~1s); doing 2-3 sync subprocess calls inside the callback would
 // trip it and disable the tap. The tap handler enqueues work and returns.
-let ingest = DispatchQueue(label: "open42.ingest")
+let ingest = DispatchQueue(label: "openclick.ingest")
 
 let tap = EventTap { event in
   let pid: Int32
@@ -101,6 +101,6 @@ sigSrc.setEventHandler {
 }
 sigSrc.resume()
 
-print("[open42-recorder] recording → \(outURL.path)")
-print("[open42-recorder] perform your task. Ctrl-C when done.")
+print("[openclick-recorder] recording → \(outURL.path)")
+print("[openclick-recorder] perform your task. Ctrl-C when done.")
 CFRunLoopRun()

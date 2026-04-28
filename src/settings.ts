@@ -7,15 +7,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveOpen42Home } from "./paths.ts";
+import { resolveOpenClickHome } from "./paths.ts";
 
-const KEYCHAIN_SERVICE = "dev.open42.anthropic";
+const KEYCHAIN_SERVICE = "dev.openclick.anthropic";
 const KEYCHAIN_ACCOUNT = "ANTHROPIC_API_KEY";
 
 export type ModelProvider = "anthropic" | "openai";
 export type ModelRole = "planner" | "verifier" | "result" | "compile";
 
-export interface Open42Settings {
+export interface OpenClickSettings {
   provider?: ModelProvider;
   anthropicApiKey?: string;
   openaiApiKey?: string;
@@ -23,10 +23,10 @@ export interface Open42Settings {
 }
 
 export function resolveSettingsPath(): string {
-  return join(resolveOpen42Home(), "settings.json");
+  return join(resolveOpenClickHome(), "settings.json");
 }
 
-export function readSettings(): Open42Settings {
+export function readSettings(): OpenClickSettings {
   const path = resolveSettingsPath();
   if (!existsSync(path)) return {};
   try {
@@ -49,7 +49,7 @@ export function readSettings(): Open42Settings {
   }
 }
 
-export function writeSettings(settings: Open42Settings): void {
+export function writeSettings(settings: OpenClickSettings): void {
   const path = resolveSettingsPath();
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, {
@@ -145,7 +145,7 @@ export function clearProviderApiKey(provider: ModelProvider): void {
 }
 
 export function resolveModelProvider(): ModelProvider {
-  const envProvider = parseModelProvider(Bun.env.OPEN42_MODEL_PROVIDER);
+  const envProvider = parseModelProvider(Bun.env.OPENCLICK_MODEL_PROVIDER);
   if (envProvider) return envProvider;
   return readSettings().provider ?? "anthropic";
 }
@@ -162,26 +162,26 @@ export function resolveModelName(
 ): string {
   const envRole = role.toUpperCase();
   const explicit =
-    Bun.env[`OPEN42_${envRole}_MODEL`] ??
-    Bun.env[`OPEN42_${provider.toUpperCase()}_${envRole}_MODEL`];
+    Bun.env[`OPENCLICK_${envRole}_MODEL`] ??
+    Bun.env[`OPENCLICK_${provider.toUpperCase()}_${envRole}_MODEL`];
   if (explicit?.trim()) return explicit.trim();
   const saved = readSettings().models?.[role];
   if (saved?.trim()) return saved.trim();
   if (provider === "openai") {
     return role === "compile"
-      ? (Bun.env.OPEN42_OPENAI_MODEL ?? "gpt-4.1")
-      : (Bun.env.OPEN42_OPENAI_MODEL ?? "gpt-4.1");
+      ? (Bun.env.OPENCLICK_OPENAI_MODEL ?? "gpt-4.1")
+      : (Bun.env.OPENCLICK_OPENAI_MODEL ?? "gpt-4.1");
   }
   if (role === "compile")
-    return Bun.env.OPEN42_COMPILE_MODEL ?? "claude-opus-4-7";
+    return Bun.env.OPENCLICK_COMPILE_MODEL ?? "claude-opus-4-7";
   if (role === "verifier") {
     return (
-      Bun.env.OPEN42_VERIFIER_MODEL ??
-      Bun.env.OPEN42_PLANNER_MODEL ??
+      Bun.env.OPENCLICK_VERIFIER_MODEL ??
+      Bun.env.OPENCLICK_PLANNER_MODEL ??
       "claude-sonnet-4-6"
     );
   }
-  return Bun.env.OPEN42_PLANNER_MODEL ?? "claude-sonnet-4-6";
+  return Bun.env.OPENCLICK_PLANNER_MODEL ?? "claude-sonnet-4-6";
 }
 
 export function setModelName(role: ModelRole, model: string): void {
@@ -197,7 +197,7 @@ function removeSettingsApiKey(provider: ModelProvider): void {
   const settings = readSettings();
   if (provider === "anthropic") settings.anthropicApiKey = undefined;
   else settings.openaiApiKey = undefined;
-  const compact: Open42Settings = {
+  const compact: OpenClickSettings = {
     ...(settings.provider ? { provider: settings.provider } : {}),
     ...(settings.anthropicApiKey
       ? { anthropicApiKey: settings.anthropicApiKey }
@@ -213,7 +213,7 @@ function removeSettingsApiKey(provider: ModelProvider): void {
 
 function keychainEnabled(): boolean {
   return (
-    process.platform === "darwin" && Bun.env.OPEN42_DISABLE_KEYCHAIN !== "1"
+    process.platform === "darwin" && Bun.env.OPENCLICK_DISABLE_KEYCHAIN !== "1"
   );
 }
 
@@ -258,7 +258,7 @@ function deleteMacKeychainApiKey(provider: ModelProvider): void {
 
 function keychainService(provider: ModelProvider): string {
   if (provider === "anthropic") return KEYCHAIN_SERVICE;
-  return `dev.open42.${provider}`;
+  return `dev.openclick.${provider}`;
 }
 
 function keychainAccount(provider: ModelProvider): string {
@@ -268,11 +268,11 @@ function keychainAccount(provider: ModelProvider): string {
 
 function envApiKey(provider: ModelProvider): string {
   if (provider === "openai") return Bun.env.OPENAI_API_KEY ?? "";
-  return Bun.env.OPEN42_API_KEY ?? Bun.env.ANTHROPIC_API_KEY ?? "";
+  return Bun.env.OPENCLICK_API_KEY ?? Bun.env.ANTHROPIC_API_KEY ?? "";
 }
 
 function settingsApiKey(
-  settings: Open42Settings,
+  settings: OpenClickSettings,
   provider: ModelProvider,
 ): string {
   return provider === "openai"

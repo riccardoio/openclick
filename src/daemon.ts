@@ -8,12 +8,12 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export const DAEMON_LABEL = "dev.open42.server";
+export const DAEMON_LABEL = "dev.openclick.server";
 export const DEFAULT_DAEMON_HOST = "127.0.0.1";
 export const DEFAULT_DAEMON_PORT = 4242;
 
 export interface DaemonInstallOptions {
-  open42Bin?: string;
+  openclickBin?: string;
   host?: string;
   port?: number;
   token?: string;
@@ -28,26 +28,26 @@ export interface DaemonStatus {
 
 export function resolveLaunchAgentPath(): string {
   const dir =
-    Bun.env.OPEN42_LAUNCH_AGENTS_DIR ??
+    Bun.env.OPENCLICK_LAUNCH_AGENTS_DIR ??
     join(homedir(), "Library", "LaunchAgents");
   return join(dir, `${DAEMON_LABEL}.plist`);
 }
 
-export function currentOpen42Bin(): string {
-  if (Bun.env.OPEN42_BIN) return resolve(Bun.env.OPEN42_BIN);
+export function currentOpenClickBin(): string {
+  if (Bun.env.OPENCLICK_BIN) return resolve(Bun.env.OPENCLICK_BIN);
   if (Bun.argv[1]) return resolve(Bun.argv[1]);
-  return "open42";
+  return "openclick";
 }
 
 export function buildLaunchAgentPlist(opts: DaemonInstallOptions = {}): string {
-  const bin = opts.open42Bin ?? currentOpen42Bin();
+  const bin = opts.openclickBin ?? currentOpenClickBin();
   const host = opts.host ?? DEFAULT_DAEMON_HOST;
   const port = String(opts.port ?? DEFAULT_DAEMON_PORT);
   const env = opts.token
     ? `
   <key>EnvironmentVariables</key>
   <dict>
-    <key>OPEN42_SERVER_TOKEN</key>
+    <key>OPENCLICK_SERVER_TOKEN</key>
     <string>${escapePlist(opts.token)}</string>
   </dict>`
     : "";
@@ -72,9 +72,9 @@ export function buildLaunchAgentPlist(opts: DaemonInstallOptions = {}): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${escapePlist(join(homedir(), ".open42", "server.log"))}</string>
+  <string>${escapePlist(join(homedir(), ".openclick", "server.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>${escapePlist(join(homedir(), ".open42", "server.err.log"))}</string>
+  <string>${escapePlist(join(homedir(), ".openclick", "server.err.log"))}</string>
 </dict>
 </plist>
 `;
@@ -83,9 +83,9 @@ export function buildLaunchAgentPlist(opts: DaemonInstallOptions = {}): string {
 export function installDaemon(opts: DaemonInstallOptions = {}): string {
   const path = resolveLaunchAgentPath();
   mkdirSync(dirname(path), { recursive: true });
-  mkdirSync(join(homedir(), ".open42"), { recursive: true });
+  mkdirSync(join(homedir(), ".openclick"), { recursive: true });
   writeFileSync(path, buildLaunchAgentPlist(opts), { mode: 0o644 });
-  if (!Bun.env.OPEN42_SKIP_LAUNCHCTL) {
+  if (!Bun.env.OPENCLICK_SKIP_LAUNCHCTL) {
     runLaunchctl(["bootstrap", launchctlDomain(), path], true);
     runLaunchctl(
       ["kickstart", "-k", `${launchctlDomain()}/${DAEMON_LABEL}`],
@@ -97,7 +97,7 @@ export function installDaemon(opts: DaemonInstallOptions = {}): string {
 
 export function uninstallDaemon(): void {
   const path = resolveLaunchAgentPath();
-  if (!Bun.env.OPEN42_SKIP_LAUNCHCTL) {
+  if (!Bun.env.OPENCLICK_SKIP_LAUNCHCTL) {
     runLaunchctl(["bootout", launchctlDomain(), path], true);
   }
   rmSync(path, { force: true });
@@ -107,7 +107,7 @@ export function daemonStatus(): DaemonStatus {
   const path = resolveLaunchAgentPath();
   const installed = existsSync(path);
   let loaded = false;
-  if (!Bun.env.OPEN42_SKIP_LAUNCHCTL) {
+  if (!Bun.env.OPENCLICK_SKIP_LAUNCHCTL) {
     const result = runLaunchctl(
       ["print", `${launchctlDomain()}/${DAEMON_LABEL}`],
       true,
