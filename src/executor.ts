@@ -1626,7 +1626,7 @@ async function runOpenUrl(
           tabId: leasedTabId,
         })
       : undefined;
-  let targetBrowserWindowId =
+  const targetBrowserWindowId =
     asFiniteNumber(leasedTab?.browser_window_id) ?? leasedBrowserWindowId;
   const navigatedInLeasedTab =
     bundleId !== undefined &&
@@ -1642,31 +1642,23 @@ async function runOpenUrl(
   if (navigatedInLeasedTab?.ok === false) {
     return navigatedInLeasedTab;
   }
-  let openedDedicatedBrowserWindow = false;
   if (!navigatedInLeasedTab?.ok) {
-    if (bundleId && supportsBrowserWindowNavigation(bundleId)) {
-      const taskWindow = await navigateTaskBrowserWindow(bundleId, url);
-      if (!taskWindow.ok) return taskWindow;
-      targetBrowserWindowId = taskWindow.browserWindowId;
-      openedDedicatedBrowserWindow = true;
-    } else {
-      const openArgs = ["/usr/bin/open"];
-      if (bundleId) openArgs.push("-b", bundleId);
-      openArgs.push(url);
-      const proc = Bun.spawn(openArgs, {
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
-      if (timedOut) return { ok: false, error: "open_url timed out", stdout };
-      if (exitCode !== 0) {
-        return {
-          ok: false,
-          error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
-          stdout,
-        };
-      }
+    const openArgs = ["/usr/bin/open"];
+    if (bundleId) openArgs.push("-b", bundleId);
+    openArgs.push(url);
+    const proc = Bun.spawn(openArgs, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
+    if (timedOut) return { ok: false, error: "open_url timed out", stdout };
+    if (exitCode !== 0) {
+      return {
+        ok: false,
+        error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
+        stdout,
+      };
     }
   }
   let postOpenWindows: unknown[] | undefined;
@@ -1677,18 +1669,17 @@ async function runOpenUrl(
     await new Promise((resolve) => setTimeout(resolve, 900));
     postOpenWindows = await listWindowsForPid(cuaDriver, targetPid);
     postOpenTabs = await listBrowserTabsForPid(cuaDriver, targetPid);
-    selectedTab =
-      navigatedInLeasedTab?.ok || openedDedicatedBrowserWindow
-        ? findLeasedBrowserTab(postOpenTabs ?? [], {
-            pid: targetPid,
-            windowId: leasedWindowId,
-            browserWindowId: targetBrowserWindowId,
-            tabId: leasedTabId,
-            url,
-          })
-        : Array.isArray(postOpenTabs)
-          ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
-          : undefined;
+    selectedTab = navigatedInLeasedTab?.ok
+      ? findLeasedBrowserTab(postOpenTabs ?? [], {
+          pid: targetPid,
+          windowId: leasedWindowId,
+          browserWindowId: targetBrowserWindowId,
+          tabId: leasedTabId,
+          url,
+        })
+      : Array.isArray(postOpenTabs)
+        ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
+        : undefined;
     const selectedTabWindowId = asFiniteNumber(selectedTab?.owning_window_id);
     if (selectedTabWindowId !== null && Array.isArray(postOpenWindows)) {
       selectedWindow = findWindowById(postOpenWindows, selectedTabWindowId);
@@ -1702,7 +1693,7 @@ async function runOpenUrl(
     }
     selectedWindow = Array.isArray(postOpenWindows)
       ? (selectedWindow ??
-        (navigatedInLeasedTab?.ok || openedDedicatedBrowserWindow
+        (navigatedInLeasedTab?.ok
           ? undefined
           : pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)))
       : undefined;
@@ -1847,8 +1838,6 @@ function findLeasedBrowserTab(
   );
 }
 
-const OPEN42_BROWSER_WINDOW_NAME = "Open42 Task";
-
 function supportsBrowserWindowNavigation(bundleId: string): boolean {
   return (
     bundleId === "com.google.Chrome" ||
@@ -1897,75 +1886,6 @@ end tell
     };
   }
   return { ok: true, stdout: result.stdout };
-}
-
-async function navigateTaskBrowserWindow(
-  bundleId: string,
-  url: string,
-): Promise<StepResult & { browserWindowId?: number }> {
-  const script = `
-tell application id "${escapeAppleScriptString(bundleId)}"
-  set targetWindow to missing value
-  repeat with w in windows
-    try
-      if (mode of w) is "normal" and (given name of w) is "${escapeAppleScriptString(OPEN42_BROWSER_WINDOW_NAME)}" then
-        set targetWindow to w
-        exit repeat
-      end if
-    end try
-  end repeat
-  if targetWindow is missing value then
-    set targetWindow to make new window with properties {mode:"normal"}
-    set given name of targetWindow to "${escapeAppleScriptString(OPEN42_BROWSER_WINDOW_NAME)}"
-  end if
-  set URL of active tab of targetWindow to "${escapeAppleScriptString(url)}"
-  return ((id of targetWindow) as text) & "|" & (mode of targetWindow) & "|" & (given name of targetWindow)
-end tell
-`;
-  const proc = Bun.spawn(["/usr/bin/osascript", "-e", script], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const result = await collectProcess(proc);
-  if (result.timedOut) {
-    return { ok: false, error: "open_url task browser window timed out" };
-  }
-  if (result.exitCode !== 0) {
-    return {
-      ok: false,
-      error: `open_url task browser window exited ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim()}`,
-      stdout: result.stdout,
-    };
-  }
-  const [idText, modeText, givenName] = result.stdout.trim().split("|");
-  const parsedBrowserWindowId = Number(idText);
-  if (!Number.isFinite(parsedBrowserWindowId)) {
-    return {
-      ok: false,
-      error: `open_url task browser window returned invalid id: ${result.stdout.trim()}`,
-      stdout: result.stdout,
-    };
-  }
-  if (modeText !== "normal") {
-    return {
-      ok: false,
-      error: `open_url task browser window returned ${modeText || "unknown"} mode; refusing to use a non-normal browser window`,
-      stdout: result.stdout,
-    };
-  }
-  if (givenName !== OPEN42_BROWSER_WINDOW_NAME) {
-    return {
-      ok: false,
-      error: `open_url task browser window returned unexpected name ${givenName || "(empty)"}`,
-      stdout: result.stdout,
-    };
-  }
-  return {
-    ok: true,
-    stdout: result.stdout,
-    browserWindowId: parsedBrowserWindowId,
-  };
 }
 
 function escapeAppleScriptString(value: string): string {
