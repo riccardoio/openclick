@@ -2188,10 +2188,10 @@ async function runCuaDriver(args: string[]): Promise<void> {
 }
 
 /**
- * Verifies the cua-driver daemon is up. If not, launches it via LaunchServices
- * (`open -n -g -a CuaDriver --args serve`) and polls `cua-driver status` until
- * the socket appears. Throws if the daemon doesn't come up within ~6 seconds —
- * that's an environment problem the user has to fix.
+ * Verifies the cua-driver daemon is up. If not, launches the resolved bundled
+ * cua-driver directly and polls `cua-driver status` until the socket appears.
+ * Throws if the daemon doesn't come up within ~6 seconds — that's an
+ * environment problem the user has to fix.
  *
  * Why this matters: element-indexed clicks read an AX cache populated by
  * `get_window_state`. The cache lives in the daemon process. If the daemon
@@ -2202,11 +2202,13 @@ async function ensureDaemonRunning(): Promise<void> {
   const cuaDriver = requireCuaDriverBinary();
   if (await isDaemonRunning(cuaDriver)) return;
   console.log("[open42] cua-driver daemon not running; auto-starting...");
-  // Fire-and-forget. `open -n -g` is non-blocking — daemon starts in the
-  // background while open exits immediately.
-  Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
+  // Fire-and-forget. Force the resolved binary to serve in-process so an older
+  // /Applications/CuaDriver.app install cannot shadow the bundled driver.
+  Bun.spawn([cuaDriver, "serve"], {
+    stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
+    env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
   });
   const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
