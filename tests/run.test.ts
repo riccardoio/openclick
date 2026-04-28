@@ -339,7 +339,9 @@ describe("run --fast", () => {
     }
     expect(runs).toBe(0);
     expect(logs.some((line) => line.includes("dry-run complete"))).toBe(true);
-    expect(logs.some((line) => line.startsWith("[open42] done."))).toBe(false);
+    expect(logs.some((line) => line.startsWith("[openclick] done."))).toBe(
+      false,
+    );
   });
 
   test("--fast emits a structured task_result on success", async () => {
@@ -377,11 +379,11 @@ describe("run --fast", () => {
     }
 
     const line = logs.find((entry) =>
-      entry.startsWith("[open42] task_result "),
+      entry.startsWith("[openclick] task_result "),
     );
     expect(line).toBeDefined();
     const payload = JSON.parse(
-      line?.replace("[open42] task_result ", "") ?? "{}",
+      line?.replace("[openclick] task_result ", "") ?? "{}",
     ) as { kind?: string; title?: string; body?: string };
     expect(payload.kind).toBe("confirmation");
     expect(payload.title).toBe("Done");
@@ -1124,14 +1126,14 @@ describe("verifyStopWhen", () => {
         ok: true,
         stdout: "- [4] AXStaticText (391) id=display\n",
       }),
-      captureScreenshot: async () => "/tmp/open42-verify-xyz.png",
+      captureScreenshot: async () => "/tmp/openclick-verify-xyz.png",
     });
-    expect(receivedImages).toEqual(["/tmp/open42-verify-xyz.png"]);
+    expect(receivedImages).toEqual(["/tmp/openclick-verify-xyz.png"]);
   });
 });
 
 function makeFakeSkill(name: string): string {
-  const dir = join("/tmp", `open42-test-${name}-${Date.now()}`);
+  const dir = join("/tmp", `openclick-test-${name}-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "SKILL.md"),

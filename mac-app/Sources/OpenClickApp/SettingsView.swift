@@ -28,7 +28,7 @@ final class SettingsController: NSObject {
   }
 
   private func configureWindow() {
-    window.title = "open42 Settings"
+    window.title = "openclick Settings"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
@@ -62,7 +62,7 @@ final class SettingsController: NSObject {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
-  @Published var provider: Open42Provider = Open42SettingsStore.provider()
+  @Published var provider: OpenClickProvider = OpenClickSettingsStore.provider()
   @Published var maskedKey: String = ""
   @Published var source: String = "Not configured"
   @Published var newApiKey: String = ""
@@ -74,29 +74,29 @@ final class SettingsViewModel: ObservableObject {
   @Published var hasSavedKey: Bool = false
 
   func reload() {
-    provider = Open42SettingsStore.provider()
+    provider = OpenClickSettingsStore.provider()
     reloadModels()
     reloadKey()
   }
 
-  func selectProvider(_ selected: Open42Provider) {
+  func selectProvider(_ selected: OpenClickProvider) {
     provider = selected
-    Open42SettingsStore.saveProvider(selected)
+    OpenClickSettingsStore.saveProvider(selected)
     message = "Provider set to \(selected.title)."
     reloadKey()
   }
 
   private func reloadKey() {
-    if let key = Open42Keychain.apiKey(provider: provider), !key.isEmpty {
-      maskedKey = Open42Keychain.mask(key)
+    if let key = OpenClickKeychain.apiKey(provider: provider), !key.isEmpty {
+      maskedKey = OpenClickKeychain.mask(key)
       source = "Saved in Keychain"
       hasSavedKey = true
     } else if let key = ProcessInfo.processInfo.environment[provider.envKeyName], !key.isEmpty {
-      maskedKey = Open42Keychain.mask(key)
+      maskedKey = OpenClickKeychain.mask(key)
       source = "Available from app environment"
       hasSavedKey = false
-    } else if provider == .anthropic, let key = ProcessInfo.processInfo.environment["OPEN42_API_KEY"], !key.isEmpty {
-      maskedKey = Open42Keychain.mask(key)
+    } else if provider == .anthropic, let key = ProcessInfo.processInfo.environment["OPENCLICK_API_KEY"], !key.isEmpty {
+      maskedKey = OpenClickKeychain.mask(key)
       source = "Available from app environment"
       hasSavedKey = false
     } else {
@@ -113,7 +113,7 @@ final class SettingsViewModel: ObservableObject {
       message = "Paste an API key before saving."
       return
     }
-    if Open42Keychain.saveApiKey(trimmed, provider: provider) {
+    if OpenClickKeychain.saveApiKey(trimmed, provider: provider) {
       message = "\(provider.title) API key saved. App-launched tasks will use this key."
       reloadKey()
     } else {
@@ -122,22 +122,22 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func clear() {
-    Open42Keychain.deleteApiKey(provider: provider)
+    OpenClickKeychain.deleteApiKey(provider: provider)
     message = "Saved \(provider.title) API key removed."
     reloadKey()
   }
 
   func saveModels() {
-    Open42SettingsStore.saveModel("planner", plannerModel)
-    Open42SettingsStore.saveModel("verifier", verifierModel)
-    Open42SettingsStore.saveModel("result", resultModel)
-    Open42SettingsStore.saveModel("compile", compileModel)
+    OpenClickSettingsStore.saveModel("planner", plannerModel)
+    OpenClickSettingsStore.saveModel("verifier", verifierModel)
+    OpenClickSettingsStore.saveModel("result", resultModel)
+    OpenClickSettingsStore.saveModel("compile", compileModel)
     message = "Model choices saved."
     reloadModels()
   }
 
   private func reloadModels() {
-    let models = Open42SettingsStore.models()
+    let models = OpenClickSettingsStore.models()
     plannerModel = models["planner"] ?? ""
     verifierModel = models["verifier"] ?? ""
     resultModel = models["result"] ?? ""
@@ -194,7 +194,7 @@ struct SettingsView: View {
       Text("Settings")
         .font(.system(size: 30, weight: .bold))
         .foregroundStyle(DarkPalette.textPrimary)
-      Text("Manage the local open42 configuration.")
+      Text("Manage the local openclick configuration.")
         .font(.system(size: 14))
         .foregroundStyle(DarkPalette.textSecondary)
     }
@@ -203,7 +203,7 @@ struct SettingsView: View {
   private var apiKeySection: some View {
     VStack(alignment: .leading, spacing: 16) {
       Picker("Provider", selection: providerBinding) {
-        ForEach(Open42Provider.allCases) { provider in
+        ForEach(OpenClickProvider.allCases) { provider in
           Text(provider.title).tag(provider)
         }
       }
@@ -283,7 +283,7 @@ struct SettingsView: View {
           Text("Models")
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(DarkPalette.textPrimary)
-          Text("Leave blank to use open42 defaults.")
+          Text("Leave blank to use openclick defaults.")
             .font(.system(size: 12))
             .foregroundStyle(DarkPalette.textSecondary)
         }
@@ -336,7 +336,7 @@ struct SettingsView: View {
     }
   }
 
-  private var providerBinding: Binding<Open42Provider> {
+  private var providerBinding: Binding<OpenClickProvider> {
     Binding(
       get: { viewModel.provider },
       set: { viewModel.selectProvider($0) }
@@ -344,7 +344,7 @@ struct SettingsView: View {
   }
 }
 
-enum Open42Provider: String, CaseIterable, Identifiable {
+enum OpenClickProvider: String, CaseIterable, Identifiable {
   case anthropic
   case openai
 
@@ -365,20 +365,20 @@ enum Open42Provider: String, CaseIterable, Identifiable {
   }
 }
 
-enum Open42SettingsStore {
-  static func provider() -> Open42Provider {
+enum OpenClickSettingsStore {
+  static func provider() -> OpenClickProvider {
     guard
       let data = try? Data(contentsOf: settingsURL()),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       let raw = object["provider"] as? String,
-      let provider = Open42Provider(rawValue: raw)
+      let provider = OpenClickProvider(rawValue: raw)
     else {
       return .anthropic
     }
     return provider
   }
 
-  static func saveProvider(_ provider: Open42Provider) {
+  static func saveProvider(_ provider: OpenClickProvider) {
     let url = settingsURL()
     var object = readObject()
     object["provider"] = provider.rawValue
@@ -435,21 +435,21 @@ enum Open42SettingsStore {
 
   private static func settingsURL() -> URL {
     let env = ProcessInfo.processInfo.environment
-    if let home = env["OPEN42_HOME"], !home.isEmpty {
+    if let home = env["OPENCLICK_HOME"], !home.isEmpty {
       return URL(fileURLWithPath: (home as NSString).expandingTildeInPath)
         .appendingPathComponent("settings.json")
     }
     return FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".open42")
+      .appendingPathComponent(".openclick")
       .appendingPathComponent("settings.json")
   }
 }
 
-enum Open42Keychain {
-  private static let service = "dev.open42.anthropic"
+enum OpenClickKeychain {
+  private static let service = "dev.openclick.anthropic"
   private static let account = "ANTHROPIC_API_KEY"
 
-  static func apiKey(provider: Open42Provider) -> String? {
+  static func apiKey(provider: OpenClickProvider) -> String? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName(provider),
@@ -463,7 +463,7 @@ enum Open42Keychain {
     return String(data: data, encoding: .utf8)
   }
 
-  static func saveApiKey(_ value: String, provider: Open42Provider) -> Bool {
+  static func saveApiKey(_ value: String, provider: OpenClickProvider) -> Bool {
     deleteApiKey(provider: provider)
     guard let data = value.data(using: .utf8) else { return false }
     let attributes: [String: Any] = [
@@ -476,7 +476,7 @@ enum Open42Keychain {
     return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
   }
 
-  static func deleteApiKey(provider: Open42Provider) {
+  static func deleteApiKey(provider: OpenClickProvider) {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName(provider),
@@ -492,14 +492,14 @@ enum Open42Keychain {
     return String(repeating: "*", count: min(max(value.count, 12), 32))
   }
 
-  private static func serviceName(_ provider: Open42Provider) -> String {
+  private static func serviceName(_ provider: OpenClickProvider) -> String {
     switch provider {
     case .anthropic: return service
-    case .openai: return "dev.open42.openai"
+    case .openai: return "dev.openclick.openai"
     }
   }
 
-  private static func accountName(_ provider: Open42Provider) -> String {
+  private static func accountName(_ provider: OpenClickProvider) -> String {
     switch provider {
     case .anthropic: return account
     case .openai: return "OPENAI_API_KEY"

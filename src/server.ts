@@ -1,4 +1,4 @@
-import { currentOpen42Bin } from "./daemon.ts";
+import { currentOpenClickBin } from "./daemon.ts";
 import { VERSION } from "./version.ts";
 
 export interface ApiServerOptions {
@@ -16,9 +16,9 @@ interface CommandResult {
 export async function startApiServer(
   options: ApiServerOptions = {},
 ): Promise<void> {
-  const host = options.host ?? Bun.env.OPEN42_SERVER_HOST ?? "127.0.0.1";
-  const port = options.port ?? Number(Bun.env.OPEN42_SERVER_PORT ?? 4242);
-  const token = options.token ?? Bun.env.OPEN42_SERVER_TOKEN;
+  const host = options.host ?? Bun.env.OPENCLICK_SERVER_HOST ?? "127.0.0.1";
+  const port = options.port ?? Number(Bun.env.OPENCLICK_SERVER_PORT ?? 4242);
+  const token = options.token ?? Bun.env.OPENCLICK_SERVER_TOKEN;
 
   const server = Bun.serve({
     hostname: host,
@@ -29,7 +29,7 @@ export async function startApiServer(
   });
 
   console.log(
-    `[open42] API server listening on http://${server.hostname}:${server.port}`,
+    `[openclick] API server listening on http://${server.hostname}:${server.port}`,
   );
   await new Promise<never>(() => {});
 }
@@ -43,14 +43,14 @@ export async function handleApiRequest(
   }
 
   const url = new URL(request.url);
-  const token = options.token ?? Bun.env.OPEN42_SERVER_TOKEN;
+  const token = options.token ?? Bun.env.OPENCLICK_SERVER_TOKEN;
   if (token && !isAuthorized(request, token)) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
 
   try {
     if (request.method === "GET" && url.pathname === "/health") {
-      return jsonResponse({ ok: true, name: "open42", version: VERSION });
+      return jsonResponse({ ok: true, name: "openclick", version: VERSION });
     }
 
     if (request.method === "GET" && url.pathname === "/v1/status") {
@@ -74,7 +74,7 @@ export async function handleApiRequest(
       if (typeof body.criteria === "string" && body.criteria.trim()) {
         args.push("--criteria", body.criteria.trim());
       }
-      const result = await runOpen42Command(args);
+      const result = await runOpenClickCommand(args);
       return jsonResponse({ ok: result.exitCode === 0, ...result });
     }
 
@@ -82,12 +82,12 @@ export async function handleApiRequest(
       const body = await parseJsonObject(request);
       const runId = stringField(body, "runId") ?? stringField(body, "run_id");
       if (!runId) return jsonResponse({ error: "runId is required" }, 400);
-      const result = await runOpen42Command(["cancel", runId]);
+      const result = await runOpenClickCommand(["cancel", runId]);
       return jsonResponse({ ok: result.exitCode === 0, ...result });
     }
 
     if (request.method === "GET" && url.pathname === "/v1/memory") {
-      const result = await runOpen42Command(["memory", "list"]);
+      const result = await runOpenClickCommand(["memory", "list"]);
       return jsonResponse({ ok: result.exitCode === 0, ...result });
     }
 
@@ -104,14 +104,14 @@ export async function startMcpServer(): Promise<void> {
   );
   const { z } = await import("zod");
 
-  const server = new McpServer({ name: "open42", version: VERSION });
+  const server = new McpServer({ name: "openclick", version: VERSION });
 
   server.registerTool(
     "run_task",
     {
-      title: "Run open42 task",
+      title: "Run openclick task",
       description:
-        "Run a natural-language macOS desktop task through open42 and return the CLI output.",
+        "Run a natural-language macOS desktop task through openclick and return the CLI output.",
       inputSchema: {
         task: z.string(),
         live: z.boolean().optional(),
@@ -124,7 +124,7 @@ export async function startMcpServer(): Promise<void> {
       if (args.live !== false) runArgs.push("--live");
       if (args.allowForeground === true) runArgs.push("--allow-foreground");
       if (args.criteria?.trim()) runArgs.push("--criteria", args.criteria);
-      const result = await runOpen42Command(runArgs);
+      const result = await runOpenClickCommand(runArgs);
       return {
         content: [
           {
@@ -132,7 +132,7 @@ export async function startMcpServer(): Promise<void> {
             text:
               result.stdout.trim() ||
               result.stderr.trim() ||
-              `open42 exited with status ${result.exitCode}`,
+              `openclick exited with status ${result.exitCode}`,
           },
         ],
       };
@@ -142,11 +142,11 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "status",
     {
-      title: "Check open42 status",
-      description: "Run open42 doctor and return the current setup status.",
+      title: "Check openclick status",
+      description: "Run openclick doctor and return the current setup status.",
     },
     async () => {
-      const result = await runOpen42Command(["doctor", "--json"]);
+      const result = await runOpenClickCommand(["doctor", "--json"]);
       return {
         content: [{ type: "text", text: result.stdout || result.stderr }],
       };
@@ -196,12 +196,12 @@ function parseProviderField(
   return undefined;
 }
 
-async function runOpen42Command(args: string[]): Promise<CommandResult> {
-  const proc = Bun.spawn([currentOpen42Bin(), ...args], {
+async function runOpenClickCommand(args: string[]): Promise<CommandResult> {
+  const proc = Bun.spawn([currentOpenClickBin(), ...args], {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...Bun.env, OPEN42_APP_USE_ENV: "1" },
+    env: { ...Bun.env, OPENCLICK_APP_USE_ENV: "1" },
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -232,7 +232,7 @@ function stringField(
 function isAuthorized(request: Request, token: string): boolean {
   const auth = request.headers.get("authorization");
   if (auth === `Bearer ${token}`) return true;
-  return request.headers.get("x-open42-token") === token;
+  return request.headers.get("x-openclick-token") === token;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -243,7 +243,7 @@ function jsonResponse(body: unknown, status = 200): Response {
       "access-control-allow-origin": "http://localhost",
       "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
       "access-control-allow-headers":
-        "authorization,content-type,x-open42-token",
+        "authorization,content-type,x-openclick-token",
     },
   });
 }

@@ -186,10 +186,10 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
   var defaultDescription: String {
     switch self {
-    case .accessibility: return "Required so open42 can click and type in apps."
-    case .screenRecording: return "Required so open42 can see and verify the screen."
+    case .accessibility: return "Required so openclick can click and type in apps."
+    case .screenRecording: return "Required so openclick can see and verify the screen."
     case .cuaDriver: return "Background helper that performs clicks and keystrokes."
-    case .apiKey: return "Lets open42 call the selected model provider."
+    case .apiKey: return "Lets openclick call the selected model provider."
     }
   }
 
@@ -242,7 +242,7 @@ struct PermissionItem: Identifiable {
 @MainActor
 final class OnboardingViewModel: ObservableObject {
   @Published var items: [PermissionItem]
-  @Published var provider: Open42Provider = Open42SettingsStore.provider()
+  @Published var provider: OpenClickProvider = OpenClickSettingsStore.provider()
   @Published var apiKeyDraft: String = ""
   @Published var maskedApiKey: String = "Not set"
   @Published var apiKeySource: String = "Not configured"
@@ -255,7 +255,7 @@ final class OnboardingViewModel: ObservableObject {
 
   var onRunCheck: (() -> Void)?
   var onAction: ((PermissionKind) -> Void)?
-  var onProviderChanged: ((Open42Provider) -> Void)?
+  var onProviderChanged: ((OpenClickProvider) -> Void)?
   var onSaveApiKey: ((String) -> Void)?
   var onClearApiKey: (() -> Void)?
   var onDone: (() -> Void)?
@@ -278,7 +278,7 @@ final class OnboardingViewModel: ObservableObject {
     if let actionTitle { items[idx].actionTitle = actionTitle }
   }
 
-  func updateProviderKeyState(provider: Open42Provider, masked: String, source: String, saved: Bool) {
+  func updateProviderKeyState(provider: OpenClickProvider, masked: String, source: String, saved: Bool) {
     self.provider = provider
     maskedApiKey = masked
     apiKeySource = source
@@ -739,10 +739,10 @@ struct OnboardingView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Welcome to open42")
+      Text("Welcome to openclick")
         .font(.system(size: 32, weight: .bold))
         .foregroundStyle(DarkPalette.textPrimary)
-      Text("open42 controls your Mac with natural-language prompts.\nGrant these four things once and you’re ready.")
+      Text("openclick controls your Mac with natural-language prompts.\nGrant these four things once and you’re ready.")
         .font(.system(size: 14, weight: .regular))
         .foregroundStyle(DarkPalette.textSecondary)
         .lineSpacing(3)
@@ -753,7 +753,7 @@ struct OnboardingView: View {
     VStack(alignment: .leading, spacing: 14) {
       HStack(spacing: 12) {
         Picker("Provider", selection: providerBinding) {
-          ForEach(Open42Provider.allCases) { provider in
+          ForEach(OpenClickProvider.allCases) { provider in
             Text(provider.title).tag(provider)
           }
         }
@@ -812,7 +812,7 @@ struct OnboardingView: View {
     .shadow(color: DarkPalette.cardShadow, radius: 18, x: 0, y: 8)
   }
 
-  private var providerBinding: Binding<Open42Provider> {
+  private var providerBinding: Binding<OpenClickProvider> {
     Binding(
       get: { viewModel.provider },
       set: { viewModel.onProviderChanged?($0) }
@@ -866,7 +866,7 @@ struct CommandBarView: View {
             .frame(width: 28, height: 28)
         }
         .buttonStyle(.plain)
-        .help("Open the open42 permissions panel.")
+        .help("Open the openclick permissions panel.")
 
         Button {
           viewModel.onToggleForeground?()
@@ -889,7 +889,7 @@ struct CommandBarView: View {
         .animation(.easeOut(duration: 0.18), value: promptFocused)
 
       VStack(alignment: .leading, spacing: 4) {
-        TextField("Ask open42 to do anything", text: $viewModel.prompt)
+        TextField("Ask openclick to do anything", text: $viewModel.prompt)
           .textFieldStyle(.plain)
           .font(.system(size: 16, weight: .regular))
           .foregroundStyle(DarkPalette.textPrimary)

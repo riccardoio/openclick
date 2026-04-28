@@ -65,7 +65,7 @@ describe.skipIf(!RUN_LIVE)("eval (live Claude API)", () => {
           trajectoryDir,
           skillName: `eval-${fx}`,
           claudeClient: new AnthropicClaudeClient(),
-          outputDir: mkdtempSync(join(tmpdir(), `open42-eval-${fx}-`)),
+          outputDir: mkdtempSync(join(tmpdir(), `openclick-eval-${fx}-`)),
         });
 
         // Phase count: count "## Steps" body items. Use numbered list lines

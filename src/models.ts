@@ -210,8 +210,8 @@ function defaultMaxTokens(role: ModelRole): number {
 function configuredMaxTokens(role: ModelRole): number {
   const env =
     role === "compile"
-      ? Bun.env.OPEN42_COMPILE_MAX_TOKENS
-      : Bun.env.OPEN42_PLANNER_MAX_TOKENS;
+      ? Bun.env.OPENCLICK_COMPILE_MAX_TOKENS
+      : Bun.env.OPENCLICK_PLANNER_MAX_TOKENS;
   const parsed = Number(env ?? defaultMaxTokens(role));
   return Number.isFinite(parsed) && parsed > 0
     ? parsed

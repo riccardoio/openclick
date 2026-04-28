@@ -27,7 +27,7 @@ public final class EventTap {
       callback: EventTap.callback,
       userInfo: userInfo
     ) else {
-      throw NSError(domain: "open42-recorder", code: 1,
+      throw NSError(domain: "openclick-recorder", code: 1,
         userInfo: [NSLocalizedDescriptionKey: "CGEvent.tapCreate failed (Accessibility likely revoked)"])
     }
     self.tap = tap

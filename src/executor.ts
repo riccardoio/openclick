@@ -1,5 +1,5 @@
 /**
- * Local executor for `open42 run --fast` plans.
+ * Local executor for `openclick run --fast` plans.
  *
  * Walks a {@link Plan} step by step, shelling out to `cua-driver <tool> <json>`
  * for each — no LLM round-trip per step. The substitution layer below
@@ -18,6 +18,17 @@ export interface StepResult {
 }
 
 export type StepRunner = (step: PlanStep) => Promise<StepResult>;
+
+interface DriverActionReceipt {
+  ok?: boolean;
+  route?: string;
+  lane?: string;
+  background_safe?: boolean;
+  cursor_moved?: boolean;
+  foreground_changed?: boolean;
+  session?: string;
+  reason?: string;
+}
 
 export interface ExecutePlanOptions {
   /** Injectable for tests. Defaults to a real cua-driver subprocess runner. */
@@ -205,7 +216,7 @@ export function classifyToolSafety(tool: string): StepSafety {
   return {
     tool: normalized,
     category: "unsupported",
-    reason: `${normalized} is not in open42's background-safe tool allowlist`,
+    reason: `${normalized} is not in openclick's background-safe tool allowlist`,
   };
 }
 
@@ -398,7 +409,7 @@ export async function executePlan(
     // intent.success_signals — that's the only validation we trust. Legacy
     // plans may still contain assert steps; treat them as silent skips.
     if (step.tool === "assert") {
-      log(`[open42] (skip assert: ${step.purpose})`);
+      log(`[openclick] (skip assert: ${step.purpose})`);
       executed++;
       continue;
     }
@@ -438,10 +449,10 @@ export async function executePlan(
     ) {
       const refreshStep: PlanStep = {
         tool: "get_window_state",
-        args: { pid: ctx.pid, window_id: ctx.windowId },
+        args: { pid: ctx.pid, window_id: ctx.windowId, capture_mode: "ax" },
         purpose: "refresh AX index",
       };
-      log("[open42] (refresh AX index)");
+      log("[openclick] (refresh AX index)");
       const refreshResult = await runner(refreshStep);
       if (refreshResult.ok && refreshResult.stdout)
         absorbContext(
@@ -468,10 +479,10 @@ export async function executePlan(
       if (pid !== undefined && windowId !== undefined) {
         const refreshStep: PlanStep = {
           tool: "get_window_state",
-          args: { pid, window_id: windowId },
+          args: { pid, window_id: windowId, capture_mode: "ax" },
           purpose: "refresh AX index for message row",
         };
-        log("[open42] (refresh AX index for message row)");
+        log("[openclick] (refresh AX index for message row)");
         const refreshResult = await runner(refreshStep);
         if (refreshResult.ok && refreshResult.stdout) {
           absorbContext(
@@ -487,7 +498,7 @@ export async function executePlan(
       }
     }
 
-    log(`[open42] about to: ${step.purpose}`);
+    log(`[openclick] about to: ${step.purpose}`);
     if (opts.dryRun) continue;
     const safety = classifyStepSafety(resolved);
     if (safety.category === "unsupported") {
@@ -507,7 +518,7 @@ export async function executePlan(
         stepsExecuted: executed,
         totalSteps: plan.steps.length,
         failedStepIndex: i,
-        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
+        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let openclick control foreground/global input.`,
         lastContext: ctx,
       };
     }
@@ -523,7 +534,13 @@ export async function executePlan(
         };
       }
     }
-    const result = await runResolvedStep(resolved, runner, ctx, log);
+    const result = await runResolvedStep(
+      resolved,
+      runner,
+      ctx,
+      log,
+      executionPolicy,
+    );
     if (!result.ok) {
       return {
         stepsExecuted: executed,
@@ -532,6 +549,18 @@ export async function executePlan(
         error: result.error ?? "unknown error",
         lastContext: ctx,
       };
+    }
+    if (executionPolicy === "background") {
+      const receiptFailure = backgroundActionReceiptFailure(result.stdout);
+      if (receiptFailure) {
+        return {
+          stepsExecuted: executed,
+          totalSteps: plan.steps.length,
+          failedStepIndex: i,
+          error: receiptFailure,
+          lastContext: ctx,
+        };
+      }
     }
     executed++;
     if (result.stdout)
@@ -675,7 +704,7 @@ async function revalidateCurrentWindowLease(
       if (replacement) {
         rememberWindow(ctx, replacement);
         log(
-          `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+          `[openclick] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
         );
         return { ok: true };
       }
@@ -693,12 +722,12 @@ async function revalidateCurrentWindowLease(
     purpose: "validate current window lease",
   });
   if (!result.ok || !result.stdout) {
-    log("[open42] (window lease: validation unavailable)");
+    log("[openclick] (window lease: validation unavailable)");
     return { ok: true };
   }
   const windows = parseWindowsPayload(result.stdout);
   if (!windows) {
-    log("[open42] (window lease: validation returned unparsable windows)");
+    log("[openclick] (window lease: validation returned unparsable windows)");
     return { ok: true };
   }
   const exact = findWindowById(windows, originalWindowId);
@@ -711,7 +740,7 @@ async function revalidateCurrentWindowLease(
   if (replacement) {
     rememberWindow(ctx, replacement);
     log(
-      `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+      `[openclick] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
     );
     return { ok: true };
   }
@@ -728,13 +757,14 @@ async function runResolvedStep(
   runner: StepRunner,
   ctx: ExecutorContext,
   log: (line: string) => void,
+  executionPolicy: ExecutionPolicy,
 ): Promise<StepResult> {
   const buttonStep = keyboardStepToButtonClick(step, ctx);
   if (buttonStep) return await runner(buttonStep);
 
   const rowClickStep = rowCoordinateClickToAxClick(step, ctx);
   if (rowClickStep) {
-    log("[open42] (row click fallback: using AX row/link)");
+    log("[openclick] (row click fallback: using AX row/link)");
     return await runner(rowClickStep);
   }
   if (isMessageRowCoordinateClick(step) || isUntargetedMessageRowClick(step)) {
@@ -758,7 +788,7 @@ async function runResolvedStep(
     return await runner(step);
   }
 
-  log("[open42] (type_text fallback: sending key sequence)");
+  log("[openclick] (type_text fallback: sending key sequence)");
   let stdout = "";
   const windowId =
     typeof step.args.window_id === "number"
@@ -773,8 +803,97 @@ async function runResolvedStep(
     const result = await runner(keyStep);
     stdout += result.stdout ?? "";
     if (!result.ok) return { ...result, stdout };
+    if (executionPolicy === "background") {
+      const receiptFailure = backgroundActionReceiptFailure(result.stdout);
+      if (receiptFailure) return { ok: false, error: receiptFailure, stdout };
+    }
   }
   return { ok: true, stdout };
+}
+
+function backgroundActionReceiptFailure(stdout?: string): string | undefined {
+  const receipt = parseActionReceipt(stdout);
+  if (!receipt) return undefined;
+  const unsafe =
+    receipt.ok === false ||
+    receipt.background_safe === false ||
+    receipt.cursor_moved === true ||
+    receipt.foreground_changed === true;
+  if (!unsafe) return undefined;
+
+  const reasons = [
+    receipt.reason,
+    receipt.cursor_moved ? "cursor_moved" : undefined,
+    receipt.foreground_changed ? "foreground_changed" : undefined,
+    receipt.background_safe === false ? "background_safe=false" : undefined,
+  ].filter((value): value is string => !!value);
+  const route = receipt.route ?? "cua-driver action";
+  const session = receipt.session ? ` (${receipt.session})` : "";
+  const reason = reasons.length > 0 ? reasons.join(", ") : "unsafe action";
+  return `background-safety violation from ${route}${session}: ${reason}`;
+}
+
+function parseActionReceipt(stdout?: string): DriverActionReceipt | null {
+  if (!stdout?.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  if (!isObjectRecord(parsed)) return null;
+  return (
+    receiptFromRecord(parsed) ??
+    nestedReceipt(parsed, "receipt") ??
+    nestedReceipt(parsed, "action_receipt")
+  );
+}
+
+function nestedReceipt(
+  record: Record<string, unknown>,
+  key: string,
+): DriverActionReceipt | null {
+  const value = record[key];
+  return isObjectRecord(value) ? receiptFromRecord(value) : null;
+}
+
+function receiptFromRecord(
+  record: Record<string, unknown>,
+): DriverActionReceipt | null {
+  if (
+    !(
+      "background_safe" in record ||
+      "cursor_moved" in record ||
+      "foreground_changed" in record ||
+      "route" in record ||
+      "lane" in record
+    )
+  ) {
+    return null;
+  }
+  return {
+    ok: typeof record.ok === "boolean" ? record.ok : undefined,
+    route: typeof record.route === "string" ? record.route : undefined,
+    lane: typeof record.lane === "string" ? record.lane : undefined,
+    background_safe:
+      typeof record.background_safe === "boolean"
+        ? record.background_safe
+        : undefined,
+    cursor_moved:
+      typeof record.cursor_moved === "boolean"
+        ? record.cursor_moved
+        : undefined,
+    foreground_changed:
+      typeof record.foreground_changed === "boolean"
+        ? record.foreground_changed
+        : undefined,
+    session: typeof record.session === "string" ? record.session : undefined,
+    reason: typeof record.reason === "string" ? record.reason : undefined,
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function shouldTypeTextAsKeySequence(text: string): boolean {
@@ -1622,7 +1741,7 @@ export async function runCuaDriverStep(
   ) {
     return {
       ok: false,
-      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
+      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let openclick control foreground/global input.`,
     };
   }
   if (step.tool === "drag") return await runVirtualDrag(step, cuaDriver);
@@ -2293,7 +2412,7 @@ guard let data = Data(base64Encoded: encoded),
 }
 
 let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-  .appendingPathComponent("open42-\(UUID().uuidString).svg")
+  .appendingPathComponent("openclick-\(UUID().uuidString).svg")
 try? svg.write(to: tempURL, atomically: true, encoding: .utf8)
 
 let pasteboard = NSPasteboard.general
@@ -2673,7 +2792,7 @@ async function getWindowBounds(
 
 async function collectProcess(
   proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = Number(Bun.env.OPEN42_STEP_TIMEOUT_MS ?? 20_000),
+  timeoutMs = Number(Bun.env.OPENCLICK_STEP_TIMEOUT_MS ?? 20_000),
 ): Promise<{
   exitCode: number | null;
   stdout: string;

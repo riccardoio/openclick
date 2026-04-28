@@ -419,9 +419,9 @@ describe("planner", () => {
       taskPrompt: SAMPLE_TASK,
       currentStateSummary: "",
       claudeClient: client,
-      imagePaths: ["/tmp/open42-discovery-abc.png"],
+      imagePaths: ["/tmp/openclick-discovery-abc.png"],
     });
-    expect(receivedImages).toEqual(["/tmp/open42-discovery-abc.png"]);
+    expect(receivedImages).toEqual(["/tmp/openclick-discovery-abc.png"]);
   });
 
   test("works without image paths (text-only fallback)", async () => {

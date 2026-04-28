@@ -14,12 +14,12 @@ public enum Permissions {
   public static func ensureOrDie() {
     if hasAccessibility() { return }
     print("""
-    open42-recorder requires Accessibility permission to capture human input.
+    openclick-recorder requires Accessibility permission to capture human input.
 
     1. macOS just opened System Settings → Privacy & Security → Accessibility.
     2. Click the + and add this binary at:
        \(CommandLine.arguments[0])
-    3. Re-run open42-recorder.
+    3. Re-run openclick-recorder.
     """)
     promptIfMissing()
     exit(2)

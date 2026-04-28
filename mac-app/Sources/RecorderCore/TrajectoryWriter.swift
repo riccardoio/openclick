@@ -13,7 +13,7 @@ public final class TrajectoryWriter {
   private var screenshotCounter: Int = 0
   private var eventCount: Int = 0
   private var finalized: Bool = false
-  private let queue = DispatchQueue(label: "open42.writer")
+  private let queue = DispatchQueue(label: "openclick.writer")
 
   public init(directory: URL, taskName: String, taskDescription: String) throws {
     self.directory = directory
