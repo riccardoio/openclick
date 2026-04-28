@@ -1125,14 +1125,16 @@ describe("executor initialContext (pre-discovery)", () => {
     };
     const runner: StepRunner = async (step) => {
       calls.push(step.tool);
-      if (step.tool === "list_windows") {
+      if (step.tool === "validate_window") {
         return {
           ok: true,
           stdout: JSON.stringify({
-            windows: [
+            status: "missing",
+            possible_replacements: [
               {
                 pid: 44,
                 window_id: 20,
+                window_uid: "cgwindow:20:pid:44:gen:1",
                 title: "Target Figma file",
                 bounds: { width: 1200, height: 800 },
               },
@@ -1149,13 +1151,14 @@ describe("executor initialContext (pre-discovery)", () => {
       initialContext: {
         pid: 44,
         windowId: 10,
+        windowUid: "cgwindow:10:pid:44:gen:1",
         windowTitle: "Target Figma file",
       },
       refreshBeforeAxClick: false,
       revalidateWindowLease: true,
     });
 
-    expect(calls).toEqual(["list_windows", "click"]);
+    expect(calls).toEqual(["validate_window", "click"]);
     expect(captured.pid).toBe(44);
     expect(captured.window_id).toBe(20);
   });
@@ -1173,11 +1176,12 @@ describe("executor initialContext (pre-discovery)", () => {
       stopWhen: "done",
     };
     const runner: StepRunner = async (step) => {
-      if (step.tool === "list_windows") {
+      if (step.tool === "validate_window") {
         return {
           ok: true,
           stdout: JSON.stringify({
-            windows: [
+            status: "missing",
+            possible_replacements: [
               {
                 pid: 44,
                 window_id: 20,
@@ -1200,7 +1204,12 @@ describe("executor initialContext (pre-discovery)", () => {
 
     const result = await executePlan(plan, {
       stepRunner: runner,
-      initialContext: { pid: 44, windowId: 10, windowTitle: "Untitled" },
+      initialContext: {
+        pid: 44,
+        windowId: 10,
+        windowUid: "cgwindow:10:pid:44:gen:1",
+        windowTitle: "Untitled",
+      },
       refreshBeforeAxClick: false,
       revalidateWindowLease: true,
     });
