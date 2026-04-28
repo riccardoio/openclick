@@ -301,6 +301,20 @@ describe("executor", () => {
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const runner: StepRunner = async (step) => {
       calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: [
+            '- [305] AXRow "unread, The Information , OpenAI’s AWS Push Comes As Customers Embrace Rivals , 14:36"',
+            "  - [306] AXCell",
+            "  - [320] AXCell",
+            "    - [321] AXLink",
+            '      - [323] AXStaticText "OpenAI’s AWS Push Comes As Customers Embrace Rivals"',
+            '- [332] AXRow "starred, unread, Holly , me , Holly 3 , Follow up <> Accel , 14:32"',
+            "  - [352] AXLink",
+          ].join("\n"),
+        };
+      }
       return { ok: true };
     };
     const plan: Plan = {
@@ -333,8 +347,130 @@ describe("executor", () => {
     });
     expect(calls).toEqual([
       {
-        tool: "click",
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434 },
+      },
+      {
+        tool: "double_click",
         args: { pid: 1838, window_id: 10434, element_index: 321 },
+      },
+    ]);
+  });
+
+  test("refreshes AX before opening message rows from coordinates", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: [
+            '- [305] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:40"',
+            "  - [320] AXCell",
+            "    - [321] AXLink",
+            '      - [323] AXStaticText "Idea of the Day: Vendor breach bureau"',
+          ].join("\n"),
+        };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Open the most recent unread email from Ideabrowser",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 10434 },
+    });
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434 },
+      },
+      {
+        tool: "double_click",
+        args: { pid: 1838, window_id: 10434, element_index: 321 },
+      },
+    ]);
+  });
+
+  test("refuses blind coordinate clicks for unresolved message rows", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return { ok: true, stdout: "- [1] AXButton (Compose)" };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Click the most recent unread email row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 1838, windowId: 10434 },
+    });
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("message row coordinate click");
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434 },
+      },
+    ]);
+  });
+
+  test("does not reuse stale AX rows when message row refresh fails", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      if (step.tool === "get_window_state") {
+        return { ok: false, error: "window no longer available" };
+      }
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id", x: 720, y: 180 },
+          purpose: "Click the most recent unread email row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    const result = await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 1838,
+        windowId: 10434,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [305] AXRow "unread, Stale Sender , Stale Subject , 14:36"',
+            "  - [321] AXLink",
+          ].join("\n"),
+        ),
+      },
+    });
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("message row coordinate click");
+    expect(calls).toEqual([
+      {
+        tool: "get_window_state",
+        args: { pid: 1838, window_id: 10434 },
       },
     ]);
   });

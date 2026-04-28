@@ -455,6 +455,38 @@ export async function executePlan(
       resolved = resolveStepForContext(normalizedStep, ctx);
     }
 
+    // Email/message rows are too easy to miss with raw coordinates in
+    // background mode: a click can post successfully while Gmail remains on the
+    // inbox. For these, refresh AX and resolve to a row/link before acting.
+    if (
+      !opts.dryRun &&
+      refreshBeforeAxClick &&
+      isMessageRowCoordinateClick(resolved)
+    ) {
+      const pid = asFiniteNumber(resolved.args.pid) ?? ctx.pid;
+      const windowId = asFiniteNumber(resolved.args.window_id) ?? ctx.windowId;
+      if (pid !== undefined && windowId !== undefined) {
+        const refreshStep: PlanStep = {
+          tool: "get_window_state",
+          args: { pid, window_id: windowId },
+          purpose: "refresh AX index for message row",
+        };
+        log("[open42] (refresh AX index for message row)");
+        const refreshResult = await runner(refreshStep);
+        if (refreshResult.ok && refreshResult.stdout) {
+          absorbContext(
+            ctx,
+            "get_window_state",
+            refreshResult.stdout,
+            refreshStep.args,
+          );
+        } else {
+          ctx.axIndex = [];
+        }
+        resolved = resolveStepForContext(normalizedStep, ctx);
+      }
+    }
+
     log(`[open42] about to: ${step.purpose}`);
     if (opts.dryRun) continue;
     const safety = classifyStepSafety(resolved);
@@ -705,6 +737,13 @@ async function runResolvedStep(
     log("[open42] (row click fallback: using AX row/link)");
     return await runner(rowClickStep);
   }
+  if (isMessageRowCoordinateClick(step)) {
+    return {
+      ok: false,
+      error:
+        "message row coordinate click did not resolve to a concrete AX row/link; refusing blind coordinate click",
+    };
+  }
 
   const text = step.args.text;
   if (
@@ -788,14 +827,8 @@ function rowCoordinateClickToAxClick(
   ctx: ExecutorContext,
 ): PlanStep | null {
   if (
-    step.tool !== "click" ||
+    !isMessageRowCoordinateClick(step) ||
     typeof step.args.pid !== "number" ||
-    typeof step.args.x !== "number" ||
-    typeof step.args.y !== "number" ||
-    step.args.element_index !== undefined ||
-    step.args.__selector !== undefined ||
-    step.args.__title !== undefined ||
-    step.args.__ax_id !== undefined ||
     !ctx.axIndex ||
     ctx.axIndex.length === 0
   ) {
@@ -835,7 +868,7 @@ function rowCoordinateClickToAxClick(
   const target = firstDescendantLink(row, ctx.axIndex) ?? row;
 
   return {
-    tool: "click",
+    tool: "double_click",
     args: {
       pid: step.args.pid,
       window_id: windowId,
@@ -843,6 +876,24 @@ function rowCoordinateClickToAxClick(
     },
     purpose: `${step.purpose} (resolved to AX row/link)`,
   };
+}
+
+function isMessageRowCoordinateClick(step: PlanStep): boolean {
+  if (
+    step.tool !== "click" ||
+    typeof step.args.x !== "number" ||
+    typeof step.args.y !== "number" ||
+    step.args.element_index !== undefined ||
+    step.args.__selector !== undefined ||
+    step.args.__title !== undefined ||
+    step.args.__ax_id !== undefined
+  ) {
+    return false;
+  }
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
 }
 
 function mentionsMessageRow(text: string): boolean {
