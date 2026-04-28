@@ -257,15 +257,15 @@ export async function runDoctor(
 }
 
 /**
- * Attempts to launch the CuaDriver daemon via `open -n -g -a CuaDriver --args
- * serve`, then polls the probe until it reports the daemon as running or a
- * deadline elapses. Side-effecty by design — kept out of `runDoctor` so the
- * report builder stays pure.
+ * Attempts to launch the resolved cua-driver daemon directly, then polls the
+ * probe until it reports the daemon as running or a deadline elapses.
+ * Side-effecty by design — kept out of `runDoctor` so the report builder stays
+ * pure.
  *
  * Returns:
  *   started: true  → polling observed daemon transition to running
  *   started: false → daemon was already running (no-op), or polling timed out,
- *                    or the spawn failed (e.g. `open` not on PATH)
+ *                    or the spawn failed
  * `message` is a one-liner suitable for printing to the user.
  */
 export async function tryAutoStartDaemon(
@@ -276,13 +276,23 @@ export async function tryAutoStartDaemon(
     return { started: false, message: "[doctor] daemon already running" };
   }
 
-  // `open` exits immediately while the daemon launches in the background, so
-  // fire-and-forget. If `open` itself isn't available (extremely rare on
-  // macOS), fall back to telling the user.
+  const cuaDriver = probe.cuaDriverPath();
+  if (!cuaDriver) {
+    return {
+      started: false,
+      message:
+        "[doctor] could not start the cua-driver helper automatically because no cua-driver binary was found.",
+    };
+  }
+
+  // Fire-and-forget. Force the resolved binary to serve in-process so an older
+  // /Applications/CuaDriver.app install cannot shadow a bundled driver.
   try {
-    Bun.spawn(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], {
+    Bun.spawn([cuaDriver, "serve"], {
+      stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
     });
   } catch (e) {
     return {
