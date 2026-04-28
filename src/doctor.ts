@@ -109,15 +109,15 @@ export class RealSystemProbe implements SystemProbe {
 const CUA_INSTALL_HINT =
   '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"';
 const CUA_DAEMON_AUTOFIX_HINT =
-  "open42 starts this automatically when the app or runner needs it";
+  "openclick starts this automatically when the app or runner needs it";
 const SR_HINT =
   "Run `cua-driver check_permissions`. If Screen Recording is missing, grant it in System Settings → Privacy & Security → Screen Recording for the CuaDriver app, then restart the daemon.";
 const RECORDER_BUILD_HINT =
-  "cd mac-app && swift build -c release  # builds ./.build/release/open42-recorder";
+  "cd mac-app && swift build -c release  # builds ./.build/release/openclick-recorder";
 const ACCESSIBILITY_HINT =
-  "Open System Settings → Privacy & Security → Accessibility → click + → add the recorder binary at the path above. Then re-run `open42 doctor`. (Each rebuild changes the binary's cdhash, so the grant must be re-added after rebuilds.)";
+  "Open System Settings → Privacy & Security → Accessibility → click + → add the recorder binary at the path above. Then re-run `openclick doctor`. (Each rebuild changes the binary's cdhash, so the grant must be re-added after rebuilds.)";
 const API_KEY_HINT =
-  "Run `open42 settings api-key set sk-ant-...`, `open42 settings openai-api-key set sk-...`, or add the provider API key to your shell.";
+  "Run `openclick settings api-key set sk-ant-...`, `openclick settings openai-api-key set sk-...`, or add the provider API key to your shell.";
 
 export async function runDoctor(
   probe: SystemProbe,
@@ -297,7 +297,7 @@ export async function tryAutoStartDaemon(
   } catch (e) {
     return {
       started: false,
-      message: `[doctor] could not start the CuaDriver helper automatically (${(e as Error).message}). Reinstall CuaDriver or open the open42 permissions window again.`,
+      message: `[doctor] could not start the CuaDriver helper automatically (${(e as Error).message}). Reinstall CuaDriver or open the openclick permissions window again.`,
     };
   }
 
@@ -315,7 +315,7 @@ export async function tryAutoStartDaemon(
   return {
     started: false,
     message:
-      "[doctor] CuaDriver helper did not come up within 5s. It may still be launching — re-run `open42 doctor` in a moment.",
+      "[doctor] CuaDriver helper did not come up within 5s. It may still be launching — re-run `openclick doctor` in a moment.",
   };
 }
 
@@ -326,7 +326,7 @@ function sleep(ms: number): Promise<void> {
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push("Welcome to open42.");
+  lines.push("Welcome to openclick.");
   lines.push("");
   lines.push("Prerequisites:");
   for (const r of report.results) {
@@ -341,12 +341,12 @@ export function formatDoctorReport(report: DoctorReport): string {
   if (report.allOk) {
     lines.push("All set. Try:");
     lines.push(
-      "  open42 record my-first-skill 'describe what you're about to do'",
+      "  openclick record my-first-skill 'describe what you're about to do'",
     );
   } else {
     const failed = report.results.filter((r) => r.status === "fail").length;
     lines.push(
-      `Fix the ${failed} issue(s) above, then re-run \`open42 doctor\`.`,
+      `Fix the ${failed} issue(s) above, then re-run \`openclick doctor\`.`,
     );
   }
   lines.push("");

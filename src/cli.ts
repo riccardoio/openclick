@@ -1,7 +1,7 @@
 import type { InterventionReason } from "./trace.ts";
 import { VERSION } from "./version.ts";
 
-const USAGE = `Usage: open42 <command> [options]
+const USAGE = `Usage: openclick <command> [options]
 
 Commands:
   doctor [--fix] [--json]              Check prereqs (cua-driver, perms, API key).
@@ -46,7 +46,7 @@ Commands:
                                        Manage the OpenAI API key.
   server [--host 127.0.0.1] [--port 4242] [--token <token>]
                                        Start the local HTTP API server.
-  mcp                                  Start the open42 MCP stdio server.
+  mcp                                  Start the openclick MCP stdio server.
   daemon install [--host 127.0.0.1] [--port 4242] [--token <token>]
                                        Install the local API server as a
                                        launchd user daemon.
@@ -57,7 +57,7 @@ Options:
   --help, -h             Show this help
   --version, -v          Show version
 
-First run? Try \`open42 doctor\` — it walks you through what to install/grant.
+First run? Try \`openclick doctor\` — it walks you through what to install/grant.
 `;
 
 export async function main(args: string[]): Promise<void> {
@@ -66,7 +66,7 @@ export async function main(args: string[]): Promise<void> {
     return;
   }
   if (args[0] === "--version" || args[0] === "-v") {
-    console.log(`open42 ${VERSION}`);
+    console.log(`openclick ${VERSION}`);
     return;
   }
   const cmd = args[0];
@@ -132,7 +132,7 @@ export async function main(args: string[]): Promise<void> {
           return;
         }
         console.log(
-          "[open42] proceeding without ANTHROPIC_API_KEY (only needed for compile/run).",
+          "[openclick] proceeding without ANTHROPIC_API_KEY (only needed for compile/run).",
         );
       }
 
@@ -152,10 +152,10 @@ export async function main(args: string[]): Promise<void> {
         skillName,
         claudeClient: new RoutedClaudeClient(),
       });
-      console.log(`[open42] wrote ${result.outputPath}`);
+      console.log(`[openclick] wrote ${result.outputPath}`);
       if (!result.valid) {
         console.error(
-          `[open42] WARNING: SKILL.md failed validation: ${result.errors.join(", ")}`,
+          `[openclick] WARNING: SKILL.md failed validation: ${result.errors.join(", ")}`,
         );
         process.exitCode = 2;
       }
@@ -172,7 +172,7 @@ export async function main(args: string[]): Promise<void> {
       if (action === "list") {
         const memories = listAppMemories();
         if (memories.length === 0) {
-          console.log("[open42] no app memories yet.");
+          console.log("[openclick] no app memories yet.");
           return;
         }
         for (const memory of memories) {
@@ -187,7 +187,7 @@ export async function main(args: string[]): Promise<void> {
         if (!path) throw new Error("memory export requires <file>");
         const bundle = writeMemoryBundle(path);
         console.log(
-          `[open42] exported ${bundle.memories.length} app memory file(s) to ${path}`,
+          `[openclick] exported ${bundle.memories.length} app memory file(s) to ${path}`,
         );
         return;
       }
@@ -196,7 +196,7 @@ export async function main(args: string[]): Promise<void> {
         if (!path) throw new Error("memory import requires <file>");
         const bundle = importMemoryBundle(path);
         console.log(
-          `[open42] imported ${bundle.memories.length} app memory file(s) from ${path}`,
+          `[openclick] imported ${bundle.memories.length} app memory file(s) from ${path}`,
         );
         return;
       }
@@ -214,7 +214,7 @@ export async function main(args: string[]): Promise<void> {
           summary,
         });
         console.log(
-          `[open42] saved takeover learning for ${memory.app_name ?? memory.bundle_id}`,
+          `[openclick] saved takeover learning for ${memory.app_name ?? memory.bundle_id}`,
         );
         return;
       }
@@ -236,13 +236,13 @@ export async function main(args: string[]): Promise<void> {
       } = await import("./settings.ts");
       if (area === "provider") {
         if (action === "status") {
-          console.log(`[open42] model provider: ${resolveModelProvider()}`);
+          console.log(`[openclick] model provider: ${resolveModelProvider()}`);
           return;
         }
         if (action === "set") {
           const provider = parseModelProviderArg(args[3]);
           setModelProvider(provider);
-          console.log(`[open42] model provider set to ${provider}.`);
+          console.log(`[openclick] model provider set to ${provider}.`);
           return;
         }
         throw new Error("settings provider requires: status|set <provider>");
@@ -251,7 +251,7 @@ export async function main(args: string[]): Promise<void> {
         if (action === "status") {
           const models = readSettings().models ?? {};
           console.log(
-            `[open42] models: planner=${models.planner ?? "(default)"} verifier=${models.verifier ?? "(default)"} result=${models.result ?? "(default)"} compile=${models.compile ?? "(default)"}`,
+            `[openclick] models: planner=${models.planner ?? "(default)"} verifier=${models.verifier ?? "(default)"} result=${models.result ?? "(default)"} compile=${models.compile ?? "(default)"}`,
           );
           return;
         }
@@ -260,7 +260,7 @@ export async function main(args: string[]): Promise<void> {
           const model = args[4];
           if (!model) throw new Error("settings model set requires <model>");
           setModelName(role, model);
-          console.log(`[open42] ${role} model set to ${model}.`);
+          console.log(`[openclick] ${role} model set to ${model}.`);
           return;
         }
         throw new Error("settings model requires: status|set <role> <model>");
@@ -282,10 +282,10 @@ export async function main(args: string[]): Promise<void> {
         const status = apiKeyStatus(provider);
         if (status.available) {
           console.log(
-            `[open42] ${provider} API key configured via ${status.source}: ${status.masked}`,
+            `[openclick] ${provider} API key configured via ${status.source}: ${status.masked}`,
           );
         } else {
-          console.log(`[open42] ${provider} API key is not configured.`);
+          console.log(`[openclick] ${provider} API key is not configured.`);
         }
         return;
       }
@@ -293,12 +293,14 @@ export async function main(args: string[]): Promise<void> {
         const value = args[3];
         if (!value) throw new Error(`settings ${area} set requires <key>`);
         const result = saveProviderApiKey(provider, value);
-        console.log(`[open42] ${provider} API key saved to ${result.storage}.`);
+        console.log(
+          `[openclick] ${provider} API key saved to ${result.storage}.`,
+        );
         return;
       }
       if (action === "clear") {
         clearProviderApiKey(provider);
-        console.log(`[open42] saved ${provider} API key cleared.`);
+        console.log(`[openclick] saved ${provider} API key cleared.`);
         return;
       }
       throw new Error(`settings ${area} requires: status|set|clear`);
@@ -331,18 +333,18 @@ export async function main(args: string[]): Promise<void> {
           port: parseOptionalPortOption(args, "--port") ?? DEFAULT_DAEMON_PORT,
           token: parseOptionalStringOption(args, "--token"),
         });
-        console.log(`[open42] daemon installed: ${path}`);
+        console.log(`[openclick] daemon installed: ${path}`);
         return;
       }
       if (action === "uninstall") {
         uninstallDaemon();
-        console.log("[open42] daemon uninstalled.");
+        console.log("[openclick] daemon uninstalled.");
         return;
       }
       if (action === "status") {
         const status = daemonStatus();
         console.log(
-          `[open42] daemon ${status.installed ? "installed" : "not installed"}; ${status.loaded ? "loaded" : "not loaded"} (${status.path})`,
+          `[openclick] daemon ${status.installed ? "installed" : "not installed"}; ${status.loaded ? "loaded" : "not loaded"} (${status.path})`,
         );
         return;
       }
@@ -380,7 +382,7 @@ export async function main(args: string[]): Promise<void> {
           created_at: new Date().toISOString(),
         });
         console.log(
-          `[open42] takeover ${outcome} marker saved for run ${runId}`,
+          `[openclick] takeover ${outcome} marker saved for run ${runId}`,
         );
         return;
       }
@@ -393,7 +395,7 @@ export async function main(args: string[]): Promise<void> {
       if (!runId) throw new Error("cancel requires <run-id>");
       const { requestRunCancel } = await import("./trace.ts");
       requestRunCancel(runId);
-      console.log(`[open42] cancellation requested for ${runId}`);
+      console.log(`[openclick] cancellation requested for ${runId}`);
       return;
     }
     case "run": {
@@ -431,7 +433,7 @@ export async function main(args: string[]): Promise<void> {
       const allowForeground = args.includes("--allow-foreground");
       if (!fast) {
         console.warn(
-          "[open42] WARNING: --agent uses the legacy higher-cost Agent SDK path and does not support the prompt-first verifier loop. Prefer the default fast path.",
+          "[openclick] WARNING: --agent uses the legacy higher-cost Agent SDK path and does not support the prompt-first verifier loop. Prefer the default fast path.",
         );
       }
       const maxStepsIdx = args.indexOf("--max-steps");

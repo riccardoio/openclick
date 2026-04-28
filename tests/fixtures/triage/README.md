@@ -5,7 +5,7 @@ repo (e.g. `farzaa/clicky/issues`). To populate:
 
 ```bash
 open -n -g -a CuaDriver --args serve
-bun bin/open42 record triage-issues "triage 3 issues in farzaa/clicky"
+bun bin/openclick record triage-issues "triage 3 issues in farzaa/clicky"
 # perform the task, Ctrl-C
 cp -r ~/.cua/skills/triage-issues/trajectory ./trajectory
 ```

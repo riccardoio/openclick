@@ -16,14 +16,14 @@ let home: string;
 let originalHome: string | undefined;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "open42-memory-"));
-  originalHome = Bun.env.OPEN42_HOME;
-  Bun.env.OPEN42_HOME = home;
+  home = mkdtempSync(join(tmpdir(), "openclick-memory-"));
+  originalHome = Bun.env.OPENCLICK_HOME;
+  Bun.env.OPENCLICK_HOME = home;
 });
 
 afterEach(() => {
-  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
-  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -181,10 +181,10 @@ describe("app memory", () => {
       confidence: 0.8,
     });
 
-    const otherHome = mkdtempSync(join(tmpdir(), "open42-memory-import-"));
+    const otherHome = mkdtempSync(join(tmpdir(), "openclick-memory-import-"));
     try {
-      const original = Bun.env.OPEN42_HOME;
-      Bun.env.OPEN42_HOME = otherHome;
+      const original = Bun.env.OPENCLICK_HOME;
+      Bun.env.OPENCLICK_HOME = otherHome;
       addAppMemoryFact({
         bundleId: "com.example.App",
         appName: "Example",
@@ -195,9 +195,9 @@ describe("app memory", () => {
       const path = join(otherHome, "bundle.json");
       writeMemoryBundle(path);
 
-      Bun.env.OPEN42_HOME = home;
+      Bun.env.OPENCLICK_HOME = home;
       importMemoryBundle(path);
-      Bun.env.OPEN42_HOME = original;
+      Bun.env.OPENCLICK_HOME = original;
     } finally {
       rmSync(otherHome, { recursive: true, force: true });
     }

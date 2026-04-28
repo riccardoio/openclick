@@ -78,6 +78,41 @@ describe("executor", () => {
     expect(result.error).toContain("foreground-required tool blocked");
   });
 
+  test("aborts when a driver action receipt reports unsafe background effects", async () => {
+    const result = await executePlan(
+      {
+        steps: [
+          {
+            tool: "click",
+            args: { pid: 1, window_id: 2, element_index: 5 },
+            purpose: "press button",
+          },
+        ],
+        stopWhen: "button is pressed",
+      },
+      {
+        stepRunner: async () => ({
+          ok: true,
+          stdout: JSON.stringify({
+            ok: false,
+            route: "cua-driver.click",
+            lane: "leased_window",
+            background_safe: false,
+            cursor_moved: false,
+            foreground_changed: true,
+            session: "pid=1 window_id=2",
+            reason: "foreground_changed",
+          }),
+        }),
+      },
+    );
+
+    expect(result.stepsExecuted).toBe(0);
+    expect(result.failedStepIndex).toBe(0);
+    expect(result.error).toContain("background-safety violation");
+    expect(result.error).toContain("foreground_changed");
+  });
+
   test("walks the plan via the injected step runner", async () => {
     const calls: string[] = [];
     const runner: StepRunner = async (step) => {
@@ -348,7 +383,7 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "get_window_state",
-        args: { pid: 1838, window_id: 10434 },
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
       },
       {
         tool: "double_click",
@@ -391,7 +426,7 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "get_window_state",
-        args: { pid: 1838, window_id: 10434 },
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
       },
       {
         tool: "double_click",
@@ -428,7 +463,7 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "get_window_state",
-        args: { pid: 1838, window_id: 10434 },
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
       },
     ]);
   });
@@ -470,7 +505,7 @@ describe("executor", () => {
     expect(calls).toEqual([
       {
         tool: "get_window_state",
-        args: { pid: 1838, window_id: 10434 },
+        args: { pid: 1838, window_id: 10434, capture_mode: "ax" },
       },
     ]);
   });
@@ -677,7 +712,7 @@ describe("executor", () => {
     expect(capturedClickArgs.element_index).toBe(5);
   });
 
-  test("emits a `[open42] about to:` line for each step", async () => {
+  test("emits a `[openclick] about to:` line for each step", async () => {
     const lines: string[] = [];
     const log = (s: string) => lines.push(s);
     const runner: StepRunner = async () => ({ ok: true });
