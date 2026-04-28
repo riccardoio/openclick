@@ -69,7 +69,9 @@ function sanitizeBundleId(bundleId: string): string {
 
 export function resolveCuaDriverBinary(): string | null {
   const candidates = [
+    Bun.env.OPEN42_CUA_DRIVER_BIN,
     Bun.env.CUA_DRIVER,
+    resolveBundledCuaDriverBinary(),
     Bun.which("cua-driver"),
     "/usr/local/bin/cua-driver",
     "/opt/homebrew/bin/cua-driver",
@@ -79,6 +81,10 @@ export function resolveCuaDriverBinary(): string | null {
     if (path && existsSync(path)) return path;
   }
   return null;
+}
+
+function resolveBundledCuaDriverBinary(): string {
+  return join(import.meta.dir, "..", "..", "cua-driver");
 }
 
 export function requireCuaDriverBinary(): string {

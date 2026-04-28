@@ -331,6 +331,12 @@ final class ChatBarController: NSObject {
     if let apiKey = Open42Keychain.apiKey(provider: .openai), !apiKey.isEmpty {
       env["OPENAI_API_KEY"] = apiKey
     }
+    if env["CUA_DRIVER"] == nil,
+       let bundledDriver = Bundle.main.url(forResource: "cua-driver", withExtension: nil),
+       FileManager.default.fileExists(atPath: bundledDriver.path)
+    {
+      env["CUA_DRIVER"] = bundledDriver.path
+    }
     if env["OPEN42_BIN"] == nil && env["OPEN42_REPO_ROOT"] == nil {
       env["OPEN42_TAKEOVER_WAIT_MS"] = env["OPEN42_TAKEOVER_WAIT_MS"] ?? "600000"
     }
