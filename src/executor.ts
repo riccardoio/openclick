@@ -620,7 +620,7 @@ function resolveStepForContext(step: PlanStep, ctx: ExecutorContext): PlanStep {
     tool: step.tool,
     args: repairArgsForContext(
       step.tool,
-      substitutePlaceholders(step.args, ctx),
+      substitutePlaceholders(step.args, ctx, step.purpose),
       ctx,
     ),
     purpose: step.purpose,
@@ -737,11 +737,11 @@ async function runResolvedStep(
     log("[open42] (row click fallback: using AX row/link)");
     return await runner(rowClickStep);
   }
-  if (isMessageRowCoordinateClick(step)) {
+  if (isMessageRowCoordinateClick(step) || isUntargetedMessageRowClick(step)) {
     return {
       ok: false,
       error:
-        "message row coordinate click did not resolve to a concrete AX row/link; refusing blind coordinate click",
+        "message row click did not resolve to a concrete AX row/link; refusing blind click",
     };
   }
 
@@ -827,7 +827,7 @@ function rowCoordinateClickToAxClick(
   ctx: ExecutorContext,
 ): PlanStep | null {
   if (
-    !isMessageRowCoordinateClick(step) ||
+    !isMessageRowResolvableClick(step) ||
     typeof step.args.pid !== "number" ||
     !ctx.axIndex ||
     ctx.axIndex.length === 0
@@ -890,6 +890,49 @@ function isMessageRowCoordinateClick(step: PlanStep): boolean {
   ) {
     return false;
   }
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
+}
+
+function isUntargetedMessageRowClick(step: PlanStep): boolean {
+  if (
+    (step.tool !== "click" && step.tool !== "double_click") ||
+    step.args.x !== undefined ||
+    step.args.y !== undefined ||
+    step.args.element_index !== undefined ||
+    step.args.__selector !== undefined ||
+    step.args.__title !== undefined ||
+    step.args.__ax_id !== undefined
+  ) {
+    return false;
+  }
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
+}
+
+function isMessageRowResolvableClick(step: PlanStep): boolean {
+  return (
+    isMessageRowCoordinateClick(step) ||
+    isUntargetedMessageRowClick(step) ||
+    isGenericMessageRowSelectorClick(step)
+  );
+}
+
+function isGenericMessageRowSelectorClick(step: PlanStep): boolean {
+  if (
+    (step.tool !== "click" && step.tool !== "double_click") ||
+    step.args.x !== undefined ||
+    step.args.y !== undefined ||
+    step.args.element_index !== undefined
+  ) {
+    return false;
+  }
+  const selector = planSelectorFromArgs(step.args);
+  if (!selector || !isGenericAxRowSelector(selector)) return false;
   const text = [step.purpose, stringArg(step.args.expected_change)]
     .filter((value): value is string => typeof value === "string")
     .join(" ");
@@ -977,6 +1020,38 @@ function firstDescendantLink(
 
 function stringArg(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function planSelectorFromArgs(
+  args: Record<string, unknown>,
+): PlanSelector | null {
+  if (args.__selector && typeof args.__selector === "object") {
+    return normalizeSelector(args.__selector as Record<string, unknown>);
+  }
+  const selector: PlanSelector = {};
+  if (typeof args.__title === "string") selector.title = args.__title;
+  if (typeof args.__ax_id === "string") selector.ax_id = args.__ax_id;
+  return Object.keys(selector).length > 0 ? selector : null;
+}
+
+function isGenericAxRowSelector(selector: PlanSelector): boolean {
+  return (
+    selector.role?.toLowerCase() === "axrow" &&
+    selector.title === undefined &&
+    selector.title_contains === undefined &&
+    selector.ax_id === undefined
+  );
+}
+
+function axTreeTextFromWindowState(stdout: string): string {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    if (typeof parsed.tree_markdown === "string") return parsed.tree_markdown;
+    if (typeof parsed.treeMarkdown === "string") return parsed.treeMarkdown;
+  } catch {
+    // Plain text get_window_state output from older cua-driver builds.
+  }
+  return stdout;
 }
 
 function keyFromKeyboardStep(step: PlanStep): string | null {
@@ -1110,6 +1185,7 @@ function isAxTargetedStep(step: PlanStep): boolean {
 function substitutePlaceholders(
   args: Record<string, unknown>,
   ctx: ExecutorContext,
+  purpose = "",
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   let pendingSelector: PlanSelector | null = null;
@@ -1140,7 +1216,21 @@ function substitutePlaceholders(
       out[k] = ctx.windowId;
     else out[k] = v;
   }
-  if (pendingSelector !== null && ctx.axIndex) {
+  if (
+    pendingSelector !== null &&
+    isGenericAxRowSelector(pendingSelector) &&
+    mentionsMessageRow(
+      [purpose, stringArg(args.expected_change)]
+        .filter((value): value is string => typeof value === "string")
+        .join(" "),
+    )
+  ) {
+    // A bare AXRow + ordinal selector is fragile in Gmail-style lists: rows can
+    // include category/header/layout rows, and models often mix 1-based and
+    // 0-based ordinals. Keep it symbolic so the message-row resolver can rank
+    // actual unread rows by visible sender/subject text.
+    out.__selector = pendingSelector;
+  } else if (pendingSelector !== null && ctx.axIndex) {
     const idx = resolveSelector(ctx.axIndex, pendingSelector);
     if (idx !== null) out.element_index = idx;
   }
@@ -1219,6 +1309,17 @@ function repairArgsForContext(
     typeof out.window_id === "number" &&
     ctx.pid !== undefined &&
     ctx.windowId !== undefined &&
+    out.pid === ctx.pid &&
+    out.window_id !== ctx.windowId
+  ) {
+    out.window_id = ctx.windowId;
+  }
+  if (
+    PID_WINDOW_PAIRED_TOOLS.has(normalizedTool) &&
+    typeof out.pid === "number" &&
+    typeof out.window_id === "number" &&
+    ctx.pid !== undefined &&
+    ctx.windowId !== undefined &&
     out.window_id === ctx.windowId &&
     out.pid !== ctx.pid
   ) {
@@ -1279,10 +1380,11 @@ function absorbContext(
   )
     return;
 
-  // get_window_state output is human-readable text (not JSON) — parse the
-  // bracketed [N] AXRole entries to rebuild the structured AX index.
+  // get_window_state may be human-readable text or structured JSON containing
+  // tree_markdown. Parse the bracketed [N] AXRole entries from either shape to
+  // rebuild the structured AX index.
   if (tool === "get_window_state") {
-    const entries = parseAxTreeIndex(stdout);
+    const entries = parseAxTreeIndex(axTreeTextFromWindowState(stdout));
     ctx.axIndex = entries;
   }
 

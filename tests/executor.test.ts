@@ -424,7 +424,7 @@ describe("executor", () => {
       initialContext: { pid: 1838, windowId: 10434 },
     });
     expect(result.failedStepIndex).toBe(0);
-    expect(result.error).toContain("message row coordinate click");
+    expect(result.error).toContain("message row click");
     expect(calls).toEqual([
       {
         tool: "get_window_state",
@@ -466,11 +466,99 @@ describe("executor", () => {
       },
     });
     expect(result.failedStepIndex).toBe(0);
-    expect(result.error).toContain("message row coordinate click");
+    expect(result.error).toContain("message row click");
     expect(calls).toEqual([
       {
         tool: "get_window_state",
         args: { pid: 1838, window_id: 10434 },
+      },
+    ]);
+  });
+
+  test("resolves untargeted message row clicks from the current AX tree", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: { pid: "$pid", window_id: "$window_id" },
+          purpose: "Click the first most recent unread email Ideabrowser row",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 94555,
+        windowId: 21363,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [264] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+            "  - [265] AXCell",
+            "  - [276] AXCell",
+            "    - [277] AXLink",
+            '      - [278] AXStaticText "Idea of the Day: Vendor breach bureau"',
+          ].join("\n"),
+        ),
+      },
+      refreshBeforeAxClick: false,
+    });
+    expect(calls).toEqual([
+      {
+        tool: "double_click",
+        args: { pid: 94555, window_id: 21363, element_index: 277 },
+      },
+    ]);
+  });
+
+  test("resolves generic message row selectors by row text instead of bare ordinal", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const runner: StepRunner = async (step) => {
+      calls.push({ tool: step.tool, args: step.args });
+      return { ok: true };
+    };
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "click",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            __selector: { role: "AXRow", ordinal: 1 },
+          },
+          purpose: "Click the first unread email row (Ideabrowser) to open it",
+        },
+      ],
+      stopWhen: "email is open",
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: {
+        pid: 94555,
+        windowId: 21363,
+        axIndex: parseAxTreeIndex(
+          [
+            '- [210] AXRow "Primary tab header"',
+            '- [286] AXRow "unread, Team Tailscale , Here\'s your April newsletter from Tailscale , 15:17"',
+            "  - [287] AXCell",
+            "  - [298] AXLink",
+            '- [305] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+            "  - [306] AXCell",
+            "  - [320] AXLink",
+          ].join("\n"),
+        ),
+      },
+      refreshBeforeAxClick: false,
+    });
+    expect(calls).toEqual([
+      {
+        tool: "double_click",
+        args: { pid: 94555, window_id: 21363, element_index: 320 },
       },
     ]);
   });
@@ -1601,6 +1689,71 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(captured.pid).toBe(14002);
     expect(captured.window_id).toBe(3745);
     expect(captured.element_index).toBe(16);
+  });
+
+  test("parses JSON get_window_state tree_markdown into the AX index", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 94555, window_id: 21363 },
+          purpose: "snapshot",
+        },
+        {
+          tool: "click",
+          args: {
+            pid: "$pid",
+            window_id: "$window_id",
+            __selector: { title_contains: "Ideabrowser", role: "AXRow" },
+          },
+          purpose: "click Ideabrowser row",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      if (step.tool === "click") captured = step.args;
+      if (step.tool === "get_window_state") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            pid: 94555,
+            tree_markdown:
+              '- [264] AXRow "unread, Ideabrowser , Idea of the Day: Vendor breach bureau , 16:39"',
+          }),
+        };
+      }
+      return { ok: true };
+    };
+    await executePlan(plan, { stepRunner: runner });
+    expect(captured.pid).toBe(94555);
+    expect(captured.window_id).toBe(21363);
+    expect(captured.element_index).toBe(264);
+  });
+
+  test("keeps the leased window when planner confuses window_id with display id", async () => {
+    let captured: Record<string, unknown> = {};
+    const plan: Plan = {
+      steps: [
+        {
+          tool: "get_window_state",
+          args: { pid: 94555, window_id: 2 },
+          purpose: "inspect target",
+        },
+      ],
+      stopWhen: "done",
+    };
+    const runner: StepRunner = async (step) => {
+      captured = step.args;
+      return { ok: true, stdout: "- [1] AXButton (OK)" };
+    };
+    await executePlan(plan, {
+      stepRunner: runner,
+      initialContext: { pid: 94555, windowId: 21363 },
+      revalidateWindowLease: false,
+    });
+    expect(captured).toEqual({ pid: 94555, window_id: 21363 });
   });
 
   test("does not mutate the caller's initialContext object", async () => {
