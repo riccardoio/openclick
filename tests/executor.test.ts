@@ -1004,6 +1004,51 @@ describe("executor initialContext (pre-discovery)", () => {
     expect(selected?.window_id).toBe(789);
   });
 
+  test("open_url selection keeps a newly created window despite focus drift", () => {
+    const selected = pickOpenedUrlWindow(
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_focused: true,
+          is_key: true,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 900,
+        },
+      ],
+      [
+        {
+          pid: 1838,
+          window_id: 111,
+          title: "Inbox - Gmail",
+          bounds: { width: 1920, height: 1000 },
+          is_focused: true,
+          is_key: true,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 1000,
+        },
+        {
+          pid: 1838,
+          window_id: 789,
+          title: "Inbox - Gmail",
+          bounds: { width: 900, height: 700 },
+          is_focused: false,
+          is_key: false,
+          is_on_screen: true,
+          on_current_space: true,
+          z_index: 1,
+        },
+      ],
+      "https://mail.google.com/",
+    );
+
+    expect(selected?.window_id).toBe(789);
+  });
+
   test("open_url tab selection uses tab deltas and owning window ids", () => {
     const selected = pickOpenedUrlTab(
       [

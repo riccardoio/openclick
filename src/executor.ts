@@ -2016,20 +2016,28 @@ export function pickOpenedUrlWindow(
     if (id !== null) beforeById.set(id, window);
   }
   const tokens = urlWindowTokens(url);
-  let best = candidates[0];
-  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestStrong: Record<string, unknown> | undefined;
+  let bestStrongScore = Number.NEGATIVE_INFINITY;
+  let bestWeak = candidates[0];
+  let bestWeakScore = Number.NEGATIVE_INFINITY;
   for (const window of candidates) {
     const id = asFiniteNumber(window.window_id);
     const before = id === null ? undefined : beforeById.get(id);
-    const score =
-      windowRecordScore(window) +
-      openUrlWindowDeltaScore(window, before, tokens);
-    if (score > bestScore) {
-      best = window;
-      bestScore = score;
+    const delta = openUrlWindowDeltaScore(window, before, tokens, url);
+    const windowScore = windowRecordScore(window);
+    const tieBreak =
+      Math.max(Math.min(windowScore, 10_000_000), -10_000_000) / 10_000;
+    const deltaScore = delta.score + tieBreak;
+    if (delta.strong && deltaScore > bestStrongScore) {
+      bestStrong = window;
+      bestStrongScore = deltaScore;
+    }
+    if (windowScore > bestWeakScore) {
+      bestWeak = window;
+      bestWeakScore = windowScore;
     }
   }
-  return best;
+  return bestStrong ?? bestWeak;
 }
 
 function windowRecords(windows: unknown[]): Record<string, unknown>[] {
@@ -2043,21 +2051,37 @@ function openUrlWindowDeltaScore(
   window: Record<string, unknown>,
   before: Record<string, unknown> | undefined,
   tokens: string[],
-): number {
+  requestedUrl: string,
+): { score: number; strong: boolean } {
   const title = typeof window.title === "string" ? window.title : "";
   let score = 0;
-  if (!before) score += 10_000_000;
+  const isNew = !before;
+  if (isNew) score += 100_000_000;
   const beforeTitle = typeof before?.title === "string" ? before.title : "";
-  if (before && title.trim() && title !== beforeTitle) score += 6_000_000;
+  const titleChanged = !!before && title.trim() !== "" && title !== beforeTitle;
+  if (titleChanged) score += 80_000_000;
+  const observedUrl =
+    typeof window.document_url === "string"
+      ? window.document_url
+      : typeof window.url === "string"
+        ? window.url
+        : "";
+  const urlMatchScore = observedUrl
+    ? requestedUrlMatchScore(requestedUrl, observedUrl)
+    : 0;
+  score += urlMatchScore;
   const titleLower = title.toLowerCase();
   const tokenHits = tokens.filter((token) => titleLower.includes(token)).length;
-  score += tokenHits * 2_500_000;
+  score += tokenHits * 10_000_000;
   const z = asFiniteNumber(window.z_index);
   const oldZ = asFiniteNumber(before?.z_index);
   if (z !== null && oldZ !== null && z > oldZ) {
-    score += Math.min(z - oldZ, 1_000) * 25_000;
+    score += Math.min(z - oldZ, 1_000) * 1_000;
   }
-  return score;
+  return {
+    score,
+    strong: isNew || titleChanged || urlMatchScore >= 8_000_000,
+  };
 }
 
 function urlWindowTokens(url: string): string[] {
