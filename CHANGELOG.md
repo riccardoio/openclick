@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to open42 are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to a 4-digit versioning scheme: `MAJOR.MINOR.PATCH.MICRO`.
+All notable changes to openclick are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to a 4-digit versioning scheme: `MAJOR.MINOR.PATCH.MICRO`.
 
 ## Unreleased
 
@@ -8,18 +8,18 @@ All notable changes to open42 are documented here. The format follows [Keep a Ch
 - Provider abstraction for Anthropic/OpenAI model calls without changing the AX/cua-driver action loop.
 - OpenAI Responses API provider support for planner, verifier, result, and compile model calls.
 - Mac app Settings window for choosing Anthropic/OpenAI and changing the saved API key without revealing it.
-- `open42 settings provider ...`, `open42 settings model ...`, `open42 settings api-key ...`, and `open42 settings openai-api-key ...` for CLI-only provider management.
-- `open42 server` local HTTP API, `open42 mcp` stdio MCP server, and `open42 daemon install|uninstall|status` for a launchd-backed always-on API server.
+- `openclick settings provider ...`, `openclick settings model ...`, `openclick settings api-key ...`, and `openclick settings openai-api-key ...` for CLI-only provider management.
+- `openclick server` local HTTP API, `openclick mcp` stdio MCP server, and `openclick daemon install|uninstall|status` for a launchd-backed always-on API server.
 
 ## [0.1.0.0] - 2026-04-25
 
-Inaugural public release. open42 records a macOS task once and replays it via cua-driver. The runtime planner reads SKILL.md intent + a live screenshot + the AX tree, then emits a sequence of cua-driver tool calls executed locally.
+Inaugural public release. openclick records a macOS task once and replays it via cua-driver. The runtime planner reads SKILL.md intent + a live screenshot + the AX tree, then emits a sequence of cua-driver tool calls executed locally.
 
 ### Added
-- `open42 record <name>` — capture a macOS demonstration (CGEventTap + ScreenCaptureKit + AX snapshots) into a trajectory directory.
-- `open42 compile <name>` — call Opus over the trajectory + sampled screenshots, emit a hybrid SKILL.md (cua + agentskills compatible) with structured `target.bundle_id`, `target.app_name`, and an `intent` block (goal, success_signals, subgoals, observed_input_modes).
-- `open42 run <name> [--live] [--fast] [--cursor]` — replay. Default `--fast` plans once with Sonnet 4.6 against intent + screenshot + AX, then executes locally. Replans on failure with executed-step history + live AX tree.
-- `open42 doctor [--fix]` — preflight checks for cua-driver path, daemon, Accessibility, Screen Recording, ANTHROPIC_API_KEY. `--fix` auto-starts the daemon.
+- `openclick record <name>` — capture a macOS demonstration (CGEventTap + ScreenCaptureKit + AX snapshots) into a trajectory directory.
+- `openclick compile <name>` — call Opus over the trajectory + sampled screenshots, emit a hybrid SKILL.md (cua + agentskills compatible) with structured `target.bundle_id`, `target.app_name`, and an `intent` block (goal, success_signals, subgoals, observed_input_modes).
+- `openclick run <name> [--live] [--fast] [--cursor]` — replay. Default `--fast` plans once with Sonnet 4.6 against intent + screenshot + AX, then executes locally. Replans on failure with executed-step history + live AX tree.
+- `openclick doctor [--fix]` — preflight checks for cua-driver path, daemon, Accessibility, Screen Recording, ANTHROPIC_API_KEY. `--fix` auto-starts the daemon.
 - Pre-discovery: launch_app + get_window_state populate the executor with pid, window_id, AX index BEFORE the planner runs, so `pid: $pid` / `window_id: $window_id` placeholders resolve at runtime.
 - Defensive `pid: 0` / `window_id: 0` substitution in the executor when the model hallucinates placeholder integers.
 - Multimodal planner: Sonnet sees a base64 screenshot + AX tree at plan time.

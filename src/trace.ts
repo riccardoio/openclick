@@ -154,7 +154,7 @@ export function acquireRunLock(
       if (existing.pid && process.kill(existing.pid, 0)) {
         return {
           ok: false,
-          message: `another open42 run is active (pid=${existing.pid}, run=${existing.run_id ?? "unknown"})`,
+          message: `another openclick run is active (pid=${existing.pid}, run=${existing.run_id ?? "unknown"})`,
         };
       }
     } catch {

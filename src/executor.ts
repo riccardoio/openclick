@@ -1,5 +1,5 @@
 /**
- * Local executor for `open42 run --fast` plans.
+ * Local executor for `openclick run --fast` plans.
  *
  * Walks a {@link Plan} step by step, shelling out to `cua-driver <tool> <json>`
  * for each — no LLM round-trip per step. The substitution layer below
@@ -18,6 +18,17 @@ export interface StepResult {
 }
 
 export type StepRunner = (step: PlanStep) => Promise<StepResult>;
+
+interface DriverActionReceipt {
+  ok?: boolean;
+  route?: string;
+  lane?: string;
+  background_safe?: boolean;
+  cursor_moved?: boolean;
+  foreground_changed?: boolean;
+  session?: string;
+  reason?: string;
+}
 
 export interface ExecutePlanOptions {
   /** Injectable for tests. Defaults to a real cua-driver subprocess runner. */
@@ -83,6 +94,13 @@ export interface ExecutorContext {
   windowUid?: string;
   /** Title of the selected window, used as a lease fingerprint if id changes. */
   windowTitle?: string;
+  /** Browser bundle/tab identity for the selected task tab, when available. */
+  bundleId?: string;
+  tabId?: number;
+  tabUrl?: string;
+  tabTitle?: string;
+  browserWindowId?: number;
+  browserWindowIndex?: number;
   /** Structured AX entries from the latest get_window_state. */
   axIndex?: AxIndexEntry[];
   /** Pixel size of the optimized screenshot most recently shown to the planner. */
@@ -145,6 +163,8 @@ const BACKGROUND_SAFE_TOOLS = new Set([
   "get_window_state",
   "hotkey",
   "launch_app",
+  "diff_windows",
+  "list_browser_tabs",
   "list_apps",
   "list_windows",
   "multi_drag",
@@ -196,7 +216,7 @@ export function classifyToolSafety(tool: string): StepSafety {
   return {
     tool: normalized,
     category: "unsupported",
-    reason: `${normalized} is not in open42's background-safe tool allowlist`,
+    reason: `${normalized} is not in openclick's background-safe tool allowlist`,
   };
 }
 
@@ -352,6 +372,12 @@ export async function executePlan(
         windowId: opts.initialContext.windowId,
         windowUid: opts.initialContext.windowUid,
         windowTitle: opts.initialContext.windowTitle,
+        bundleId: opts.initialContext.bundleId,
+        tabId: opts.initialContext.tabId,
+        tabUrl: opts.initialContext.tabUrl,
+        tabTitle: opts.initialContext.tabTitle,
+        browserWindowId: opts.initialContext.browserWindowId,
+        browserWindowIndex: opts.initialContext.browserWindowIndex,
         axIndex: opts.initialContext.axIndex,
         screenshotWidth: opts.initialContext.screenshotWidth,
         screenshotHeight: opts.initialContext.screenshotHeight,
@@ -383,7 +409,7 @@ export async function executePlan(
     // intent.success_signals — that's the only validation we trust. Legacy
     // plans may still contain assert steps; treat them as silent skips.
     if (step.tool === "assert") {
-      log(`[open42] (skip assert: ${step.purpose})`);
+      log(`[openclick] (skip assert: ${step.purpose})`);
       executed++;
       continue;
     }
@@ -423,10 +449,10 @@ export async function executePlan(
     ) {
       const refreshStep: PlanStep = {
         tool: "get_window_state",
-        args: { pid: ctx.pid, window_id: ctx.windowId },
+        args: { pid: ctx.pid, window_id: ctx.windowId, capture_mode: "ax" },
         purpose: "refresh AX index",
       };
-      log("[open42] (refresh AX index)");
+      log("[openclick] (refresh AX index)");
       const refreshResult = await runner(refreshStep);
       if (refreshResult.ok && refreshResult.stdout)
         absorbContext(
@@ -440,7 +466,39 @@ export async function executePlan(
       resolved = resolveStepForContext(normalizedStep, ctx);
     }
 
-    log(`[open42] about to: ${step.purpose}`);
+    // Email/message rows are too easy to miss with raw coordinates in
+    // background mode: a click can post successfully while Gmail remains on the
+    // inbox. For these, refresh AX and resolve to a row/link before acting.
+    if (
+      !opts.dryRun &&
+      refreshBeforeAxClick &&
+      isMessageRowCoordinateClick(resolved)
+    ) {
+      const pid = asFiniteNumber(resolved.args.pid) ?? ctx.pid;
+      const windowId = asFiniteNumber(resolved.args.window_id) ?? ctx.windowId;
+      if (pid !== undefined && windowId !== undefined) {
+        const refreshStep: PlanStep = {
+          tool: "get_window_state",
+          args: { pid, window_id: windowId, capture_mode: "ax" },
+          purpose: "refresh AX index for message row",
+        };
+        log("[openclick] (refresh AX index for message row)");
+        const refreshResult = await runner(refreshStep);
+        if (refreshResult.ok && refreshResult.stdout) {
+          absorbContext(
+            ctx,
+            "get_window_state",
+            refreshResult.stdout,
+            refreshStep.args,
+          );
+        } else {
+          ctx.axIndex = [];
+        }
+        resolved = resolveStepForContext(normalizedStep, ctx);
+      }
+    }
+
+    log(`[openclick] about to: ${step.purpose}`);
     if (opts.dryRun) continue;
     const safety = classifyStepSafety(resolved);
     if (safety.category === "unsupported") {
@@ -460,7 +518,7 @@ export async function executePlan(
         stepsExecuted: executed,
         totalSteps: plan.steps.length,
         failedStepIndex: i,
-        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
+        error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let openclick control foreground/global input.`,
         lastContext: ctx,
       };
     }
@@ -476,7 +534,13 @@ export async function executePlan(
         };
       }
     }
-    const result = await runResolvedStep(resolved, runner, ctx, log);
+    const result = await runResolvedStep(
+      resolved,
+      runner,
+      ctx,
+      log,
+      executionPolicy,
+    );
     if (!result.ok) {
       return {
         stepsExecuted: executed,
@@ -485,6 +549,18 @@ export async function executePlan(
         error: result.error ?? "unknown error",
         lastContext: ctx,
       };
+    }
+    if (executionPolicy === "background") {
+      const receiptFailure = backgroundActionReceiptFailure(result.stdout);
+      if (receiptFailure) {
+        return {
+          stepsExecuted: executed,
+          totalSteps: plan.steps.length,
+          failedStepIndex: i,
+          error: receiptFailure,
+          lastContext: ctx,
+        };
+      }
     }
     executed++;
     if (result.stdout)
@@ -515,6 +591,7 @@ const EDITABLE_ROLES = new Set([
 
 const PID_TARGETED_TOOLS = new Set([
   "get_window_state",
+  "list_browser_tabs",
   "list_windows",
   "click",
   "double_click",
@@ -558,6 +635,9 @@ const PID_WINDOW_PAIRED_TOOLS = new Set([
   "scroll",
   "set_value",
   "type_text",
+  "type_text_chars",
+  "press_key",
+  "hotkey",
   "validate_window",
   "paste_svg",
 ]);
@@ -569,7 +649,7 @@ function resolveStepForContext(step: PlanStep, ctx: ExecutorContext): PlanStep {
     tool: step.tool,
     args: repairArgsForContext(
       step.tool,
-      substitutePlaceholders(step.args, ctx),
+      substitutePlaceholders(step.args, ctx, step.purpose),
       ctx,
     ),
     purpose: step.purpose,
@@ -590,8 +670,7 @@ function shouldRevalidateWindowLease(
   if (pid !== ctx.pid || windowId !== ctx.windowId) return false;
   return (
     WINDOW_TARGETED_TOOLS.has(tool) ||
-    (tool === "scroll" && windowId !== null) ||
-    (tool === "type_text" && windowId !== null)
+    (PID_WINDOW_PAIRED_TOOLS.has(tool) && windowId !== null)
   );
 }
 
@@ -625,7 +704,7 @@ async function revalidateCurrentWindowLease(
       if (replacement) {
         rememberWindow(ctx, replacement);
         log(
-          `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+          `[openclick] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
         );
         return { ok: true };
       }
@@ -643,12 +722,12 @@ async function revalidateCurrentWindowLease(
     purpose: "validate current window lease",
   });
   if (!result.ok || !result.stdout) {
-    log("[open42] (window lease: validation unavailable)");
+    log("[openclick] (window lease: validation unavailable)");
     return { ok: true };
   }
   const windows = parseWindowsPayload(result.stdout);
   if (!windows) {
-    log("[open42] (window lease: validation returned unparsable windows)");
+    log("[openclick] (window lease: validation returned unparsable windows)");
     return { ok: true };
   }
   const exact = findWindowById(windows, originalWindowId);
@@ -661,7 +740,7 @@ async function revalidateCurrentWindowLease(
   if (replacement) {
     rememberWindow(ctx, replacement);
     log(
-      `[open42] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
+      `[openclick] (window lease: reacquired window ${originalWindowId} -> ${ctx.windowId})`,
     );
     return { ok: true };
   }
@@ -678,14 +757,22 @@ async function runResolvedStep(
   runner: StepRunner,
   ctx: ExecutorContext,
   log: (line: string) => void,
+  executionPolicy: ExecutionPolicy,
 ): Promise<StepResult> {
   const buttonStep = keyboardStepToButtonClick(step, ctx);
   if (buttonStep) return await runner(buttonStep);
 
   const rowClickStep = rowCoordinateClickToAxClick(step, ctx);
   if (rowClickStep) {
-    log("[open42] (row click fallback: using AX row/link)");
+    log("[openclick] (row click fallback: using AX row/link)");
     return await runner(rowClickStep);
+  }
+  if (isMessageRowCoordinateClick(step) || isUntargetedMessageRowClick(step)) {
+    return {
+      ok: false,
+      error:
+        "message row click did not resolve to a concrete AX row/link; refusing blind click",
+    };
   }
 
   const text = step.args.text;
@@ -701,14 +788,112 @@ async function runResolvedStep(
     return await runner(step);
   }
 
-  log("[open42] (type_text fallback: sending key sequence)");
+  log("[openclick] (type_text fallback: sending key sequence)");
   let stdout = "";
-  for (const keyStep of textToKeySteps(step.args.pid, text, step.purpose)) {
+  const windowId =
+    typeof step.args.window_id === "number"
+      ? step.args.window_id
+      : ctx.windowId;
+  for (const keyStep of textToKeySteps(
+    step.args.pid,
+    text,
+    step.purpose,
+    windowId,
+  )) {
     const result = await runner(keyStep);
     stdout += result.stdout ?? "";
     if (!result.ok) return { ...result, stdout };
+    if (executionPolicy === "background") {
+      const receiptFailure = backgroundActionReceiptFailure(result.stdout);
+      if (receiptFailure) return { ok: false, error: receiptFailure, stdout };
+    }
   }
   return { ok: true, stdout };
+}
+
+function backgroundActionReceiptFailure(stdout?: string): string | undefined {
+  const receipt = parseActionReceipt(stdout);
+  if (!receipt) return undefined;
+  const unsafe =
+    receipt.ok === false ||
+    receipt.background_safe === false ||
+    receipt.cursor_moved === true ||
+    receipt.foreground_changed === true;
+  if (!unsafe) return undefined;
+
+  const reasons = [
+    receipt.reason,
+    receipt.cursor_moved ? "cursor_moved" : undefined,
+    receipt.foreground_changed ? "foreground_changed" : undefined,
+    receipt.background_safe === false ? "background_safe=false" : undefined,
+  ].filter((value): value is string => !!value);
+  const route = receipt.route ?? "cua-driver action";
+  const session = receipt.session ? ` (${receipt.session})` : "";
+  const reason = reasons.length > 0 ? reasons.join(", ") : "unsafe action";
+  return `background-safety violation from ${route}${session}: ${reason}`;
+}
+
+function parseActionReceipt(stdout?: string): DriverActionReceipt | null {
+  if (!stdout?.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  if (!isObjectRecord(parsed)) return null;
+  return (
+    receiptFromRecord(parsed) ??
+    nestedReceipt(parsed, "receipt") ??
+    nestedReceipt(parsed, "action_receipt")
+  );
+}
+
+function nestedReceipt(
+  record: Record<string, unknown>,
+  key: string,
+): DriverActionReceipt | null {
+  const value = record[key];
+  return isObjectRecord(value) ? receiptFromRecord(value) : null;
+}
+
+function receiptFromRecord(
+  record: Record<string, unknown>,
+): DriverActionReceipt | null {
+  if (
+    !(
+      "background_safe" in record ||
+      "cursor_moved" in record ||
+      "foreground_changed" in record ||
+      "route" in record ||
+      "lane" in record
+    )
+  ) {
+    return null;
+  }
+  return {
+    ok: typeof record.ok === "boolean" ? record.ok : undefined,
+    route: typeof record.route === "string" ? record.route : undefined,
+    lane: typeof record.lane === "string" ? record.lane : undefined,
+    background_safe:
+      typeof record.background_safe === "boolean"
+        ? record.background_safe
+        : undefined,
+    cursor_moved:
+      typeof record.cursor_moved === "boolean"
+        ? record.cursor_moved
+        : undefined,
+    foreground_changed:
+      typeof record.foreground_changed === "boolean"
+        ? record.foreground_changed
+        : undefined,
+    session: typeof record.session === "string" ? record.session : undefined,
+    reason: typeof record.reason === "string" ? record.reason : undefined,
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function shouldTypeTextAsKeySequence(text: string): boolean {
@@ -761,14 +946,8 @@ function rowCoordinateClickToAxClick(
   ctx: ExecutorContext,
 ): PlanStep | null {
   if (
-    step.tool !== "click" ||
+    !isMessageRowResolvableClick(step) ||
     typeof step.args.pid !== "number" ||
-    typeof step.args.x !== "number" ||
-    typeof step.args.y !== "number" ||
-    step.args.element_index !== undefined ||
-    step.args.__selector !== undefined ||
-    step.args.__title !== undefined ||
-    step.args.__ax_id !== undefined ||
     !ctx.axIndex ||
     ctx.axIndex.length === 0
   ) {
@@ -808,7 +987,7 @@ function rowCoordinateClickToAxClick(
   const target = firstDescendantLink(row, ctx.axIndex) ?? row;
 
   return {
-    tool: "click",
+    tool: "double_click",
     args: {
       pid: step.args.pid,
       window_id: windowId,
@@ -816,6 +995,67 @@ function rowCoordinateClickToAxClick(
     },
     purpose: `${step.purpose} (resolved to AX row/link)`,
   };
+}
+
+function isMessageRowCoordinateClick(step: PlanStep): boolean {
+  if (
+    step.tool !== "click" ||
+    typeof step.args.x !== "number" ||
+    typeof step.args.y !== "number" ||
+    step.args.element_index !== undefined ||
+    step.args.__selector !== undefined ||
+    step.args.__title !== undefined ||
+    step.args.__ax_id !== undefined
+  ) {
+    return false;
+  }
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
+}
+
+function isUntargetedMessageRowClick(step: PlanStep): boolean {
+  if (
+    (step.tool !== "click" && step.tool !== "double_click") ||
+    step.args.x !== undefined ||
+    step.args.y !== undefined ||
+    step.args.element_index !== undefined ||
+    step.args.__selector !== undefined ||
+    step.args.__title !== undefined ||
+    step.args.__ax_id !== undefined
+  ) {
+    return false;
+  }
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
+}
+
+function isMessageRowResolvableClick(step: PlanStep): boolean {
+  return (
+    isMessageRowCoordinateClick(step) ||
+    isUntargetedMessageRowClick(step) ||
+    isGenericMessageRowSelectorClick(step)
+  );
+}
+
+function isGenericMessageRowSelectorClick(step: PlanStep): boolean {
+  if (
+    (step.tool !== "click" && step.tool !== "double_click") ||
+    step.args.x !== undefined ||
+    step.args.y !== undefined ||
+    step.args.element_index !== undefined
+  ) {
+    return false;
+  }
+  const selector = planSelectorFromArgs(step.args);
+  if (!selector || !isGenericAxRowSelector(selector)) return false;
+  const text = [step.purpose, stringArg(step.args.expected_change)]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return mentionsMessageRow(text);
 }
 
 function mentionsMessageRow(text: string): boolean {
@@ -901,6 +1141,38 @@ function stringArg(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function planSelectorFromArgs(
+  args: Record<string, unknown>,
+): PlanSelector | null {
+  if (args.__selector && typeof args.__selector === "object") {
+    return normalizeSelector(args.__selector as Record<string, unknown>);
+  }
+  const selector: PlanSelector = {};
+  if (typeof args.__title === "string") selector.title = args.__title;
+  if (typeof args.__ax_id === "string") selector.ax_id = args.__ax_id;
+  return Object.keys(selector).length > 0 ? selector : null;
+}
+
+function isGenericAxRowSelector(selector: PlanSelector): boolean {
+  return (
+    selector.role?.toLowerCase() === "axrow" &&
+    selector.title === undefined &&
+    selector.title_contains === undefined &&
+    selector.ax_id === undefined
+  );
+}
+
+function axTreeTextFromWindowState(stdout: string): string {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    if (typeof parsed.tree_markdown === "string") return parsed.tree_markdown;
+    if (typeof parsed.treeMarkdown === "string") return parsed.treeMarkdown;
+  } catch {
+    // Plain text get_window_state output from older cua-driver builds.
+  }
+  return stdout;
+}
+
 function keyFromKeyboardStep(step: PlanStep): string | null {
   if (step.tool === "press_key")
     return typeof step.args.key === "string" ? step.args.key : null;
@@ -970,14 +1242,17 @@ function textToKeySteps(
   pid: number,
   text: string,
   purpose: string,
+  windowId?: number,
 ): PlanStep[] {
   const steps: PlanStep[] = [];
+  const targetArgs =
+    windowId === undefined ? { pid } : { pid, window_id: windowId };
   for (const char of text) {
     const key = keyNameForChar(char);
     if (!key) {
       steps.push({
         tool: "type_text",
-        args: { pid, text: char },
+        args: { ...targetArgs, text: char },
         purpose,
       });
       continue;
@@ -985,7 +1260,7 @@ function textToKeySteps(
     steps.push(
       normalizePlanStep({
         tool: "press_key",
-        args: { pid, key },
+        args: { ...targetArgs, key },
         purpose,
       }),
     );
@@ -1029,6 +1304,7 @@ function isAxTargetedStep(step: PlanStep): boolean {
 function substitutePlaceholders(
   args: Record<string, unknown>,
   ctx: ExecutorContext,
+  purpose = "",
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   let pendingSelector: PlanSelector | null = null;
@@ -1059,7 +1335,21 @@ function substitutePlaceholders(
       out[k] = ctx.windowId;
     else out[k] = v;
   }
-  if (pendingSelector !== null && ctx.axIndex) {
+  if (
+    pendingSelector !== null &&
+    isGenericAxRowSelector(pendingSelector) &&
+    mentionsMessageRow(
+      [purpose, stringArg(args.expected_change)]
+        .filter((value): value is string => typeof value === "string")
+        .join(" "),
+    )
+  ) {
+    // A bare AXRow + ordinal selector is fragile in Gmail-style lists: rows can
+    // include category/header/layout rows, and models often mix 1-based and
+    // 0-based ordinals. Keep it symbolic so the message-row resolver can rank
+    // actual unread rows by visible sender/subject text.
+    out.__selector = pendingSelector;
+  } else if (pendingSelector !== null && ctx.axIndex) {
     const idx = resolveSelector(ctx.axIndex, pendingSelector);
     if (idx !== null) out.element_index = idx;
   }
@@ -1085,6 +1375,29 @@ function repairArgsForContext(
 ): Record<string, unknown> {
   const normalizedTool = canonicalToolName(tool);
   const out = { ...args };
+
+  if (normalizedTool === "open_url") {
+    if (out.pid === undefined && ctx.pid !== undefined) out.pid = ctx.pid;
+    if (out.window_id === undefined && ctx.windowId !== undefined) {
+      out.window_id = ctx.windowId;
+    }
+    if (out.window_uid === undefined && ctx.windowUid) {
+      out.window_uid = ctx.windowUid;
+    }
+    if (out.bundle_id === undefined && ctx.bundleId) {
+      out.bundle_id = ctx.bundleId;
+    }
+    if (
+      out.browser_window_id === undefined &&
+      ctx.browserWindowId !== undefined
+    ) {
+      out.browser_window_id = ctx.browserWindowId;
+    }
+    if (out.tab_id === undefined && ctx.tabId !== undefined) {
+      out.tab_id = ctx.tabId;
+    }
+    return out;
+  }
 
   if (
     (PID_TARGETED_TOOLS.has(normalizedTool) ||
@@ -1115,6 +1428,17 @@ function repairArgsForContext(
     typeof out.window_id === "number" &&
     ctx.pid !== undefined &&
     ctx.windowId !== undefined &&
+    out.pid === ctx.pid &&
+    out.window_id !== ctx.windowId
+  ) {
+    out.window_id = ctx.windowId;
+  }
+  if (
+    PID_WINDOW_PAIRED_TOOLS.has(normalizedTool) &&
+    typeof out.pid === "number" &&
+    typeof out.window_id === "number" &&
+    ctx.pid !== undefined &&
+    ctx.windowId !== undefined &&
     out.window_id === ctx.windowId &&
     out.pid !== ctx.pid
   ) {
@@ -1128,6 +1452,14 @@ function shouldFillWindowIdForTool(
   args: Record<string, unknown>,
 ): boolean {
   if (WINDOW_TARGETED_TOOLS.has(tool)) return true;
+  if (
+    tool === "hotkey" ||
+    tool === "press_key" ||
+    tool === "type_text" ||
+    tool === "type_text_chars"
+  ) {
+    return true;
+  }
   return (
     (tool === "scroll" || tool === "type_text") &&
     args.element_index !== undefined
@@ -1167,10 +1499,11 @@ function absorbContext(
   )
     return;
 
-  // get_window_state output is human-readable text (not JSON) — parse the
-  // bracketed [N] AXRole entries to rebuild the structured AX index.
+  // get_window_state may be human-readable text or structured JSON containing
+  // tree_markdown. Parse the bracketed [N] AXRole entries from either shape to
+  // rebuild the structured AX index.
   if (tool === "get_window_state") {
-    const entries = parseAxTreeIndex(stdout);
+    const entries = parseAxTreeIndex(axTreeTextFromWindowState(stdout));
     ctx.axIndex = entries;
   }
 
@@ -1191,10 +1524,32 @@ function absorbContext(
   if (!parsed || typeof parsed !== "object") return;
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.pid === "number" && tool !== "list_windows") ctx.pid = obj.pid;
+  if (typeof obj.bundle_id === "string" && obj.bundle_id.trim()) {
+    ctx.bundleId = obj.bundle_id.trim();
+  }
+  if (typeof obj.tab_id === "number") ctx.tabId = obj.tab_id;
+  if (typeof obj.tab_url === "string" && obj.tab_url.trim()) {
+    ctx.tabUrl = obj.tab_url.trim();
+  }
+  if (typeof obj.tab_title === "string" && obj.tab_title.trim()) {
+    ctx.tabTitle = obj.tab_title.trim();
+  }
+  if (typeof obj.browser_window_id === "number") {
+    ctx.browserWindowId = obj.browser_window_id;
+  }
+  if (typeof obj.browser_window_index === "number") {
+    ctx.browserWindowIndex = obj.browser_window_index;
+  }
   const explicitWindowId =
     typeof obj.window_id === "number" ? obj.window_id : undefined;
   if (explicitWindowId !== undefined && tool !== "list_windows") {
     ctx.windowId = explicitWindowId;
+  }
+  if (typeof obj.window_uid === "string" && obj.window_uid.trim()) {
+    ctx.windowUid = obj.window_uid.trim();
+  }
+  if (typeof obj.window_title === "string" && obj.window_title.trim()) {
+    ctx.windowTitle = obj.window_title.trim();
   }
   if (Array.isArray(obj.windows) && obj.windows.length > 0) {
     const preferredWindowId = explicitWindowId ?? anchoredWindowId;
@@ -1386,7 +1741,7 @@ export async function runCuaDriverStep(
   ) {
     return {
       ok: false,
-      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let open42 control foreground/global input.`,
+      error: `foreground-required tool blocked in shared-seat background mode: ${safety.reason}. Re-run with --allow-foreground only when you are ready to let openclick control foreground/global input.`,
     };
   }
   if (step.tool === "drag") return await runVirtualDrag(step, cuaDriver);
@@ -1482,6 +1837,15 @@ async function runOpenUrl(
     typeof step.args.bundle_id === "string" && step.args.bundle_id.trim()
       ? step.args.bundle_id.trim()
       : undefined;
+  const leasedPid = asFiniteNumber(step.args.pid) ?? undefined;
+  const leasedWindowId = asFiniteNumber(step.args.window_id) ?? undefined;
+  const leasedWindowUid =
+    typeof step.args.window_uid === "string" && step.args.window_uid.trim()
+      ? step.args.window_uid.trim()
+      : undefined;
+  const leasedBrowserWindowId =
+    asFiniteNumber(step.args.browser_window_id) ?? undefined;
+  const leasedTabId = asFiniteNumber(step.args.tab_id) ?? undefined;
 
   let launchInfo: Record<string, unknown> = {};
   if (bundleId) {
@@ -1511,45 +1875,145 @@ async function runOpenUrl(
     }
   }
 
-  const openArgs = ["/usr/bin/open"];
-  if (bundleId) openArgs.push("-b", bundleId);
-  openArgs.push(url);
   const pid = typeof launchInfo.pid === "number" ? launchInfo.pid : undefined;
+  const targetPid = leasedPid ?? pid;
   const preOpenWindows =
-    pid !== undefined ? await listWindowsForPid(cuaDriver, pid) : undefined;
-  const proc = Bun.spawn(openArgs, {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
-  if (timedOut) return { ok: false, error: "open_url timed out", stdout };
-  if (exitCode !== 0) {
-    return {
-      ok: false,
-      error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
-      stdout,
-    };
+    targetPid !== undefined
+      ? await listWindowsForPid(cuaDriver, targetPid)
+      : undefined;
+  const preOpenTabs =
+    targetPid !== undefined
+      ? await listBrowserTabsForPid(cuaDriver, targetPid)
+      : undefined;
+  const hasBrowserLease =
+    leasedWindowId !== undefined ||
+    leasedBrowserWindowId !== undefined ||
+    leasedTabId !== undefined;
+  const leasedTab =
+    hasBrowserLease && targetPid !== undefined && Array.isArray(preOpenTabs)
+      ? findLeasedBrowserTab(preOpenTabs, {
+          pid: targetPid,
+          windowId: leasedWindowId,
+          browserWindowId: leasedBrowserWindowId,
+          tabId: leasedTabId,
+        })
+      : undefined;
+  const targetBrowserWindowId =
+    asFiniteNumber(leasedTab?.browser_window_id) ?? leasedBrowserWindowId;
+  const navigatedInLeasedTab =
+    bundleId !== undefined &&
+    targetBrowserWindowId !== undefined &&
+    supportsBrowserWindowNavigation(bundleId)
+      ? await navigateExistingBrowserWindow(
+          bundleId,
+          targetBrowserWindowId,
+          url,
+        )
+      : undefined;
+
+  if (navigatedInLeasedTab?.ok === false) {
+    return navigatedInLeasedTab;
+  }
+  if (!navigatedInLeasedTab?.ok) {
+    const openArgs = ["/usr/bin/open"];
+    if (bundleId) openArgs.push("-b", bundleId);
+    openArgs.push(url);
+    const proc = Bun.spawn(openArgs, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const { exitCode, stdout, stderr, timedOut } = await collectProcess(proc);
+    if (timedOut) return { ok: false, error: "open_url timed out", stdout };
+    if (exitCode !== 0) {
+      return {
+        ok: false,
+        error: `open_url exited ${exitCode}: ${stderr.trim() || stdout.trim()}`,
+        stdout,
+      };
+    }
   }
   let postOpenWindows: unknown[] | undefined;
+  let postOpenTabs: unknown[] | undefined;
+  let selectedTab: Record<string, unknown> | undefined;
   let selectedWindow: Record<string, unknown> | undefined;
-  if (pid !== undefined) {
+  if (targetPid !== undefined) {
     await new Promise((resolve) => setTimeout(resolve, 900));
-    postOpenWindows = await listWindowsForPid(cuaDriver, pid);
+    postOpenWindows = await listWindowsForPid(cuaDriver, targetPid);
+    postOpenTabs = await listBrowserTabsForPid(cuaDriver, targetPid);
+    selectedTab = navigatedInLeasedTab?.ok
+      ? findLeasedBrowserTab(postOpenTabs ?? [], {
+          pid: targetPid,
+          windowId: leasedWindowId,
+          browserWindowId: targetBrowserWindowId,
+          tabId: leasedTabId,
+          url,
+        })
+      : Array.isArray(postOpenTabs)
+        ? pickOpenedUrlTab(preOpenTabs ?? [], postOpenTabs, url)
+        : undefined;
+    const selectedTabWindowId = asFiniteNumber(selectedTab?.owning_window_id);
+    if (selectedTabWindowId !== null && Array.isArray(postOpenWindows)) {
+      selectedWindow = findWindowById(postOpenWindows, selectedTabWindowId);
+    }
+    if (
+      selectedWindow === undefined &&
+      leasedWindowId !== undefined &&
+      Array.isArray(postOpenWindows)
+    ) {
+      selectedWindow = findWindowById(postOpenWindows, leasedWindowId);
+    }
     selectedWindow = Array.isArray(postOpenWindows)
-      ? pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)
+      ? (selectedWindow ??
+        (navigatedInLeasedTab?.ok
+          ? undefined
+          : pickOpenedUrlWindow(preOpenWindows ?? [], postOpenWindows, url)))
       : undefined;
   }
+  const selectedWindowId =
+    asFiniteNumber(selectedWindow?.window_id) ??
+    asFiniteNumber(selectedTab?.owning_window_id) ??
+    (navigatedInLeasedTab?.ok ? leasedWindowId : undefined) ??
+    undefined;
+  const selectedWindowUid =
+    typeof selectedWindow?.window_uid === "string"
+      ? selectedWindow.window_uid
+      : typeof selectedTab?.owning_window_uid === "string"
+        ? selectedTab.owning_window_uid
+        : navigatedInLeasedTab?.ok
+          ? leasedWindowUid
+          : undefined;
   return {
     ok: true,
     stdout: JSON.stringify({
       ...launchInfo,
-      pid,
-      window_id:
-        typeof selectedWindow?.window_id === "number"
-          ? selectedWindow.window_id
+      pid: targetPid,
+      window_id: selectedWindowId,
+      window_uid: selectedWindowUid,
+      window_title:
+        typeof selectedWindow?.title === "string"
+          ? selectedWindow.title
+          : undefined,
+      tab_id:
+        typeof selectedTab?.tab_id === "number"
+          ? selectedTab.tab_id
+          : undefined,
+      tab_url:
+        typeof selectedTab?.url === "string" ? selectedTab.url : undefined,
+      tab_title:
+        typeof selectedTab?.title === "string" ? selectedTab.title : undefined,
+      browser_window_id:
+        typeof selectedTab?.browser_window_id === "number"
+          ? selectedTab.browser_window_id
+          : targetBrowserWindowId !== undefined
+            ? targetBrowserWindowId
+            : undefined,
+      browser_window_index:
+        typeof selectedTab?.browser_window_index === "number"
+          ? selectedTab.browser_window_index
           : undefined,
       windows: postOpenWindows,
+      tabs: postOpenTabs,
       bundle_id: bundleId,
       url,
     }),
@@ -1574,6 +2038,247 @@ async function listWindowsForPid(
   }
 }
 
+async function listBrowserTabsForPid(
+  cuaDriver: string,
+  pid: number,
+): Promise<unknown[] | undefined> {
+  const tabs = Bun.spawn(
+    [cuaDriver, "call", "list_browser_tabs", JSON.stringify({ pid })],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  );
+  const result = await collectProcess(tabs);
+  if (result.timedOut || result.exitCode !== 0) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { tabs?: unknown[] };
+    return parsed.tabs;
+  } catch {
+    return undefined;
+  }
+}
+
+interface BrowserTabLease {
+  pid?: number;
+  windowId?: number;
+  browserWindowId?: number;
+  tabId?: number;
+  url?: string;
+}
+
+function findLeasedBrowserTab(
+  tabs: unknown[],
+  lease: BrowserTabLease,
+): Record<string, unknown> | undefined {
+  const records = tabRecords(tabs);
+  let candidates = records;
+  if (lease.pid !== undefined) {
+    candidates = candidates.filter(
+      (tab) => asFiniteNumber(tab.pid) === lease.pid,
+    );
+  }
+  if (lease.tabId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.tab_id) === lease.tabId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.browserWindowId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.browser_window_id) === lease.browserWindowId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.windowId !== undefined) {
+    const matches = candidates.filter(
+      (tab) => asFiniteNumber(tab.owning_window_id) === lease.windowId,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  if (lease.url !== undefined) {
+    const matches = candidates.filter(
+      (tab) =>
+        requestedUrlMatchScore(lease.url ?? "", stringArg(tab.url) ?? "") > 0,
+    );
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) candidates = matches;
+  }
+  return (
+    candidates.find((tab) => tab.is_active === true) ??
+    (candidates.length === 1 ? candidates[0] : undefined)
+  );
+}
+
+function supportsBrowserWindowNavigation(bundleId: string): boolean {
+  return (
+    bundleId === "com.google.Chrome" ||
+    bundleId === "com.brave.Browser" ||
+    bundleId === "com.microsoft.edgemac"
+  );
+}
+
+async function navigateExistingBrowserWindow(
+  bundleId: string,
+  browserWindowId: number,
+  url: string,
+): Promise<StepResult> {
+  const script = `
+tell application id "${escapeAppleScriptString(bundleId)}"
+  repeat with w in windows
+    if ((id of w) as text) is "${String(browserWindowId)}" then
+      set URL of active tab of w to "${escapeAppleScriptString(url)}"
+      return "ok"
+    end if
+  end repeat
+  return "missing"
+end tell
+`;
+  const proc = Bun.spawn(["/usr/bin/osascript", "-e", script], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const result = await collectProcess(proc);
+  if (result.timedOut) {
+    return { ok: false, error: "open_url leased browser navigation timed out" };
+  }
+  if (result.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `open_url leased browser navigation exited ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim()}`,
+      stdout: result.stdout,
+    };
+  }
+  if (result.stdout.trim() !== "ok") {
+    return {
+      ok: false,
+      error: `open_url leased browser window ${browserWindowId} was not found; refusing to navigate a different browser window silently`,
+      stdout: result.stdout,
+    };
+  }
+  return { ok: true, stdout: result.stdout };
+}
+
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+export function pickOpenedUrlTab(
+  beforeTabs: unknown[],
+  afterTabs: unknown[],
+  url: string,
+): Record<string, unknown> | undefined {
+  const after = tabRecords(afterTabs);
+  if (after.length === 0) return undefined;
+
+  const beforeByKey = new Map<string, Record<string, unknown>>();
+  for (const tab of tabRecords(beforeTabs)) {
+    const key = browserTabKey(tab);
+    if (key) beforeByKey.set(key, tab);
+  }
+
+  const tokens = urlWindowTokens(url);
+  let best: Record<string, unknown> | undefined;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestHasStrongSignal = false;
+  for (const tab of after) {
+    const key = browserTabKey(tab);
+    const before = key ? beforeByKey.get(key) : undefined;
+    const { score, strong } = openUrlTabScore(tab, before, url, tokens);
+    if (score > bestScore) {
+      best = tab;
+      bestScore = score;
+      bestHasStrongSignal = strong;
+    }
+  }
+
+  return bestHasStrongSignal ? best : undefined;
+}
+
+function tabRecords(tabs: unknown[]): Record<string, unknown>[] {
+  return tabs.filter(
+    (tab): tab is Record<string, unknown> => !!tab && typeof tab === "object",
+  );
+}
+
+function browserTabKey(tab: Record<string, unknown>): string | undefined {
+  const pid = asFiniteNumber(tab.pid);
+  const tabId = asFiniteNumber(tab.tab_id);
+  if (pid !== null && tabId !== null) return `pid:${pid}:tab:${tabId}`;
+  const bundleId = typeof tab.bundle_id === "string" ? tab.bundle_id : "";
+  const browserWindowId = asFiniteNumber(tab.browser_window_id);
+  const tabIndex = asFiniteNumber(tab.tab_index);
+  if (pid !== null && browserWindowId !== null && tabIndex !== null) {
+    return `pid:${pid}:window:${browserWindowId}:tab-index:${tabIndex}`;
+  }
+  if (bundleId && browserWindowId !== null && tabIndex !== null) {
+    return `${bundleId}:window:${browserWindowId}:tab-index:${tabIndex}`;
+  }
+  return undefined;
+}
+
+function openUrlTabScore(
+  tab: Record<string, unknown>,
+  before: Record<string, unknown> | undefined,
+  requestedUrl: string,
+  tokens: string[],
+): { score: number; strong: boolean } {
+  const tabUrl = typeof tab.url === "string" ? tab.url : "";
+  const beforeUrl = typeof before?.url === "string" ? before.url : "";
+  const title = typeof tab.title === "string" ? tab.title.toLowerCase() : "";
+  const isNew = !before;
+  const urlChanged = !!before && tabUrl !== beforeUrl;
+  const becameActive =
+    tab.is_active === true && before !== undefined && before.is_active !== true;
+  const urlMatchScore = requestedUrlMatchScore(requestedUrl, tabUrl);
+  const tokenHits = tokens.filter(
+    (token) => title.includes(token) || tabUrl.toLowerCase().includes(token),
+  ).length;
+  let score = 0;
+  if (isNew) score += 20_000_000;
+  if (urlChanged) score += 14_000_000;
+  if (becameActive) score += 10_000_000;
+  score += urlMatchScore;
+  score += tokenHits * 1_500_000;
+  if (tab.is_active === true) score += 3_000_000;
+  if (asFiniteNumber(tab.owning_window_id) !== null) score += 2_000_000;
+  const matchesRequestedIntent = urlMatchScore > 0 || tokenHits > 0;
+
+  return {
+    score,
+    strong:
+      ((isNew || urlChanged || becameActive) && matchesRequestedIntent) ||
+      urlMatchScore >= 12_000_000,
+  };
+}
+
+function requestedUrlMatchScore(
+  requestedUrl: string,
+  observedUrl: string,
+): number {
+  try {
+    const requested = new URL(requestedUrl);
+    const observed = new URL(observedUrl);
+    if (requested.href === observed.href) return 18_000_000;
+    if (
+      requested.hostname === observed.hostname &&
+      normalizePath(requested.pathname) === normalizePath(observed.pathname)
+    ) {
+      return 14_000_000;
+    }
+    if (requested.hostname === observed.hostname) return 8_000_000;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizePath(pathname: string): string {
+  const normalized = pathname.replace(/\/+$/g, "");
+  return normalized || "/";
+}
+
 export function pickOpenedUrlWindow(
   beforeWindows: unknown[],
   afterWindows: unknown[],
@@ -1589,20 +2294,28 @@ export function pickOpenedUrlWindow(
     if (id !== null) beforeById.set(id, window);
   }
   const tokens = urlWindowTokens(url);
-  let best = candidates[0];
-  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestStrong: Record<string, unknown> | undefined;
+  let bestStrongScore = Number.NEGATIVE_INFINITY;
+  let bestWeak = candidates[0];
+  let bestWeakScore = Number.NEGATIVE_INFINITY;
   for (const window of candidates) {
     const id = asFiniteNumber(window.window_id);
     const before = id === null ? undefined : beforeById.get(id);
-    const score =
-      windowRecordScore(window) +
-      openUrlWindowDeltaScore(window, before, tokens);
-    if (score > bestScore) {
-      best = window;
-      bestScore = score;
+    const delta = openUrlWindowDeltaScore(window, before, tokens, url);
+    const windowScore = windowRecordScore(window);
+    const tieBreak =
+      Math.max(Math.min(windowScore, 10_000_000), -10_000_000) / 10_000;
+    const deltaScore = delta.score + tieBreak;
+    if (delta.strong && deltaScore > bestStrongScore) {
+      bestStrong = window;
+      bestStrongScore = deltaScore;
+    }
+    if (windowScore > bestWeakScore) {
+      bestWeak = window;
+      bestWeakScore = windowScore;
     }
   }
-  return best;
+  return bestStrong ?? bestWeak;
 }
 
 function windowRecords(windows: unknown[]): Record<string, unknown>[] {
@@ -1616,21 +2329,37 @@ function openUrlWindowDeltaScore(
   window: Record<string, unknown>,
   before: Record<string, unknown> | undefined,
   tokens: string[],
-): number {
+  requestedUrl: string,
+): { score: number; strong: boolean } {
   const title = typeof window.title === "string" ? window.title : "";
   let score = 0;
-  if (!before) score += 10_000_000;
+  const isNew = !before;
+  if (isNew) score += 100_000_000;
   const beforeTitle = typeof before?.title === "string" ? before.title : "";
-  if (before && title.trim() && title !== beforeTitle) score += 6_000_000;
+  const titleChanged = !!before && title.trim() !== "" && title !== beforeTitle;
+  if (titleChanged) score += 80_000_000;
+  const observedUrl =
+    typeof window.document_url === "string"
+      ? window.document_url
+      : typeof window.url === "string"
+        ? window.url
+        : "";
+  const urlMatchScore = observedUrl
+    ? requestedUrlMatchScore(requestedUrl, observedUrl)
+    : 0;
+  score += urlMatchScore;
   const titleLower = title.toLowerCase();
   const tokenHits = tokens.filter((token) => titleLower.includes(token)).length;
-  score += tokenHits * 2_500_000;
+  score += tokenHits * 10_000_000;
   const z = asFiniteNumber(window.z_index);
   const oldZ = asFiniteNumber(before?.z_index);
   if (z !== null && oldZ !== null && z > oldZ) {
-    score += Math.min(z - oldZ, 1_000) * 25_000;
+    score += Math.min(z - oldZ, 1_000) * 1_000;
   }
-  return score;
+  return {
+    score,
+    strong: isNew || titleChanged || urlMatchScore >= 8_000_000,
+  };
 }
 
 function urlWindowTokens(url: string): string[] {
@@ -1683,7 +2412,7 @@ guard let data = Data(base64Encoded: encoded),
 }
 
 let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-  .appendingPathComponent("open42-\(UUID().uuidString).svg")
+  .appendingPathComponent("openclick-\(UUID().uuidString).svg")
 try? svg.write(to: tempURL, atomically: true, encoding: .utf8)
 
 let pasteboard = NSPasteboard.general
@@ -1738,12 +2467,22 @@ if let tiff = NSImage(data: data)?.tiffRepresentation {
 
   if (replaceExisting) {
     for (const keys of [["meta", "a"], ["delete"]]) {
-      const clearResult = await runDriverHotkey(cuaDriver, pid, keys);
+      const clearResult = await runDriverHotkey(
+        cuaDriver,
+        pid,
+        keys,
+        windowId ?? undefined,
+      );
       if (!clearResult.ok) return clearResult;
     }
   }
 
-  const hotkeyResult = await runDriverHotkey(cuaDriver, pid, ["meta", "v"]);
+  const hotkeyResult = await runDriverHotkey(
+    cuaDriver,
+    pid,
+    ["meta", "v"],
+    windowId ?? undefined,
+  );
   if (!hotkeyResult.ok) return hotkeyResult;
 
   return {
@@ -1756,9 +2495,15 @@ async function runDriverHotkey(
   cuaDriver: string,
   pid: number,
   keys: string[],
+  windowId?: number,
 ): Promise<StepResult> {
   const tool = keys.length === 1 ? "press_key" : "hotkey";
-  const args = keys.length === 1 ? { pid, key: keys[0] } : { pid, keys };
+  const targetArgs =
+    windowId === undefined ? { pid } : { pid, window_id: windowId };
+  const args =
+    keys.length === 1
+      ? { ...targetArgs, key: keys[0] }
+      : { ...targetArgs, keys };
   const proc = Bun.spawn([cuaDriver, "call", tool, JSON.stringify(args)], {
     stdin: "ignore",
     stdout: "pipe",
@@ -2047,7 +2792,7 @@ async function getWindowBounds(
 
 async function collectProcess(
   proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = Number(Bun.env.OPEN42_STEP_TIMEOUT_MS ?? 20_000),
+  timeoutMs = Number(Bun.env.OPENCLICK_STEP_TIMEOUT_MS ?? 20_000),
 ): Promise<{
   exitCode: number | null;
   stdout: string;

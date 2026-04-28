@@ -14,23 +14,23 @@ let originalDisableKeychain: string | undefined;
 let originalLaunchAgentsDir: string | undefined;
 let originalSkipLaunchctl: string | undefined;
 let originalAnthropicApiKey: string | undefined;
-let originalOpen42ApiKey: string | undefined;
+let originalOpenClickApiKey: string | undefined;
 
 beforeEach(() => {
   originalLog = console.log;
-  originalHome = Bun.env.OPEN42_HOME;
-  originalDisableKeychain = Bun.env.OPEN42_DISABLE_KEYCHAIN;
-  originalLaunchAgentsDir = Bun.env.OPEN42_LAUNCH_AGENTS_DIR;
-  originalSkipLaunchctl = Bun.env.OPEN42_SKIP_LAUNCHCTL;
+  originalHome = Bun.env.OPENCLICK_HOME;
+  originalDisableKeychain = Bun.env.OPENCLICK_DISABLE_KEYCHAIN;
+  originalLaunchAgentsDir = Bun.env.OPENCLICK_LAUNCH_AGENTS_DIR;
+  originalSkipLaunchctl = Bun.env.OPENCLICK_SKIP_LAUNCHCTL;
   originalAnthropicApiKey = Bun.env.ANTHROPIC_API_KEY;
-  originalOpen42ApiKey = Bun.env.OPEN42_API_KEY;
-  home = mkdtempSync(join(tmpdir(), "open42-cli-"));
-  Bun.env.OPEN42_HOME = home;
-  Bun.env.OPEN42_DISABLE_KEYCHAIN = "1";
-  Bun.env.OPEN42_LAUNCH_AGENTS_DIR = join(home, "LaunchAgents");
-  Bun.env.OPEN42_SKIP_LAUNCHCTL = "1";
+  originalOpenClickApiKey = Bun.env.OPENCLICK_API_KEY;
+  home = mkdtempSync(join(tmpdir(), "openclick-cli-"));
+  Bun.env.OPENCLICK_HOME = home;
+  Bun.env.OPENCLICK_DISABLE_KEYCHAIN = "1";
+  Bun.env.OPENCLICK_LAUNCH_AGENTS_DIR = join(home, "LaunchAgents");
+  Bun.env.OPENCLICK_SKIP_LAUNCHCTL = "1";
   Bun.env.ANTHROPIC_API_KEY = undefined;
-  Bun.env.OPEN42_API_KEY = undefined;
+  Bun.env.OPENCLICK_API_KEY = undefined;
   captured = [];
   console.log = (...args: unknown[]) => {
     captured.push(args.map(String).join(" "));
@@ -39,22 +39,23 @@ beforeEach(() => {
 
 afterEach(() => {
   console.log = originalLog;
-  if (originalHome === undefined) Bun.env.OPEN42_HOME = undefined;
-  else Bun.env.OPEN42_HOME = originalHome;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
   if (originalDisableKeychain === undefined)
-    Bun.env.OPEN42_DISABLE_KEYCHAIN = undefined;
-  else Bun.env.OPEN42_DISABLE_KEYCHAIN = originalDisableKeychain;
+    Bun.env.OPENCLICK_DISABLE_KEYCHAIN = undefined;
+  else Bun.env.OPENCLICK_DISABLE_KEYCHAIN = originalDisableKeychain;
   if (originalLaunchAgentsDir === undefined)
-    Bun.env.OPEN42_LAUNCH_AGENTS_DIR = undefined;
-  else Bun.env.OPEN42_LAUNCH_AGENTS_DIR = originalLaunchAgentsDir;
+    Bun.env.OPENCLICK_LAUNCH_AGENTS_DIR = undefined;
+  else Bun.env.OPENCLICK_LAUNCH_AGENTS_DIR = originalLaunchAgentsDir;
   if (originalSkipLaunchctl === undefined)
-    Bun.env.OPEN42_SKIP_LAUNCHCTL = undefined;
-  else Bun.env.OPEN42_SKIP_LAUNCHCTL = originalSkipLaunchctl;
+    Bun.env.OPENCLICK_SKIP_LAUNCHCTL = undefined;
+  else Bun.env.OPENCLICK_SKIP_LAUNCHCTL = originalSkipLaunchctl;
   if (originalAnthropicApiKey === undefined)
     Bun.env.ANTHROPIC_API_KEY = undefined;
   else Bun.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
-  if (originalOpen42ApiKey === undefined) Bun.env.OPEN42_API_KEY = undefined;
-  else Bun.env.OPEN42_API_KEY = originalOpen42ApiKey;
+  if (originalOpenClickApiKey === undefined)
+    Bun.env.OPENCLICK_API_KEY = undefined;
+  else Bun.env.OPENCLICK_API_KEY = originalOpenClickApiKey;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -72,7 +73,7 @@ describe("cli", () => {
 
   test("--version prints version", async () => {
     await main(["--version"]);
-    expect(text()).toMatch(/^open42 \d+\.\d+\.\d+/);
+    expect(text()).toMatch(/^openclick \d+\.\d+\.\d+/);
   });
 
   test("unknown subcommand throws", async () => {
@@ -196,14 +197,14 @@ describe("cli", () => {
       "--feedback",
       "completed",
       "--trajectory-path",
-      "/tmp/open42-takeover",
+      "/tmp/openclick-takeover",
     ]);
 
     const marker = readRunTakeoverResume("run-123");
     expect(marker?.outcome).toBe("success");
     expect(marker?.reason_type).toBe("confirmation_dialog");
     expect(marker?.summary).toContain("confirm button");
-    expect(marker?.trajectory_path).toBe("/tmp/open42-takeover");
+    expect(marker?.trajectory_path).toBe("/tmp/openclick-takeover");
   });
 
   test("settings api-key stores and masks the saved key", async () => {
@@ -241,12 +242,12 @@ describe("cli", () => {
   test("daemon install writes a launch agent plist for the API server", async () => {
     await main(["daemon", "install", "--port", "4343", "--token", "secret"]);
 
-    const plistPath = join(home, "LaunchAgents", "dev.open42.server.plist");
+    const plistPath = join(home, "LaunchAgents", "dev.openclick.server.plist");
     expect(existsSync(plistPath)).toBe(true);
     const plist = readFileSync(plistPath, "utf8");
     expect(plist).toContain("<string>server</string>");
     expect(plist).toContain("<string>4343</string>");
-    expect(plist).toContain("OPEN42_SERVER_TOKEN");
+    expect(plist).toContain("OPENCLICK_SERVER_TOKEN");
 
     await main(["daemon", "status"]);
     expect(text()).toContain("daemon installed");

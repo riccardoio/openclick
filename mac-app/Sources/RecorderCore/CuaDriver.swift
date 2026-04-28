@@ -21,7 +21,7 @@ public enum CuaDriver {
   }
 
   public static func getWindowState(pid: Int32, windowId: Int) throws -> WindowState {
-    let args = "{\"pid\":\(pid),\"window_id\":\(windowId)}"
+    let args = "{\"pid\":\(pid),\"window_id\":\(windowId),\"capture_mode\":\"ax\"}"
     let data = try run(["get_window_state", args])
     return try parseWindowState(data)
   }
@@ -60,7 +60,7 @@ public enum CuaDriver {
     let group = DispatchGroup()
     var outData = Data()
     var errData = Data()
-    let drainQueue = DispatchQueue(label: "open42.cua-driver.drain", attributes: .concurrent)
+    let drainQueue = DispatchQueue(label: "openclick.cua-driver.drain", attributes: .concurrent)
     drainQueue.async(group: group) {
       outData = stdout.fileHandleForReading.readDataToEndOfFile()
     }

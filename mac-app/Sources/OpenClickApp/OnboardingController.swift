@@ -52,8 +52,8 @@ final class GlassEffectView: NSVisualEffectView {
 /// Onboarding panel — Superhuman-style dark glass surface hosted in SwiftUI.
 @MainActor
 final class OnboardingController: NSObject {
-  static let hasSeenOnboardingKey = "open42.hasSeenOnboarding"
-  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.open42.app") ?? .standard
+  static let hasSeenOnboardingKey = "openclick.hasSeenOnboarding"
+  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.openclick.app") ?? .standard
 
   private let window: NSWindow
   private let viewModel = OnboardingViewModel()
@@ -85,7 +85,7 @@ final class OnboardingController: NSObject {
   // MARK: - Window setup
 
   private func configureWindow() {
-    window.title = "open42"
+    window.title = "openclick"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
@@ -123,7 +123,7 @@ final class OnboardingController: NSObject {
     viewModel.onDone = { [weak self] in self?.handleDone() }
     viewModel.onAction = { [weak self] kind in self?.handleAction(kind: kind) }
     viewModel.onProviderChanged = { [weak self] provider in
-      Open42SettingsStore.saveProvider(provider)
+      OpenClickSettingsStore.saveProvider(provider)
       self?.refreshProviderKeyState()
       self?.runChecks()
     }
@@ -190,15 +190,15 @@ final class OnboardingController: NSObject {
       }
     case .launchFailure(let detail):
       for kind in PermissionKind.allCases {
-        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not run `open42 doctor`.")
+        viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not run `openclick doctor`.")
       }
-      viewModel.footerMessage = "Could not run `open42 doctor`. \(detail)"
+      viewModel.footerMessage = "Could not run `openclick doctor`. \(detail)"
       viewModel.footerTone = .warning
     case .parseFailure(let detail):
       for kind in PermissionKind.allCases {
         viewModel.update(kind: kind, status: .missing(reason: "Unknown"), description: "Could not parse doctor output.")
       }
-      viewModel.footerMessage = "open42 doctor returned unexpected output. \(detail)"
+      viewModel.footerMessage = "openclick doctor returned unexpected output. \(detail)"
       viewModel.footerTone = .warning
     }
   }
@@ -283,11 +283,11 @@ final class OnboardingController: NSObject {
   }
 
   private func refreshProviderKeyState() {
-    let provider = Open42SettingsStore.provider()
-    if let key = Open42Keychain.apiKey(provider: provider), !key.isEmpty {
+    let provider = OpenClickSettingsStore.provider()
+    if let key = OpenClickKeychain.apiKey(provider: provider), !key.isEmpty {
       viewModel.updateProviderKeyState(
         provider: provider,
-        masked: Open42Keychain.mask(key),
+        masked: OpenClickKeychain.mask(key),
         source: "Saved in Keychain",
         saved: true
       )
@@ -296,19 +296,19 @@ final class OnboardingController: NSObject {
     if let envKey = ProcessInfo.processInfo.environment[provider.envKeyName], !envKey.isEmpty {
       viewModel.updateProviderKeyState(
         provider: provider,
-        masked: Open42Keychain.mask(envKey),
+        masked: OpenClickKeychain.mask(envKey),
         source: "Available from app environment",
         saved: false
       )
       return
     }
     if provider == .anthropic,
-      let envKey = ProcessInfo.processInfo.environment["OPEN42_API_KEY"],
+      let envKey = ProcessInfo.processInfo.environment["OPENCLICK_API_KEY"],
       !envKey.isEmpty
     {
       viewModel.updateProviderKeyState(
         provider: provider,
-        masked: Open42Keychain.mask(envKey),
+        masked: OpenClickKeychain.mask(envKey),
         source: "Available from app environment",
         saved: false
       )
@@ -329,7 +329,7 @@ final class OnboardingController: NSObject {
       viewModel.footerTone = .warning
       return
     }
-    if Open42Keychain.saveApiKey(trimmed, provider: viewModel.provider) {
+    if OpenClickKeychain.saveApiKey(trimmed, provider: viewModel.provider) {
       viewModel.footerMessage = "\(viewModel.provider.title) API key saved."
       viewModel.footerTone = .success
       refreshProviderKeyState()
@@ -341,7 +341,7 @@ final class OnboardingController: NSObject {
   }
 
   private func clearApiKey() {
-    Open42Keychain.deleteApiKey(provider: viewModel.provider)
+    OpenClickKeychain.deleteApiKey(provider: viewModel.provider)
     viewModel.footerMessage = "Saved \(viewModel.provider.title) API key removed."
     viewModel.footerTone = .warning
     refreshProviderKeyState()
@@ -357,17 +357,17 @@ final class OnboardingController: NSObject {
   }
 
   nonisolated private static func spawnDoctorJSON(env: [String: String]) -> DoctorRunResult {
-    let (url, args) = open42Invocation(env: env)
+    let (url, args) = openclickInvocation(env: env)
     let process = Process()
     process.executableURL = url
     process.arguments = args + ["doctor", "--fix", "--json"]
 
     var processEnv = env
-    processEnv["OPEN42_APP_USE_ENV"] = "1"
-    if let apiKey = Open42Keychain.apiKey(provider: .anthropic), !apiKey.isEmpty {
+    processEnv["OPENCLICK_APP_USE_ENV"] = "1"
+    if let apiKey = OpenClickKeychain.apiKey(provider: .anthropic), !apiKey.isEmpty {
       processEnv["ANTHROPIC_API_KEY"] = apiKey
     }
-    if let apiKey = Open42Keychain.apiKey(provider: .openai), !apiKey.isEmpty {
+    if let apiKey = OpenClickKeychain.apiKey(provider: .openai), !apiKey.isEmpty {
       processEnv["OPENAI_API_KEY"] = apiKey
     }
     process.environment = processEnv
@@ -398,20 +398,17 @@ final class OnboardingController: NSObject {
     }
   }
 
-  nonisolated private static func open42Invocation(env: [String: String]) -> (URL, [String]) {
-    if let bin = env["OPEN42_BIN"], !bin.isEmpty {
+  nonisolated private static func openclickInvocation(env: [String: String]) -> (URL, [String]) {
+    if let bin = env["OPENCLICK_BIN"], !bin.isEmpty {
       return (URL(fileURLWithPath: bin), [])
     }
-    if let bin = env["SHOWME_BIN"], !bin.isEmpty {
-      return (URL(fileURLWithPath: bin), [])
+    if let root = env["OPENCLICK_REPO_ROOT"], !root.isEmpty {
+      return (URL(fileURLWithPath: root).appendingPathComponent("bin/openclick"), [])
     }
-    if let root = env["OPEN42_REPO_ROOT"], !root.isEmpty {
-      return (URL(fileURLWithPath: root).appendingPathComponent("bin/open42"), [])
-    }
-    if let bundled = Bundle.main.url(forResource: "open42-cli/bin/open42", withExtension: nil) {
+    if let bundled = Bundle.main.url(forResource: "openclick-cli/bin/openclick", withExtension: nil) {
       return (bundled, [])
     }
-    return (URL(fileURLWithPath: "/usr/bin/env"), ["open42"])
+    return (URL(fileURLWithPath: "/usr/bin/env"), ["openclick"])
   }
 }
 

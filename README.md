@@ -1,19 +1,19 @@
-# Open42
+# OpenClick
 
-Open42 is a macOS automation system for completing desktop tasks from natural-language prompts.
+OpenClick is a macOS automation system for completing desktop tasks from natural-language prompts.
 
-The `open42` CLI is the core package. The native macOS app is an optional wrapper around the same CLI: CLI-only users can install and run `open42` without installing the Mac app, while Mac app installs bundle the CLI and expose the same command locally.
+The `openclick` CLI is the core package. The native macOS app is an optional wrapper around the same CLI: CLI-only users can install and run `openclick` without installing the Mac app, while Mac app installs bundle the CLI and expose the same command locally.
 
-Open42 uses a planner model, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
+OpenClick uses a planner model, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
 
 ## Status
 
-Open42 is early and experimental. It can handle simple app workflows, browser tasks, Calculator tasks, and some visual/canvas workflows. Reliability depends on app accessibility quality, screenshot evidence, model judgment, and `cua-driver` behavior.
+OpenClick is early and experimental. It can handle simple app workflows, browser tasks, Calculator tasks, and some visual/canvas workflows. Reliability depends on app accessibility quality, screenshot evidence, model judgment, and `cua-driver` behavior.
 
 The active path is prompt-first execution:
 
 ```sh
-open42 run "open Calculator and calculate 17 times 23" --live
+openclick run "open Calculator and calculate 17 times 23" --live
 ```
 
 The older `record`/`compile` workflow still exists for compatibility and tests, but it is not the main product path.
@@ -29,33 +29,33 @@ The older `record`/`compile` workflow still exists for compatibility and tests, 
 Run the doctor first:
 
 ```sh
-open42 doctor
+openclick doctor
 ```
 
-`open42 doctor` checks dependencies and permissions. If `cua-driver` is installed but its helper is down, Open42 tries to start it automatically. `--fix` is still accepted as a compatibility alias:
+`openclick doctor` checks dependencies and permissions. If `cua-driver` is installed but its helper is down, OpenClick tries to start it automatically. `--fix` is still accepted as a compatibility alias:
 
 ```sh
-open42 doctor --fix
-open42 doctor --json
+openclick doctor --fix
+openclick doctor --json
 ```
 
 ## macOS Permissions
 
-Open42 needs a few macOS permissions because it acts on the local desktop instead of a remote browser sandbox. The onboarding screen and `open42 doctor` check these for you.
+OpenClick needs a few macOS permissions because it acts on the local desktop instead of a remote browser sandbox. The onboarding screen and `openclick doctor` check these for you.
 
 Enable these in System Settings > Privacy & Security:
 
-| Permission | Why Open42 needs it |
+| Permission | Why OpenClick needs it |
 | --- | --- |
-| Accessibility | Lets Open42 and `cua-driver` inspect accessible UI elements, focus windows, press buttons, type, click, and use AX-backed app controls. Without it, Open42 cannot reliably act inside other apps. |
-| Screen Recording | Lets Open42 capture screenshots for visual state, verification, progress checks, stuck-state detection, and takeover learning. Without it, the planner and verifier lose the evidence they need to know what happened. |
+| Accessibility | Lets OpenClick and `cua-driver` inspect accessible UI elements, focus windows, press buttons, type, click, and use AX-backed app controls. Without it, OpenClick cannot reliably act inside other apps. |
+| Screen Recording | Lets OpenClick capture screenshots for visual state, verification, progress checks, stuck-state detection, and takeover learning. Without it, the planner and verifier lose the evidence they need to know what happened. |
 
 Also required:
 
 - Model API key: Anthropic or OpenAI is required for planning, verification, result summaries, and compile flows. Keys saved through the Mac app are stored in Keychain and shown only as asterisks.
-- `cua-driver` helper: executes the local desktop primitives. Open42 starts the helper automatically when possible; users should not need to start it manually.
+- `cua-driver` helper: executes the local desktop primitives. OpenClick starts the helper automatically when possible; users should not need to start it manually.
 
-Grant permissions to the app/process macOS shows for the way you run Open42. For the native app, this is the Open42 app. For CLI development, it may be your terminal app, Bun, or the `cua-driver` helper. After rebuilding a local app binary, macOS may require granting permissions again because the binary identity changed.
+Grant permissions to the app/process macOS shows for the way you run OpenClick. For the native app, this is the OpenClick app. For CLI development, it may be your terminal app, Bun, or the `cua-driver` helper. After rebuilding a local app binary, macOS may require granting permissions again because the binary identity changed.
 
 ## Install From Source
 
@@ -68,17 +68,17 @@ bun install
 Run the CLI directly from the repo:
 
 ```sh
-bun ./bin/open42 --help
-bun ./bin/open42 doctor
-bun ./bin/open42 run "open Safari and search Google for OpenAI" --live
+bun ./bin/openclick --help
+bun ./bin/openclick doctor
+bun ./bin/openclick run "open Safari and search Google for OpenAI" --live
 ```
 
 Optionally link the CLI for local development:
 
 ```sh
 bun link
-open42 doctor
-open42 run "open Calculator and calculate 18 times 24" --live
+openclick doctor
+openclick run "open Calculator and calculate 18 times 24" --live
 ```
 
 ## Model Provider Setup
@@ -86,51 +86,51 @@ open42 run "open Calculator and calculate 18 times 24" --live
 Choose a provider and save its API key:
 
 ```sh
-open42 settings provider set anthropic
-open42 settings anthropic-api-key set sk-ant-...
+openclick settings provider set anthropic
+openclick settings anthropic-api-key set sk-ant-...
 
-open42 settings provider set openai
-open42 settings openai-api-key set sk-...
+openclick settings provider set openai
+openclick settings openai-api-key set sk-...
 ```
 
 `settings api-key` is kept as the Anthropic key shortcut:
 
 ```sh
-open42 settings api-key status
-open42 settings api-key set sk-ant-...
-open42 settings api-key clear
+openclick settings api-key status
+openclick settings api-key set sk-ant-...
+openclick settings api-key clear
 ```
 
 Provider and model commands:
 
 ```sh
-open42 settings provider status
-open42 settings provider set anthropic
-open42 settings provider set openai
+openclick settings provider status
+openclick settings provider set anthropic
+openclick settings provider set openai
 
-open42 settings model status
-open42 settings model set planner <model>
-open42 settings model set verifier <model>
-open42 settings model set result <model>
-open42 settings model set compile <model>
+openclick settings model status
+openclick settings model set planner <model>
+openclick settings model set verifier <model>
+openclick settings model set result <model>
+openclick settings model set compile <model>
 ```
 
 Environment variables also work:
 
 ```sh
-ANTHROPIC_API_KEY=sk-ant-... open42 run "..." --live
-OPENAI_API_KEY=sk-... open42 run "..." --live
-OPEN42_MODEL_PROVIDER=openai open42 run "..." --live
+ANTHROPIC_API_KEY=sk-ant-... openclick run "..." --live
+OPENAI_API_KEY=sk-... openclick run "..." --live
+OPENCLICK_MODEL_PROVIDER=openai openclick run "..." --live
 ```
 
 The default action loop remains optimized for hosted Anthropic/OpenAI models plus AX and `cua-driver` grounding. Local/open-model providers are planned behind the same abstraction, but should not reduce the default hosted-model accuracy.
 
 ## CLI And Mac App
 
-Open42 has two install surfaces:
+OpenClick has two install surfaces:
 
-- CLI-only: install or link the JavaScript/Bun package and use the `open42` command.
-- Mac app: build/install the native app from `mac-app/`; the app bundles the CLI and installs `~/.local/bin/open42` on launch.
+- CLI-only: install or link the JavaScript/Bun package and use the `openclick` command.
+- Mac app: build/install the native app from `mac-app/`; the app bundles the CLI and installs `~/.local/bin/openclick` on launch.
 
 The Mac app includes:
 
@@ -156,8 +156,8 @@ swift test --package-path mac-app
 
 Swift products:
 
-- `open42-app` - native menu bar app
-- `open42-recorder` - legacy recorder executable used by the old recording workflow
+- `openclick-app` - native menu bar app
+- `openclick-recorder` - legacy recorder executable used by the old recording workflow
 - `RecorderCore` - shared recorder core library
 
 ## Usage
@@ -165,25 +165,25 @@ Swift products:
 Dry-run a task. This asks the planner what it would do, but does not execute UI actions:
 
 ```sh
-open42 run "open Calculator and calculate 17 times 23"
+openclick run "open Calculator and calculate 17 times 23"
 ```
 
 Run the task live:
 
 ```sh
-open42 run "open Calculator and calculate 17 times 23" --live
+openclick run "open Calculator and calculate 17 times 23" --live
 ```
 
 Show the agent cursor while it acts:
 
 ```sh
-open42 run "open Safari and search Google for OpenAI" --live --cursor
+openclick run "open Safari and search Google for OpenAI" --live --cursor
 ```
 
 Add explicit success criteria for stricter verification and retry feedback:
 
 ```sh
-open42 run "open Figma and draw an analog clock" \
+openclick run "open Figma and draw an analog clock" \
   --live \
   --criteria "the clock must be clean, show 10:10, have a circular outline, two hands, and 12 visible hour marks"
 ```
@@ -191,7 +191,7 @@ open42 run "open Figma and draw an analog clock" \
 Use explicit budgets:
 
 ```sh
-open42 run "open Figma and draw a simple clock" \
+openclick run "open Figma and draw a simple clock" \
   --live \
   --max-steps 120 \
   --max-batches 12 \
@@ -202,36 +202,36 @@ open42 run "open Figma and draw a simple clock" \
 Useful cost/latency knobs:
 
 ```sh
-OPEN42_VERIFIER_MODEL=claude-sonnet-4-6 \
-OPEN42_SCREENSHOT_MAX_EDGE=1024 \
-OPEN42_STEP_TIMEOUT_MS=20000 \
-open42 run "open Figma and draw a clean clock" --live --criteria "the clock shows 10:10 and has 12 hour marks"
+OPENCLICK_VERIFIER_MODEL=claude-sonnet-4-6 \
+OPENCLICK_SCREENSHOT_MAX_EDGE=1024 \
+OPENCLICK_STEP_TIMEOUT_MS=20000 \
+openclick run "open Figma and draw a clean clock" --live --criteria "the clock shows 10:10 and has 12 hour marks"
 ```
 
 Disable memory reads or writes for a run:
 
 ```sh
-open42 run "open Figma and draw a clock" --live --no-memory
-open42 run "open Figma and draw a clock" --live --no-learn
+openclick run "open Figma and draw a clock" --live --no-memory
+openclick run "open Figma and draw a clock" --live --no-learn
 ```
 
-Allow foreground/global control only when you are ready for Open42 to potentially interrupt the human seat:
+Allow foreground/global control only when you are ready for OpenClick to potentially interrupt the human seat:
 
 ```sh
-open42 run "do a task that cannot be completed in background mode" --live --allow-foreground
+openclick run "do a task that cannot be completed in background mode" --live --allow-foreground
 ```
 
 Cancel a running task from another terminal:
 
 ```sh
-open42 cancel <run-id>
+openclick cancel <run-id>
 ```
 
 Each run prints its run id near startup. The native Mac app also exposes a stop button while a task is running.
 
 ## How Execution Works
 
-`open42 run` follows a bounded loop:
+`openclick run` follows a bounded loop:
 
 1. Discover relevant apps, current usable windows, and active local app memories.
 2. Capture AX state, modal/window state, and an optimized screenshot.
@@ -246,14 +246,14 @@ Each run prints its run id near startup. The native Mac app also exposes a stop 
 
 The default runtime is shared-seat background mode: it should not steal focus, require the target app to be frontmost, or rely on the real mouse cursor. It uses pid/window-targeted `cua-driver` primitives wherever possible. Foreground/global primitives are blocked unless `--allow-foreground` is set.
 
-If external seat activity is detected during a shared-seat run, Open42 keeps running but disables learning for that run so polluted evidence does not become a bad memory.
+If external seat activity is detected during a shared-seat run, OpenClick keeps running but disables learning for that run so polluted evidence does not become a bad memory.
 
 ## User Takeover And Learning
 
-When Open42 cannot safely continue, it can pause for manual takeover. The Mac app handles this through the task activity panel. The CLI marker command is:
+When OpenClick cannot safely continue, it can pause for manual takeover. The Mac app handles this through the task activity panel. The CLI marker command is:
 
 ```sh
-open42 takeover finish \
+openclick takeover finish \
   --run-id <run-id> \
   --issue "Confirmation click required" \
   --summary "The user opened the email manually" \
@@ -274,7 +274,7 @@ Optional takeover fields:
 Directly save a takeover learning:
 
 ```sh
-open42 memory learn-takeover \
+openclick memory learn-takeover \
   --bundle-id com.google.Chrome \
   --app-name "Google Chrome" \
   --issue "Wrong Chrome window selected" \
@@ -286,34 +286,34 @@ open42 memory learn-takeover \
 Start a local HTTP API server:
 
 ```sh
-open42 server --host 127.0.0.1 --port 4242
+openclick server --host 127.0.0.1 --port 4242
 ```
 
 Use a token when exposing the server beyond localhost:
 
 ```sh
-open42 server --host 127.0.0.1 --port 4242 --token <token>
+openclick server --host 127.0.0.1 --port 4242 --token <token>
 ```
 
 Send the token as either:
 
 ```sh
 Authorization: Bearer <token>
-X-Open42-Token: <token>
+X-OpenClick-Token: <token>
 ```
 
 HTTP API endpoints:
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| `GET` | `/health` | none | `{ "ok": true, "name": "open42", "version": "..." }` |
-| `GET` | `/v1/status` | none | Runs `open42 doctor` and returns `{ "ok": boolean, "report": ... }` |
+| `GET` | `/health` | none | `{ "ok": true, "name": "openclick", "version": "..." }` |
+| `GET` | `/v1/status` | none | Runs `openclick doctor` and returns `{ "ok": boolean, "report": ... }` |
 | `GET` | `/v1/settings/api-key` | none | Returns selected provider, availability, source, and masked key. The raw key is never returned. |
 | `POST` | `/v1/settings/api-key` | `{ "apiKey": "..." }`, `{ "api_key": "..." }`, or `{ "apiKey": "...", "provider": "openai" }` | Saves/replaces the provider key and returns masked key status. |
 | `DELETE` | `/v1/settings/api-key` | none | Clears the saved key for the selected provider and returns key status. |
-| `POST` | `/v1/run` | `{ "task": "...", "live": true, "allowForeground": false, "criteria": "..." }` | Runs `open42 run`; returns `{ "ok": boolean, "exitCode": number, "stdout": "...", "stderr": "..." }`. `live` defaults to `true`. |
-| `POST` | `/v1/cancel` | `{ "runId": "..." }` or `{ "run_id": "..." }` | Runs `open42 cancel`; returns process output. |
-| `GET` | `/v1/memory` | none | Runs `open42 memory list`; returns process output. |
+| `POST` | `/v1/run` | `{ "task": "...", "live": true, "allowForeground": false, "criteria": "..." }` | Runs `openclick run`; returns `{ "ok": boolean, "exitCode": number, "stdout": "...", "stderr": "..." }`. `live` defaults to `true`. |
+| `POST` | `/v1/cancel` | `{ "runId": "..." }` or `{ "run_id": "..." }` | Runs `openclick cancel`; returns process output. |
+| `GET` | `/v1/memory` | none | Runs `openclick memory list`; returns process output. |
 | `OPTIONS` | any path | none | CORS preflight response. |
 
 Example:
@@ -329,81 +329,81 @@ curl -X POST http://127.0.0.1:4242/v1/run \
 For MCP clients that launch a stdio server:
 
 ```sh
-open42 mcp
+openclick mcp
 ```
 
 MCP tools:
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `run_task` | `{ "task": string, "live"?: boolean, "allowForeground"?: boolean, "criteria"?: string }` | Runs a natural-language macOS desktop task through Open42 and returns CLI text output. `live` defaults to `true`. |
-| `status` | none | Runs `open42 doctor --json` and returns the JSON status text. |
+| `run_task` | `{ "task": string, "live"?: boolean, "allowForeground"?: boolean, "criteria"?: string }` | Runs a natural-language macOS desktop task through OpenClick and returns CLI text output. `live` defaults to `true`. |
+| `status` | none | Runs `openclick doctor --json` and returns the JSON status text. |
 
 ## API Daemon
 
 Install the local API server as a user launchd daemon so it starts at login and stays running:
 
 ```sh
-open42 daemon install --host 127.0.0.1 --port 4242
-open42 daemon status
-open42 daemon uninstall
+openclick daemon install --host 127.0.0.1 --port 4242
+openclick daemon status
+openclick daemon uninstall
 ```
 
 With token auth:
 
 ```sh
-open42 daemon install --host 127.0.0.1 --port 4242 --token <token>
+openclick daemon install --host 127.0.0.1 --port 4242 --token <token>
 ```
 
-The daemon label is `dev.open42.server`. Logs are written under `~/.open42/server.log` and `~/.open42/server.err.log`.
+The daemon label is `dev.openclick.server`. Logs are written under `~/.openclick/server.log` and `~/.openclick/server.err.log`.
 
 ## Debug Traces
 
-Open42 writes lightweight run traces under:
+OpenClick writes lightweight run traces under:
 
 ```sh
-~/.open42/runs/<run-id>/trace.json
+~/.openclick/runs/<run-id>/trace.json
 ```
 
 A trace includes the prompt, criteria, plan steps, verifier replies, critique feedback, cost counters, interventions, and final status.
 
-Only one live run controls the desktop at a time. Open42 writes a run lock under `~/.open42/run.lock` and refuses a second live run while the first process is still alive.
+Only one live run controls the desktop at a time. OpenClick writes a run lock under `~/.openclick/run.lock` and refuses a second live run while the first process is still alive.
 
 ## Commands
 
 ```sh
-open42 doctor [--fix] [--json]
-open42 run <task> [--live] [--cursor] [--confirm] [--criteria <text>] [--max-steps <n>] [--max-batches <n>] [--max-model-calls <n>] [--max-screenshots <n>] [--no-memory] [--no-learn] [--allow-foreground] [--agent]
-open42 cancel <run-id>
-open42 takeover finish --run-id <id> --issue <text> --summary <text> [--outcome success|failed|cancelled]
+openclick doctor [--fix] [--json]
+openclick run <task> [--live] [--cursor] [--confirm] [--criteria <text>] [--max-steps <n>] [--max-batches <n>] [--max-model-calls <n>] [--max-screenshots <n>] [--no-memory] [--no-learn] [--allow-foreground] [--agent]
+openclick cancel <run-id>
+openclick takeover finish --run-id <id> --issue <text> --summary <text> [--outcome success|failed|cancelled]
 
-open42 settings provider status|set <anthropic|openai>
-open42 settings model status|set <planner|verifier|result|compile> <model>
-open42 settings api-key status|set|clear
-open42 settings anthropic-api-key status|set|clear
-open42 settings openai-api-key status|set|clear
+openclick settings provider status|set <anthropic|openai>
+openclick settings model status|set <planner|verifier|result|compile> <model>
+openclick settings api-key status|set|clear
+openclick settings anthropic-api-key status|set|clear
+openclick settings openai-api-key status|set|clear
 
-open42 server [--host 127.0.0.1] [--port 4242] [--token <token>]
-open42 mcp
-open42 daemon install [--host 127.0.0.1] [--port 4242] [--token <token>]
-open42 daemon status
-open42 daemon uninstall
+openclick server [--host 127.0.0.1] [--port 4242] [--token <token>]
+openclick mcp
+openclick daemon install [--host 127.0.0.1] [--port 4242] [--token <token>]
+openclick daemon status
+openclick daemon uninstall
 
-open42 memory list
-open42 memory export <file>
-open42 memory import <file>
-open42 memory learn-takeover --bundle-id <id> --issue <text> --summary <text> [--app-name <name>] [--task <task>]
+openclick memory list
+openclick memory export <file>
+openclick memory import <file>
+openclick memory learn-takeover --bundle-id <id> --issue <text> --summary <text> [--app-name <name>] [--task <task>]
 
-open42 record <task-name>
-open42 compile <skill-name>
+openclick record <task-name>
+openclick compile <skill-name>
 ```
 
 ## App Memory
 
-Open42 keeps optional local app memories under:
+OpenClick keeps optional local app memories under:
 
 ```sh
-~/.open42/apps/<bundle-id>/memory.json
+~/.openclick/apps/<bundle-id>/memory.json
 ```
 
 These are not replay scripts. They are structured affordances, avoid-rules, and observations such as "prefer the largest content window" or "this shortcut opened a new document".
@@ -413,15 +413,15 @@ Each memory fact has a status, source, confidence, evidence count, scope, and ca
 Share memories with another machine or project:
 
 ```sh
-open42 memory export open42-memory.json
-open42 memory import open42-memory.json
+openclick memory export openclick-memory.json
+openclick memory import openclick-memory.json
 ```
 
 Negative memories are soft cautions, not hard blocks. They should steer the planner away from likely failure modes, but must not disable tools, shortcuts, windows, or future attempts.
 
 ## Architecture
 
-- `bin/open42` is the CLI entrypoint.
+- `bin/openclick` is the CLI entrypoint.
 - `src/cli.ts` parses commands and runtime budgets.
 - `src/run.ts` owns prompt-first execution, screenshots, modal state, verification, critique/replanning, run locking, traces, and cost telemetry.
 - `src/planner.ts` builds planner prompts, validates model plans, and normalizes common planner mistakes.
@@ -433,7 +433,7 @@ Negative memories are soft cautions, not hard blocks. They should steer the plan
 - `src/trace.ts` stores run traces, intervention markers, takeover resume markers, cancellation markers, and the single-run desktop lock.
 - `src/doctor.ts` checks local dependencies and macOS permissions.
 - `src/mac-app.ts` is a local development helper for building and launching the native Mac app bundle.
-- `mac-app/Sources/Open42App/` contains the native menu bar app, onboarding, settings, chat bar, and task activity UI.
+- `mac-app/Sources/OpenClickApp/` contains the native menu bar app, onboarding, settings, chat bar, and task activity UI.
 - `mac-app/Sources/Recorder/` contains the legacy Swift recorder executable.
 - `mac-app/Sources/RecorderCore/` contains recorder shared code and tests.
 - `tests/` contains Bun tests and fixtures.
@@ -452,8 +452,8 @@ swift test --package-path mac-app
 Useful live smoke tests:
 
 ```sh
-bun ./bin/open42 run "open Calculator and calculate 22 times 27; stop when the display shows 594" --live
-bun ./bin/open42 run "open Safari and search Google for OpenAI; stop when Google search results are visible" --live
+bun ./bin/openclick run "open Calculator and calculate 22 times 27; stop when the display shows 594" --live
+bun ./bin/openclick run "open Safari and search Google for OpenAI; stop when Google search results are visible" --live
 ```
 
 ## Notes For Contributors

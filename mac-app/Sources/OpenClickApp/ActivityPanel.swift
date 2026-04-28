@@ -609,7 +609,7 @@ final class ActivityPanelViewModel: ObservableObject {
 
   private func normalizedStepTitle(_ title: String) -> String {
     let clean = title
-      .replacingOccurrences(of: "[open42]", with: "")
+      .replacingOccurrences(of: "[openclick]", with: "")
       .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
     return clean.isEmpty ? "Working on next step" : clean
   }
@@ -828,7 +828,7 @@ final class ActivityPanelViewModel: ObservableObject {
         id: "next-intervention",
         slot: .next,
         title: "Take over, then resume",
-        description: "After you complete the blocked step, open42 can continue.",
+        description: "After you complete the blocked step, openclick can continue.",
         timestamp: nil,
         state: .pending
       )
@@ -837,7 +837,7 @@ final class ActivityPanelViewModel: ObservableObject {
         id: "next-user-takeover",
         slot: .next,
         title: "Finish takeover",
-        description: "When this step is complete, open42 will save the lesson and resume.",
+        description: "When this step is complete, openclick will save the lesson and resume.",
         timestamp: nil,
         state: .pending
       )
@@ -882,7 +882,7 @@ final class ActivityPanelViewModel: ObservableObject {
         id: "next-placeholder",
         slot: .next,
         title: "Waiting for next action",
-        description: "The next card will update as soon as open42 chooses the next step.",
+        description: "The next card will update as soon as openclick chooses the next step.",
         timestamp: nil,
         state: .pending
       )
@@ -1386,7 +1386,7 @@ struct ActivityCardView: View {
         InlineActivityGuidance(
           icon: "sparkles",
           title: "Learning locally",
-          detail: "open42 will use this demonstration to continue the remaining task."
+          detail: "openclick will use this demonstration to continue the remaining task."
         )
       } else if case .takeoverFeedback(let issue, let elapsed) = mode {
         InlineActivityGuidance(
@@ -2230,7 +2230,7 @@ struct TakeoverFeedbackView: View {
           Text("Did that complete the blocked step?")
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(DarkPalette.textPrimary)
-          Text("Your answer controls whether open42 resumes or keeps waiting for help.")
+          Text("Your answer controls whether openclick resumes or keeps waiting for help.")
             .font(.system(size: 12.5))
             .foregroundStyle(DarkPalette.textSecondary)
         }
