@@ -1,3 +1,11 @@
+import {
+  cancelApiRun,
+  capabilitiesResponse,
+  getApiRun,
+  getApiRunEvents,
+  standardizeCommandResult,
+  startApiRun,
+} from "./api-runs.ts";
 import { currentOpenClickBin } from "./daemon.ts";
 import { VERSION } from "./version.ts";
 
@@ -59,8 +67,50 @@ export async function handleApiRequest(
       return jsonResponse({ ok: report.allOk, report });
     }
 
+    if (request.method === "GET" && url.pathname === "/v1/capabilities") {
+      return jsonResponse(capabilitiesResponse());
+    }
+
     if (url.pathname === "/v1/settings/api-key") {
       return handleApiKeyRequest(request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/runs") {
+      const body = await parseJsonObject(request);
+      const task = stringField(body, "task");
+      if (!task) return jsonResponse({ error: "task is required" }, 400);
+      const run = startApiRun({
+        task,
+        live: body.live !== false,
+        allowForeground: body.allowForeground === true,
+        criteria:
+          typeof body.criteria === "string" && body.criteria.trim()
+            ? body.criteria.trim()
+            : undefined,
+      });
+      return jsonResponse({ ok: true, run }, 202);
+    }
+
+    const runRoute = parseRunRoute(url.pathname);
+    if (runRoute) {
+      const { runId, action } = runRoute;
+      if (request.method === "GET" && action === "get") {
+        const run = getApiRun(runId);
+        if (!run) return jsonResponse({ error: "run not found" }, 404);
+        return jsonResponse({ ok: run.ok, run });
+      }
+      if (request.method === "GET" && action === "events") {
+        return streamRunEvents(
+          runId,
+          Number(url.searchParams.get("after") ?? 0),
+        );
+      }
+      if (request.method === "POST" && action === "cancel") {
+        const run = await cancelApiRun(runId);
+        if (!run) return jsonResponse({ error: "run not found" }, 404);
+        return jsonResponse({ ok: run.status === "cancelled", run });
+      }
+      return jsonResponse({ error: "method not allowed" }, 405);
     }
 
     if (request.method === "POST" && url.pathname === "/v1/run") {
@@ -75,7 +125,17 @@ export async function handleApiRequest(
         args.push("--criteria", body.criteria.trim());
       }
       const result = await runOpenClickCommand(args);
-      return jsonResponse({ ok: result.exitCode === 0, ...result });
+      const output = standardizeCommandResult({
+        task,
+        live,
+        allowForeground: body.allowForeground === true,
+        criteria:
+          typeof body.criteria === "string" && body.criteria.trim()
+            ? body.criteria.trim()
+            : undefined,
+        ...result,
+      });
+      return jsonResponse({ ok: result.exitCode === 0, ...result, output });
     }
 
     if (request.method === "POST" && url.pathname === "/v1/cancel") {
@@ -233,6 +293,75 @@ function isAuthorized(request: Request, token: string): boolean {
   const auth = request.headers.get("authorization");
   if (auth === `Bearer ${token}`) return true;
   return request.headers.get("x-openclick-token") === token;
+}
+
+function parseRunRoute(
+  pathname: string,
+): { runId: string; action: "get" | "events" | "cancel" } | null {
+  const match = pathname.match(/^\/v1\/runs\/([^/]+)(?:\/([^/]+))?$/);
+  if (!match?.[1]) return null;
+  const action = match[2];
+  if (!action) return { runId: decodeURIComponent(match[1]), action: "get" };
+  if (action === "events" || action === "cancel") {
+    return { runId: decodeURIComponent(match[1]), action };
+  }
+  return null;
+}
+
+function streamRunEvents(runId: string, afterId: number): Response {
+  const encoder = new TextEncoder();
+  let lastId = Number.isFinite(afterId) ? afterId : 0;
+  let interval: ReturnType<typeof setInterval> | undefined;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (): void => {
+        const events = getApiRunEvents(runId, lastId);
+        if (events.length === 0 && !getApiRun(runId)) {
+          controller.enqueue(
+            encoder.encode(
+              `event: error\ndata: ${JSON.stringify({ error: "run not found" })}\n\n`,
+            ),
+          );
+          controller.close();
+          if (interval) clearInterval(interval);
+          return;
+        }
+        for (const event of events) {
+          lastId = event.id;
+          controller.enqueue(
+            encoder.encode(
+              `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+            ),
+          );
+        }
+        const run = getApiRun(runId);
+        if (
+          run &&
+          ["completed", "failed", "cancelled"].includes(run.status) &&
+          (events.length === 0 ||
+            events.some((event) => event.type === "finished"))
+        ) {
+          controller.close();
+          if (interval) clearInterval(interval);
+        }
+      };
+      send();
+      interval = setInterval(send, 500);
+    },
+    cancel() {
+      if (interval) clearInterval(interval);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "access-control-allow-origin": "http://localhost",
+    },
+  });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

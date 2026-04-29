@@ -165,15 +165,15 @@ final class OnboardingController: NSObject {
     switch result {
     case .ok(let report):
       let byName = Dictionary(uniqueKeysWithValues: report.results.map { ($0.name, $0) })
-      applySimple(.accessibility, name: "Accessibility (via cua-driver)", in: byName, okMessage: "Granted to CuaDriver. App control will work.")
-      applySimple(.screenRecording, name: "Screen Recording (via cua-driver)", in: byName, okMessage: "Granted to CuaDriver. Screenshots will work.")
+      applySimple(.accessibility, name: "Accessibility (via cua-driver)", in: byName, okMessage: "Lets OpenClick click and type in apps.")
+      applySimple(.screenRecording, name: "Screen Recording (via cua-driver)", in: byName, okMessage: "Lets OpenClick see the screen and verify progress.")
       applyCuaDriver(installed: byName["cua-driver installed"], daemon: byName["cua-driver daemon"])
       let apiKeyName = viewModel.provider == .openai ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
       applySimple(
         .apiKey,
         name: apiKeyName,
         in: byName,
-        okMessage: "\(viewModel.provider.title) API key is configured."
+        okMessage: "Lets OpenClick call your selected model."
       )
       if report.allOk {
         viewModel.footerMessage = "All set. You can close this window."
@@ -221,7 +221,7 @@ final class OnboardingController: NSObject {
       viewModel.update(
         kind: .cuaDriver,
         status: .missing(reason: "Not installed"),
-        description: "CuaDriver isn’t installed yet. Click Install to copy the command.",
+        description: "The local helper that performs desktop actions.",
         actionTitle: "Copy Install Command"
       )
       return
@@ -230,7 +230,7 @@ final class OnboardingController: NSObject {
       viewModel.update(
         kind: .cuaDriver,
         status: .checking,
-        description: "Preparing the background helper automatically.",
+        description: "The local helper that performs desktop actions.",
         actionTitle: ""
       )
       if daemonAutoRetryCount < 3 {
@@ -245,7 +245,7 @@ final class OnboardingController: NSObject {
     viewModel.update(
       kind: .cuaDriver,
       status: .ok,
-      description: "CuaDriver is installed and running.",
+      description: "The local helper that performs desktop actions.",
       actionTitle: ""
     )
   }

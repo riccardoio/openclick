@@ -4,6 +4,10 @@ import { VERSION } from "./version.ts";
 const USAGE = `Usage: openclick <command> [options]
 
 Commands:
+  setup [--provider <name>]            First-run setup wizard for provider,
+                                       model, API key, and macOS permissions.
+                                       --api-key, --model, --yes, and
+                                       --skip-doctor are supported for scripts.
   doctor [--fix] [--json]              Check prereqs (cua-driver, perms, API key).
                                        Auto-starts the helper if it is down.
                                        --fix is kept as a compatibility alias.
@@ -71,6 +75,17 @@ export async function main(args: string[]): Promise<void> {
   }
   const cmd = args[0];
   switch (cmd) {
+    case "setup": {
+      const { runSetup } = await import("./setup.ts");
+      await runSetup({
+        provider: parseOptionalModelProviderOption(args, "--provider"),
+        apiKey: parseOptionalStringOption(args, "--api-key"),
+        model: parseOptionalStringOption(args, "--model"),
+        yes: args.includes("--yes"),
+        skipDoctor: args.includes("--skip-doctor"),
+      });
+      return;
+    }
     case "doctor": {
       const {
         runDoctor,
@@ -526,6 +541,15 @@ function parseModelProviderArg(
 ): "anthropic" | "openai" {
   if (value === "anthropic" || value === "openai") return value;
   throw new Error("provider must be one of: anthropic, openai");
+}
+
+function parseOptionalModelProviderOption(
+  args: string[],
+  flag: string,
+): "anthropic" | "openai" | undefined {
+  const value = parseOptionalStringOption(args, flag);
+  if (value === undefined) return undefined;
+  return parseModelProviderArg(value);
 }
 
 function parseModelRoleArg(

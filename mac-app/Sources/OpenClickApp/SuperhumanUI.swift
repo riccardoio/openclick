@@ -186,10 +186,10 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
   var defaultDescription: String {
     switch self {
-    case .accessibility: return "Required so openclick can click and type in apps."
-    case .screenRecording: return "Required so openclick can see and verify the screen."
-    case .cuaDriver: return "Background helper that performs clicks and keystrokes."
-    case .apiKey: return "Lets openclick call the selected model provider."
+    case .accessibility: return "Lets OpenClick click and type in apps."
+    case .screenRecording: return "Lets OpenClick see the screen and verify progress."
+    case .cuaDriver: return "The local helper that performs desktop actions."
+    case .apiKey: return "Lets OpenClick call your selected model."
     }
   }
 

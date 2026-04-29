@@ -1,0 +1,13 @@
+{
+  "name": "@openclick/cua-driver",
+  "version": "0.1.0",
+  "description": "Platform resolver for the signed OpenClick cua-driver helper.",
+  "license": "MIT",
+  "bin": {
+    "cua-driver": "bin/cua-driver"
+  },
+  "files": ["bin/cua-driver", "index.js"],
+  "optionalDependencies": {
+    "@openclick/cua-driver-darwin-arm64": "0.1.0"
+  }
+}

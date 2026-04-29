@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { addAppMemoryFact } from "../src/memory.ts";
+import { readSettings } from "../src/settings.ts";
+import { runSetup } from "../src/setup.ts";
 import { readRunTakeoverResume } from "../src/trace.ts";
 
 let originalLog: typeof console.log;
@@ -110,6 +112,61 @@ describe("cli", () => {
   test("--help advertises doctor --json for the menu-bar onboarding", async () => {
     await main(["--help"]);
     expect(text()).toContain("--json");
+  });
+
+  test("--help advertises setup wizard", async () => {
+    await main(["--help"]);
+    expect(text()).toContain("setup");
+    expect(text()).toContain("First-run setup wizard");
+  });
+
+  test("setup can configure provider, model, and api key non-interactively", async () => {
+    await main([
+      "setup",
+      "--provider",
+      "openai",
+      "--model",
+      "gpt-test",
+      "--api-key",
+      "sk-test-key",
+      "--skip-doctor",
+      "--yes",
+    ]);
+    const settings = readSettings();
+    expect(settings.provider).toBe("openai");
+    expect(settings.openaiApiKey).toBe("sk-test-key");
+    expect(settings.models?.planner).toBe("gpt-test");
+    expect(settings.models?.verifier).toBe("gpt-test");
+    expect(settings.models?.result).toBe("gpt-test");
+    expect(text()).toContain("Setup complete");
+  });
+
+  test("setup interactive flow accepts provider defaults and hidden key prompt", async () => {
+    const prompts: string[] = [];
+    const writes: string[] = [];
+    await runSetup(
+      { skipDoctor: true },
+      {
+        write(line) {
+          writes.push(line);
+        },
+        async prompt(question) {
+          prompts.push(question);
+          if (question.startsWith("Provider")) return "2";
+          if (question.startsWith("Model setup")) return "1";
+          return "";
+        },
+        async secret(question) {
+          prompts.push(question);
+          return "sk-openai-interactive";
+        },
+      },
+    );
+    const settings = readSettings();
+    expect(settings.provider).toBe("openai");
+    expect(settings.openaiApiKey).toBe("sk-openai-interactive");
+    expect(prompts.join("\n")).toContain("OPENAI_API_KEY");
+    expect(writes.join("\n")).toContain("Setup complete");
   });
 
   test("invalid --max-steps throws", async () => {
