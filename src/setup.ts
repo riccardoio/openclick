@@ -1,12 +1,23 @@
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import {
+  Badge,
+  Box,
+  Spinner,
+  colorize,
+  fg,
+  input,
+  style,
+  select as tuiSelect,
+} from "@vr_patel/tui";
+import {
   type CheckResult,
   type DoctorReport,
   RealSystemProbe,
   formatDoctorReport,
   runDoctor,
   tryAutoStartDaemon,
+  watchDoctor,
 } from "./doctor.ts";
 import {
   type ModelProvider,
@@ -32,6 +43,17 @@ export interface SetupIO {
   write(line: string): void;
   prompt(question: string): Promise<string>;
   secret(question: string): Promise<string>;
+  select<T extends string>(
+    question: string,
+    options: SetupSelectOption<T>[],
+    defaultValue?: T,
+  ): Promise<T>;
+}
+
+export interface SetupSelectOption<T extends string> {
+  label: string;
+  value: T;
+  description?: string;
 }
 
 export interface SetupResult {
@@ -45,16 +67,13 @@ export async function runSetup(
   opts: SetupOptions = {},
   io: SetupIO = defaultSetupIO(),
 ): Promise<SetupResult> {
-  io.write("");
-  io.write("Welcome to OpenClick setup.");
-  io.write(
-    "This will configure your model provider, API key, and macOS checks.",
-  );
-  io.write("");
+  io.write(renderSetupWelcome());
 
   const provider = await chooseProvider(opts, io);
   setModelProvider(provider);
-  io.write(`Model provider: ${provider}`);
+  io.write(
+    `${Badge.success("SET")} ${colorize("Model provider", fg.gray)} ${provider}`,
+  );
 
   const modelConfigured = await configureModel(provider, opts, io);
   const apiKeyConfigured = await configureApiKey(provider, opts, io);
@@ -90,6 +109,14 @@ function defaultSetupIO(): SetupIO {
       console.log(line);
     },
     async prompt(question) {
+      if (isInteractiveTerminal()) {
+        return (
+          await input({
+            message: question.replace(/:\s*$/, ""),
+            placeholder: "Type a value",
+          })
+        ).trim();
+      }
       const rl = createInterface({
         input: process.stdin,
         output: process.stdout,
@@ -103,6 +130,9 @@ function defaultSetupIO(): SetupIO {
     async secret(question) {
       return await promptSecret(question);
     },
+    async select(question, options, defaultValue) {
+      return await selectOption(question, options, defaultValue);
+    },
   };
 }
 
@@ -113,14 +143,22 @@ async function chooseProvider(
   if (opts.provider) return opts.provider;
   const current = resolveModelProvider();
   if (opts.yes) return current;
-  io.write("Choose a model provider:");
-  io.write("  1. Anthropic");
-  io.write("  2. OpenAI");
-  const answer = await io.prompt(`Provider [${current}]: `);
-  if (!answer) return current;
-  if (answer === "1" || /^anthropic$/i.test(answer)) return "anthropic";
-  if (answer === "2" || /^openai$/i.test(answer)) return "openai";
-  throw new Error("provider must be anthropic or openai");
+  return await io.select<ModelProvider>(
+    "Choose a model provider",
+    [
+      {
+        label: "Anthropic",
+        value: "anthropic",
+        description: "Claude models for planning and vision.",
+      },
+      {
+        label: "OpenAI",
+        value: "openai",
+        description: "GPT models for planning and vision.",
+      },
+    ],
+    current,
+  );
 }
 
 async function configureModel(
@@ -140,15 +178,26 @@ async function configureModel(
   }
 
   io.write("");
-  io.write("Choose model setup:");
-  io.write(`  1. Recommended defaults (${currentPlanner})`);
-  io.write("  2. Custom model for planner/verifier/result");
-  const answer = await io.prompt("Model setup [1]: ");
-  if (!answer || answer === "1") {
+  const setup = await io.select<"recommended" | "custom">(
+    "Choose model setup",
+    [
+      {
+        label: `Recommended defaults (${currentPlanner})`,
+        value: "recommended",
+        description: "Use OpenClick's default model for this provider.",
+      },
+      {
+        label: "Custom model",
+        value: "custom",
+        description: "Use one model for planner, verifier, and result output.",
+      },
+    ],
+    "recommended",
+  );
+  if (setup === "recommended") {
     io.write(`Model: ${currentPlanner} (default)`);
     return false;
   }
-  if (answer !== "2") throw new Error("model setup must be 1 or 2");
   const model = await io.prompt("Model name: ");
   if (!model.trim()) throw new Error("model cannot be empty");
   saveSingleModelForCoreRoles(model.trim());
@@ -175,8 +224,23 @@ async function configureApiKey(
     io.write(
       `${provider} API key already configured via ${status.source}: ${status.masked}`,
     );
-    const answer = await io.prompt("Replace it? [y/N]: ");
-    if (!/^y(es)?$/i.test(answer)) return true;
+    const action = await io.select<"keep" | "replace">(
+      "API key already exists",
+      [
+        {
+          label: "Keep current key",
+          value: "keep",
+          description: "Leave the existing key unchanged.",
+        },
+        {
+          label: "Replace key",
+          value: "replace",
+          description: "Paste a new key for this provider.",
+        },
+      ],
+      "keep",
+    );
+    if (action === "keep") return true;
   } else if (status.available) {
     io.write(
       `${provider} API key already configured via ${status.source}: ${status.masked}`,
@@ -198,16 +262,31 @@ async function configureApiKey(
 
 async function runSetupDoctor(io: SetupIO): Promise<DoctorReport> {
   io.write("");
-  io.write("Checking macOS permissions and local helpers...");
+  const spinner = isInteractiveTerminal()
+    ? new Spinner({
+        text: "Checking macOS permissions and local helpers",
+        style: "dots",
+        color: fg.cyan,
+      }).start()
+    : null;
   const probe = new RealSystemProbe();
   let report = await runDoctor(probe);
   const daemon = report.results.find((r) => r.name === "cua-driver daemon");
   if (daemon?.status === "fail") {
+    spinner?.update("Starting the local CuaDriver helper");
     const started = await tryAutoStartDaemon(probe);
-    io.write(started.message);
+    if (!spinner) io.write(started.message);
     report = await runDoctor(probe);
   }
+  if (report.allOk) spinner?.stop("macOS checks passed");
+  else spinner?.warn("macOS still needs a few permissions");
   io.write(formatDoctorReport(report));
+  if (!report.allOk && process.stdin.isTTY && process.stdout.isTTY) {
+    io.write(
+      "Keeping this status live while you grant permissions. Press Ctrl-C to stop.",
+    );
+    report = await watchDoctor(probe);
+  }
   return report;
 }
 
@@ -226,6 +305,16 @@ function saveSingleModelForCoreRoles(model: string): void {
 }
 
 async function promptSecret(question: string): Promise<string> {
+  if (isInteractiveTerminal()) {
+    return (
+      await input({
+        message: question.replace(/:\s*$/, ""),
+        placeholder: "Paste your API key",
+        mask: "*",
+        validate: (value) => value.trim().length > 0 || "API key is required",
+      })
+    ).trim();
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     const rl = createInterface({
       input: process.stdin,
@@ -250,6 +339,106 @@ async function promptSecret(question: string): Promise<string> {
   } finally {
     spawnSync("/bin/stty", ["echo"], { stdio: "inherit" });
   }
+}
+
+async function selectOption<T extends string>(
+  question: string,
+  options: SetupSelectOption<T>[],
+  defaultValue?: T,
+): Promise<T> {
+  if (options.length === 0) throw new Error("select requires options");
+  const defaultIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === defaultValue),
+  );
+  if (
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY ||
+    !process.stdin.setRawMode
+  ) {
+    return await selectOptionFallback(question, options, defaultIndex);
+  }
+
+  return await tuiSelect<T>({
+    message: question,
+    options,
+    initialIndex: defaultIndex,
+    pointer: "❯",
+    activeColor: fg.cyan,
+  });
+}
+
+async function selectOptionFallback<T extends string>(
+  question: string,
+  options: SetupSelectOption<T>[],
+  defaultIndex: number,
+): Promise<T> {
+  console.log(`${question}:`);
+  for (const [index, option] of options.entries()) {
+    const detail = option.description ? ` - ${option.description}` : "";
+    console.log(`  ${index + 1}. ${option.label}${detail}`);
+  }
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = (await rl.question(`Select [${defaultIndex + 1}]: `)).trim();
+    if (!answer) return optionAt(options, defaultIndex).value;
+    const selectedNumber = Number.parseInt(answer, 10);
+    if (
+      Number.isInteger(selectedNumber) &&
+      selectedNumber >= 1 &&
+      selectedNumber <= options.length
+    ) {
+      return optionAt(options, selectedNumber - 1).value;
+    }
+    const selected = options.find(
+      (option) =>
+        option.value.toLowerCase() === answer.toLowerCase() ||
+        option.label.toLowerCase() === answer.toLowerCase(),
+    );
+    if (selected) return selected.value;
+    throw new Error(`invalid selection: ${answer}`);
+  } finally {
+    rl.close();
+  }
+}
+
+function optionAt<T extends string>(
+  options: SetupSelectOption<T>[],
+  index: number,
+): SetupSelectOption<T> {
+  const option = options[index];
+  if (!option) throw new Error(`invalid selection index: ${index}`);
+  return option;
+}
+
+function isInteractiveTerminal(): boolean {
+  return Boolean(
+    process.stdin.isTTY && process.stdout.isTTY && process.stdin.setRawMode,
+  );
+}
+
+function renderSetupWelcome(): string {
+  const box = new Box({
+    title: "OpenClick setup",
+    borderStyle: "round",
+    borderColor: fg.cyan,
+    titleColor: fg.cyan,
+    paddingX: 1,
+    paddingY: 1,
+    dimBorder: true,
+  });
+  return `\n${box.render(
+    [
+      `${Badge.info("CLI")} ${colorize("Configure OpenClick in a few steps.", fg.white, style.bold)}`,
+      colorize(
+        "Choose a model, save your API key, and verify macOS permissions.",
+        fg.gray,
+      ),
+    ].join("\n"),
+  )}\n`;
 }
 
 export function setupSummary(): string {

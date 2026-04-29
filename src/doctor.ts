@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { Badge, Box, colorize, fg, style } from "@vr_patel/tui";
 import { resolveCuaDriverBinary, resolveRecorderBinary } from "./paths.ts";
 import { apiKeyStatus, resolveModelProvider } from "./settings.ts";
 
@@ -256,6 +257,50 @@ export async function runDoctor(
   return { results, allOk: results.every((r) => r.status === "ok") };
 }
 
+export async function runDoctorWithAutostart(
+  probe: SystemProbe,
+  opts: DoctorOptions = {},
+): Promise<DoctorReport> {
+  const report = await runDoctor(probe, opts);
+  const driverInstalled = report.results.some(
+    (r) => r.name === "cua-driver installed" && r.status === "ok",
+  );
+  if (!driverInstalled) return report;
+
+  const daemon = report.results.find((r) => r.name === "cua-driver daemon");
+  if (daemon?.status !== "fail") return report;
+
+  const result = await tryAutoStartDaemon(probe);
+  console.error(result.message);
+  return await runDoctor(probe, opts);
+}
+
+export async function watchDoctor(
+  probe: SystemProbe,
+  opts: DoctorOptions & {
+    intervalMs?: number;
+    clearScreen?: boolean;
+    onReport?: (report: DoctorReport) => void;
+  } = {},
+): Promise<DoctorReport> {
+  const intervalMs = opts.intervalMs ?? 1500;
+  while (true) {
+    const report = await runDoctorWithAutostart(probe, opts);
+    if (opts.clearScreen ?? true) {
+      process.stdout.write("\x1b[2J\x1b[H");
+    }
+    process.stdout.write(formatDoctorReport(report));
+    if (!report.allOk) {
+      process.stdout.write(
+        `Status refreshes every ${Math.round(intervalMs / 100) / 10}s. Press Ctrl-C to stop.\n\n`,
+      );
+    }
+    opts.onReport?.(report);
+    if (report.allOk) return report;
+    await sleep(intervalMs);
+  }
+}
+
 /**
  * Attempts to launch the resolved cua-driver daemon directly, then polls the
  * probe until it reports the daemon as running or a deadline elapses.
@@ -325,45 +370,62 @@ function sleep(ms: number): Promise<void> {
 }
 
 function launchCuaDriverDaemon(cuaDriver: string): void {
-  Bun.spawn([cuaDriver, "serve"], {
+  const proc = Bun.spawn([cuaDriver, "serve"], {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
     env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
   });
+  proc.unref?.();
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
+  lines.push(
+    `${colorize("OpenClick", fg.cyan, style.bold)} ${Badge.outline("setup", fg.cyan)} ${report.allOk ? Badge.success("READY") : Badge.warning("ACTION NEEDED")}`,
+  );
   lines.push("");
-  lines.push("Welcome to openclick.");
-  lines.push("");
-  lines.push("Prerequisites:");
   for (const r of report.results) {
     const mark = r.status === "ok" ? "✓" : "✗";
+    const statusColor = r.status === "ok" ? fg.green : fg.red;
     const padded = r.name.padEnd(36);
     const explanation = prerequisiteExplanation(r.name);
     lines.push(
-      `  ${mark} ${padded}${r.detail}${explanation ? ` - ${explanation}` : ""}`,
+      `  ${colorize(`${mark} ${padded}`, statusColor, style.bold)}${colorize(r.detail, r.status === "ok" ? fg.green : fg.yellow)}${explanation ? colorize(` - ${explanation}`, fg.gray) : ""}`,
     );
     if (r.status === "fail" && r.fixHint) {
-      lines.push(`       → ${r.fixHint}`);
+      lines.push(`       ${colorize(`→ ${r.fixHint}`, fg.cyan)}`);
     }
   }
   lines.push("");
   if (report.allOk) {
-    lines.push("All set. Try:");
+    lines.push(colorize("All set. Try:", fg.green, style.bold));
     lines.push(
-      "  openclick record my-first-skill 'describe what you're about to do'",
+      colorize(
+        "  openclick record my-first-skill 'describe what you're about to do'",
+        fg.gray,
+      ),
     );
   } else {
     const failed = report.results.filter((r) => r.status === "fail").length;
     lines.push(
-      `Fix the ${failed} issue(s) above, then re-run \`openclick doctor\`.`,
+      colorize(
+        `Fix the ${failed} issue(s) above, or keep \`openclick doctor --watch\` open while granting permissions.`,
+        fg.yellow,
+        style.bold,
+      ),
     );
   }
-  lines.push("");
-  return lines.join("\n");
+  const box = new Box({
+    title: "Status",
+    borderStyle: "round",
+    borderColor: report.allOk ? fg.green : fg.yellow,
+    titleColor: report.allOk ? fg.green : fg.yellow,
+    paddingX: 1,
+    paddingY: 1,
+    dimBorder: true,
+  });
+  return `\n${box.render(lines.join("\n"))}\n`;
 }
 
 function prerequisiteExplanation(name: string): string {
