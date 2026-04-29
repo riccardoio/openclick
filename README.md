@@ -4,7 +4,7 @@ OpenClick is a macOS automation system for completing desktop tasks from natural
 
 The `openclick` CLI is the core package. The native macOS app is an optional wrapper around the same CLI: CLI-only users can install and run `openclick` without installing the Mac app, while Mac app installs bundle the CLI and expose the same command locally.
 
-OpenClick uses a planner model, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
+OpenClick uses hosted planner models, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
 
 ## Status
 
@@ -18,453 +18,78 @@ openclick run "open Calculator and calculate 17 times 23" --live
 
 The older `record`/`compile` workflow still exists for compatibility and tests, but it is not the main product path.
 
-## Requirements
-
-- macOS 14+
-- [Bun](https://bun.sh)
-- `cua-driver`
-- Anthropic or OpenAI API key
-- macOS Accessibility and Screen Recording permissions
-
-Run the doctor first:
+## Quick Start
 
 ```sh
-openclick doctor
-```
-
-`openclick doctor` checks dependencies and permissions. If `cua-driver` is installed but its helper is down, OpenClick tries to start it automatically. `--fix` is still accepted as a compatibility alias:
-
-```sh
-openclick doctor --fix
-openclick doctor --json
-```
-
-## macOS Permissions
-
-OpenClick needs a few macOS permissions because it acts on the local desktop instead of a remote browser sandbox. The onboarding screen and `openclick doctor` check these for you.
-
-Enable these in System Settings > Privacy & Security:
-
-| Permission | Why OpenClick needs it |
-| --- | --- |
-| Accessibility | Lets OpenClick and `cua-driver` inspect accessible UI elements, focus windows, press buttons, type, click, and use AX-backed app controls. Without it, OpenClick cannot reliably act inside other apps. |
-| Screen Recording | Lets OpenClick capture screenshots for visual state, verification, progress checks, stuck-state detection, and takeover learning. Without it, the planner and verifier lose the evidence they need to know what happened. |
-
-Also required:
-
-- Model API key: Anthropic or OpenAI is required for planning, verification, result summaries, and compile flows. Keys saved through the Mac app are stored in Keychain and shown only as asterisks.
-- `cua-driver` helper: executes the local desktop primitives. OpenClick starts the helper automatically when possible; users should not need to start it manually.
-
-Grant permissions to the app/process macOS shows for the way you run OpenClick. For the native app, this is the OpenClick app. For CLI development, it may be your terminal app, Bun, or the `cua-driver` helper. After rebuilding a local app binary, macOS may require granting permissions again because the binary identity changed.
-
-## Install From Source
-
-Install dependencies:
-
-```sh
-bun install
-```
-
-Run the CLI directly from the repo:
-
-```sh
-bun ./bin/openclick --help
-bun ./bin/openclick doctor
-bun ./bin/openclick run "open Safari and search Google for OpenAI" --live
-```
-
-Optionally link the CLI for local development:
-
-```sh
-bun link
-openclick doctor
-openclick run "open Calculator and calculate 18 times 24" --live
-```
-
-## Model Provider Setup
-
-Choose a provider and save its API key:
-
-```sh
-openclick settings provider set anthropic
-openclick settings anthropic-api-key set sk-ant-...
-
-openclick settings provider set openai
-openclick settings openai-api-key set sk-...
-```
-
-`settings api-key` is kept as the Anthropic key shortcut:
-
-```sh
-openclick settings api-key status
-openclick settings api-key set sk-ant-...
-openclick settings api-key clear
-```
-
-Provider and model commands:
-
-```sh
-openclick settings provider status
-openclick settings provider set anthropic
-openclick settings provider set openai
-
-openclick settings model status
-openclick settings model set planner <model>
-openclick settings model set verifier <model>
-openclick settings model set result <model>
-openclick settings model set compile <model>
-```
-
-Environment variables also work:
-
-```sh
-ANTHROPIC_API_KEY=sk-ant-... openclick run "..." --live
-OPENAI_API_KEY=sk-... openclick run "..." --live
-OPENCLICK_MODEL_PROVIDER=openai openclick run "..." --live
-```
-
-The default action loop remains optimized for hosted Anthropic/OpenAI models plus AX and `cua-driver` grounding. Local/open-model providers are planned behind the same abstraction, but should not reduce the default hosted-model accuracy.
-
-## CLI And Mac App
-
-OpenClick has two install surfaces:
-
-- CLI-only: install or link the JavaScript/Bun package and use the `openclick` command.
-- Mac app: build/install the native app from `mac-app/`; the app bundles the CLI and installs `~/.local/bin/openclick` on launch.
-
-The Mac app includes:
-
-- menu bar chat bar
-- onboarding and permission checks
-- provider/API-key settings
-- task activity panel
-- takeover/learning UI
-
-For local Mac app development:
-
-```sh
-bun run build:mac-app
-bun run launch:mac-app
-```
-
-The CI/release Swift package commands are:
-
-```sh
-swift build --package-path mac-app -c release
-swift test --package-path mac-app
-```
-
-Swift products:
-
-- `openclick-app` - native menu bar app
-- `openclick-recorder` - legacy recorder executable used by the old recording workflow
-- `RecorderCore` - shared recorder core library
-
-## Usage
-
-Dry-run a task. This asks the planner what it would do, but does not execute UI actions:
-
-```sh
-openclick run "open Calculator and calculate 17 times 23"
-```
-
-Run the task live:
-
-```sh
+npm install -g openclick
+openclick setup
 openclick run "open Calculator and calculate 17 times 23" --live
 ```
 
-Show the agent cursor while it acts:
+Requirements:
+
+- macOS 14+
+- Anthropic or OpenAI API key
+- macOS Accessibility and Screen Recording permissions
+
+The npm package includes the signed `cua-driver` helper for macOS arm64. `cua-driver` is the small local helper that performs desktop actions for OpenClick. See [Installation](docs/installation.md) for source setup and local development install options.
+
+## Core Concepts
+
+| Concept | Summary | Details |
+| --- | --- | --- |
+| Installation | Install from npm, run from source, and complete first-run setup with `openclick setup`. | [docs/installation.md](docs/installation.md) |
+| macOS permissions | Accessibility and Screen Recording are required because OpenClick acts on the local desktop. | [docs/permissions.md](docs/permissions.md) |
+| Model providers | Configure Anthropic or OpenAI keys and role-specific models. | [docs/model-providers.md](docs/model-providers.md) |
+| CLI usage | Run, verify, budget, cancel, and tune desktop tasks from the command line. | [docs/usage.md](docs/usage.md) |
+| Mac app | Native menu bar app, onboarding, settings, task activity, and takeover UI. | [docs/mac-app.md](docs/mac-app.md) |
+| Execution and learning | Planner/executor loop, shared-seat mode, user takeover, traces, and local learning. | [docs/execution-and-learning.md](docs/execution-and-learning.md) |
+| HTTP API | Local API server, async runs, SSE events, and `StandardTaskOutput`. | [docs/api.md](docs/api.md) |
+| MCP and daemon | MCP stdio server and launchd API daemon setup. | [docs/mcp-and-daemon.md](docs/mcp-and-daemon.md) |
+| App memory | Local memory files, import/export, candidate facts, and advisory negative memories. | [docs/memory.md](docs/memory.md) |
+| Architecture | Main TypeScript and Swift modules. | [docs/architecture.md](docs/architecture.md) |
+| Development | Test commands, smoke tests, and contributor notes. | [docs/development.md](docs/development.md) |
+
+## Common Commands
 
 ```sh
-openclick run "open Safari and search Google for OpenAI" --live --cursor
-```
-
-Add explicit success criteria for stricter verification and retry feedback:
-
-```sh
-openclick run "open Figma and draw an analog clock" \
-  --live \
-  --criteria "the clock must be clean, show 10:10, have a circular outline, two hands, and 12 visible hour marks"
-```
-
-Use explicit budgets:
-
-```sh
-openclick run "open Figma and draw a simple clock" \
-  --live \
-  --max-steps 120 \
-  --max-batches 12 \
-  --max-model-calls 24 \
-  --max-screenshots 16
-```
-
-Useful cost/latency knobs:
-
-```sh
-OPENCLICK_VERIFIER_MODEL=claude-sonnet-4-6 \
-OPENCLICK_SCREENSHOT_MAX_EDGE=1024 \
-OPENCLICK_STEP_TIMEOUT_MS=20000 \
-openclick run "open Figma and draw a clean clock" --live --criteria "the clock shows 10:10 and has 12 hour marks"
-```
-
-Disable memory reads or writes for a run:
-
-```sh
-openclick run "open Figma and draw a clock" --live --no-memory
-openclick run "open Figma and draw a clock" --live --no-learn
-```
-
-Allow foreground/global control only when you are ready for OpenClick to potentially interrupt the human seat:
-
-```sh
-openclick run "do a task that cannot be completed in background mode" --live --allow-foreground
-```
-
-Cancel a running task from another terminal:
-
-```sh
+openclick doctor [--fix] [--json]
+openclick setup [--provider <anthropic|openai>] [--api-key <key>] [--model <model>]
+openclick run <task> [--live] [--criteria <text>] [--max-steps <n>] [--max-batches <n>]
 openclick cancel <run-id>
+
+openclick settings provider set <anthropic|openai>
+openclick settings anthropic-api-key set <key>
+openclick settings openai-api-key set <key>
+
+openclick server --host 127.0.0.1 --port 4242
+openclick daemon install --host 127.0.0.1 --port 4242
+openclick mcp
 ```
 
-Each run prints its run id near startup. The native Mac app also exposes a stop button while a task is running.
+## API Integration
 
-## How Execution Works
-
-`openclick run` follows a bounded loop:
-
-1. Discover relevant apps, current usable windows, and active local app memories.
-2. Capture AX state, modal/window state, and an optimized screenshot.
-3. Ask the planner for a small, safe action batch with visible postconditions for risky actions.
-4. Execute locally through `cua-driver`.
-5. Revalidate task-level window leases before window-targeted actions.
-6. Run cheap local visual-delta checks before spending verifier calls.
-7. Verify the result from screenshot and AX evidence.
-8. Replan with verifier feedback or execution critique when the task is not done.
-9. Ask for user takeover only when automation is blocked and reasonable recovery options have been exhausted.
-10. Save scoped local memories from useful successes, repeated failures, and successful takeovers.
-
-The default runtime is shared-seat background mode: it should not steal focus, require the target app to be frontmost, or rely on the real mouse cursor. It uses pid/window-targeted `cua-driver` primitives wherever possible. Foreground/global primitives are blocked unless `--allow-foreground` is set.
-
-If external seat activity is detected during a shared-seat run, OpenClick keeps running but disables learning for that run so polluted evidence does not become a bad memory.
-
-## User Takeover And Learning
-
-When OpenClick cannot safely continue, it can pause for manual takeover. The Mac app handles this through the task activity panel. The CLI marker command is:
-
-```sh
-openclick takeover finish \
-  --run-id <run-id> \
-  --issue "Confirmation click required" \
-  --summary "The user opened the email manually" \
-  --outcome success
-```
-
-Optional takeover fields:
-
-```sh
---bundle-id <bundle-id>
---app-name <name>
---task <task>
---reason-type <reason>
---feedback <text>
---trajectory-path <file>
-```
-
-Directly save a takeover learning:
-
-```sh
-openclick memory learn-takeover \
-  --bundle-id com.google.Chrome \
-  --app-name "Google Chrome" \
-  --issue "Wrong Chrome window selected" \
-  --summary "Keep actions pinned to the task window id unless it disappears"
-```
-
-## Local API Server
-
-Start a local HTTP API server:
+Use the async API for host integrations such as OpenClaw:
 
 ```sh
 openclick server --host 127.0.0.1 --port 4242
 ```
 
-Use a token when exposing the server beyond localhost:
-
 ```sh
-openclick server --host 127.0.0.1 --port 4242 --token <token>
-```
-
-Send the token as either:
-
-```sh
-Authorization: Bearer <token>
-X-OpenClick-Token: <token>
-```
-
-HTTP API endpoints:
-
-| Method | Path | Body | Response |
-| --- | --- | --- | --- |
-| `GET` | `/health` | none | `{ "ok": true, "name": "openclick", "version": "..." }` |
-| `GET` | `/v1/status` | none | Runs `openclick doctor` and returns `{ "ok": boolean, "report": ... }` |
-| `GET` | `/v1/settings/api-key` | none | Returns selected provider, availability, source, and masked key. The raw key is never returned. |
-| `POST` | `/v1/settings/api-key` | `{ "apiKey": "..." }`, `{ "api_key": "..." }`, or `{ "apiKey": "...", "provider": "openai" }` | Saves/replaces the provider key and returns masked key status. |
-| `DELETE` | `/v1/settings/api-key` | none | Clears the saved key for the selected provider and returns key status. |
-| `POST` | `/v1/run` | `{ "task": "...", "live": true, "allowForeground": false, "criteria": "..." }` | Runs `openclick run`; returns `{ "ok": boolean, "exitCode": number, "stdout": "...", "stderr": "..." }`. `live` defaults to `true`. |
-| `POST` | `/v1/cancel` | `{ "runId": "..." }` or `{ "run_id": "..." }` | Runs `openclick cancel`; returns process output. |
-| `GET` | `/v1/memory` | none | Runs `openclick memory list`; returns process output. |
-| `OPTIONS` | any path | none | CORS preflight response. |
-
-Example:
-
-```sh
-curl -X POST http://127.0.0.1:4242/v1/run \
+curl -X POST http://127.0.0.1:4242/v1/runs \
   -H "Content-Type: application/json" \
-  -d '{"task":"open Chrome and go to Gmail","live":true}'
+  -d '{"task":"read the latest unread email and return the content","live":true}'
 ```
 
-## MCP Server
+OpenClick returns a stable `StandardTaskOutput` envelope for both blocking and async runs. Host apps should display `result.body` as the user-facing answer/confirmation and keep `stdout`/`stderr` behind logs/details UI. See [HTTP API](docs/api.md).
 
-For MCP clients that launch a stdio server:
+## Safety Defaults
 
-```sh
-openclick mcp
-```
+OpenClick defaults to shared-seat background mode:
 
-MCP tools:
+- it should not steal focus;
+- it should not rely on the human's real cursor;
+- it should stay pinned to task-level windows when possible;
+- foreground/global primitives are blocked unless `--allow-foreground` is set.
 
-| Tool | Arguments | Result |
-| --- | --- | --- |
-| `run_task` | `{ "task": string, "live"?: boolean, "allowForeground"?: boolean, "criteria"?: string }` | Runs a natural-language macOS desktop task through OpenClick and returns CLI text output. `live` defaults to `true`. |
-| `status` | none | Runs `openclick doctor --json` and returns the JSON status text. |
-
-## API Daemon
-
-Install the local API server as a user launchd daemon so it starts at login and stays running:
-
-```sh
-openclick daemon install --host 127.0.0.1 --port 4242
-openclick daemon status
-openclick daemon uninstall
-```
-
-With token auth:
-
-```sh
-openclick daemon install --host 127.0.0.1 --port 4242 --token <token>
-```
-
-The daemon label is `dev.openclick.server`. Logs are written under `~/.openclick/server.log` and `~/.openclick/server.err.log`.
-
-## Debug Traces
-
-OpenClick writes lightweight run traces under:
-
-```sh
-~/.openclick/runs/<run-id>/trace.json
-```
-
-A trace includes the prompt, criteria, plan steps, verifier replies, critique feedback, cost counters, interventions, and final status.
-
-Only one live run controls the desktop at a time. OpenClick writes a run lock under `~/.openclick/run.lock` and refuses a second live run while the first process is still alive.
-
-## Commands
-
-```sh
-openclick doctor [--fix] [--json]
-openclick run <task> [--live] [--cursor] [--confirm] [--criteria <text>] [--max-steps <n>] [--max-batches <n>] [--max-model-calls <n>] [--max-screenshots <n>] [--no-memory] [--no-learn] [--allow-foreground] [--agent]
-openclick cancel <run-id>
-openclick takeover finish --run-id <id> --issue <text> --summary <text> [--outcome success|failed|cancelled]
-
-openclick settings provider status|set <anthropic|openai>
-openclick settings model status|set <planner|verifier|result|compile> <model>
-openclick settings api-key status|set|clear
-openclick settings anthropic-api-key status|set|clear
-openclick settings openai-api-key status|set|clear
-
-openclick server [--host 127.0.0.1] [--port 4242] [--token <token>]
-openclick mcp
-openclick daemon install [--host 127.0.0.1] [--port 4242] [--token <token>]
-openclick daemon status
-openclick daemon uninstall
-
-openclick memory list
-openclick memory export <file>
-openclick memory import <file>
-openclick memory learn-takeover --bundle-id <id> --issue <text> --summary <text> [--app-name <name>] [--task <task>]
-
-openclick record <task-name>
-openclick compile <skill-name>
-```
-
-## App Memory
-
-OpenClick keeps optional local app memories under:
-
-```sh
-~/.openclick/apps/<bundle-id>/memory.json
-```
-
-These are not replay scripts. They are structured affordances, avoid-rules, and observations such as "prefer the largest content window" or "this shortcut opened a new document".
-
-Each memory fact has a status, source, confidence, evidence count, scope, and cause. Only `active` facts are added to planner prompts. New negative facts and execution critiques start as `candidate` memories, and one-off failures are not used as future guidance until repeated local evidence promotes them. Imported facts also start as candidates with reduced confidence, so shared memory can help discovery without silently overriding local behavior.
-
-Share memories with another machine or project:
-
-```sh
-openclick memory export openclick-memory.json
-openclick memory import openclick-memory.json
-```
-
-Negative memories are soft cautions, not hard blocks. They should steer the planner away from likely failure modes, but must not disable tools, shortcuts, windows, or future attempts.
-
-## Architecture
-
-- `bin/openclick` is the CLI entrypoint.
-- `src/cli.ts` parses commands and runtime budgets.
-- `src/run.ts` owns prompt-first execution, screenshots, modal state, verification, critique/replanning, run locking, traces, and cost telemetry.
-- `src/planner.ts` builds planner prompts, validates model plans, and normalizes common planner mistakes.
-- `src/executor.ts` executes local plans through `cua-driver`, resolves AX selectors, repairs context, and maintains task-level window leases.
-- `src/settings.ts` manages provider, model, and API-key configuration.
-- `src/server.ts` implements the HTTP API and MCP stdio server.
-- `src/daemon.ts` installs and manages the launchd API daemon.
-- `src/memory.ts` stores, imports, exports, promotes, and retrieves local app memory facts.
-- `src/trace.ts` stores run traces, intervention markers, takeover resume markers, cancellation markers, and the single-run desktop lock.
-- `src/doctor.ts` checks local dependencies and macOS permissions.
-- `src/mac-app.ts` is a local development helper for building and launching the native Mac app bundle.
-- `mac-app/Sources/OpenClickApp/` contains the native menu bar app, onboarding, settings, chat bar, and task activity UI.
-- `mac-app/Sources/Recorder/` contains the legacy Swift recorder executable.
-- `mac-app/Sources/RecorderCore/` contains recorder shared code and tests.
-- `tests/` contains Bun tests and fixtures.
-
-## Development
-
-```sh
-bun run format
-bun run lint
-bun run typecheck
-bun test
-swift build --package-path mac-app -c release
-swift test --package-path mac-app
-```
-
-Useful live smoke tests:
-
-```sh
-bun ./bin/openclick run "open Calculator and calculate 22 times 27; stop when the display shows 594" --live
-bun ./bin/openclick run "open Safari and search Google for OpenAI; stop when Google search results are visible" --live
-```
-
-## Notes For Contributors
-
-- Prefer generic capabilities over app-specific prompt hacks.
-- Keep model budgets visible and bounded.
-- Preserve shared-seat behavior by default: classify new primitives as background-safe or foreground-required before exposing them to the planner.
-- Treat screenshots as primary evidence for visual apps and browser content.
-- Treat AX trees as useful but often incomplete.
-- Do not accept weak visual success criteria just because an app or canvas is visible.
-- Give high-risk visual actions a concrete expected visible change and critique/replan when the change does not appear.
-- Add new UI primitives at the executor/capability layer when possible, then teach the planner about them.
-- Store memories as scoped facts with evidence, not brittle click scripts or app-specific prompt hacks.
-- Treat imported and negative memories as advisory until local runs prove them useful.
+When automation is blocked, OpenClick should ask for user takeover only after reasonable recovery options have been exhausted. See [Execution And Learning](docs/execution-and-learning.md).

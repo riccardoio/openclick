@@ -1,0 +1,12 @@
+{
+  "name": "@openclick/cua-driver-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Signed and notarized cua-driver binary for OpenClick on macOS arm64.",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "bin": {
+    "cua-driver": "bin/cua-driver"
+  },
+  "files": ["bin/cua-driver", "CuaDriver.app"]
+}

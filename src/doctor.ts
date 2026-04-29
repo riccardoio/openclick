@@ -332,7 +332,10 @@ export function formatDoctorReport(report: DoctorReport): string {
   for (const r of report.results) {
     const mark = r.status === "ok" ? "✓" : "✗";
     const padded = r.name.padEnd(36);
-    lines.push(`  ${mark} ${padded}${r.detail}`);
+    const explanation = prerequisiteExplanation(r.name);
+    lines.push(
+      `  ${mark} ${padded}${r.detail}${explanation ? ` - ${explanation}` : ""}`,
+    );
     if (r.status === "fail" && r.fixHint) {
       lines.push(`       → ${r.fixHint}`);
     }
@@ -351,4 +354,20 @@ export function formatDoctorReport(report: DoctorReport): string {
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function prerequisiteExplanation(name: string): string {
+  if (name.includes("Accessibility")) {
+    return "Lets OpenClick click and type in apps.";
+  }
+  if (name.includes("Screen Recording")) {
+    return "Lets OpenClick see the screen and verify progress.";
+  }
+  if (name.includes("cua-driver")) {
+    return "The local helper that performs desktop actions.";
+  }
+  if (name.endsWith("_API_KEY")) {
+    return "Lets OpenClick call your selected model.";
+  }
+  return "";
 }

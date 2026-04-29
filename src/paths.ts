@@ -66,6 +66,24 @@ export function resolveRunTracePath(runId: string): string {
   );
 }
 
+export function resolveApiRunOutputPath(runId: string): string {
+  return join(
+    resolveOpenClickHome(),
+    "runs",
+    sanitizeBundleId(runId),
+    "api-output.json",
+  );
+}
+
+export function resolveApiRunEventsPath(runId: string): string {
+  return join(
+    resolveOpenClickHome(),
+    "runs",
+    sanitizeBundleId(runId),
+    "api-events.jsonl",
+  );
+}
+
 function sanitizeBundleId(bundleId: string): string {
   return bundleId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -74,6 +92,7 @@ export function resolveCuaDriverBinary(): string | null {
   const candidates = [
     Bun.env.OPENCLICK_CUA_DRIVER_BIN,
     Bun.env.CUA_DRIVER,
+    resolveNpmCuaDriverBinary(),
     resolveBundledCuaDriverBinary(),
     Bun.which("cua-driver"),
     "/usr/local/bin/cua-driver",
@@ -88,6 +107,33 @@ export function resolveCuaDriverBinary(): string | null {
 
 function resolveBundledCuaDriverBinary(): string {
   return join(import.meta.dir, "..", "..", "cua-driver");
+}
+
+function resolveNpmCuaDriverBinary(): string | null {
+  if (process.platform !== "darwin") return null;
+  if (process.arch !== "arm64") return null;
+
+  const packageRoot = join(import.meta.dir, "..");
+  const candidates = [
+    join(
+      packageRoot,
+      "node_modules",
+      "@openclick",
+      "cua-driver",
+      "bin",
+      "cua-driver",
+    ),
+    join(
+      packageRoot,
+      "node_modules",
+      "@openclick",
+      "cua-driver-darwin-arm64",
+      "bin",
+      "cua-driver",
+    ),
+  ];
+
+  return candidates.find((path) => existsSync(path)) ?? null;
 }
 
 export function requireCuaDriverBinary(): string {

@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { resolveCuaDriverBinary } from "../index.js";
+
+const binary = resolveCuaDriverBinary();
+if (!binary) {
+  console.error("No bundled cua-driver binary is available for this platform/architecture.");
+  process.exit(1);
+}
+const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+if (result.error) {
+  console.error(result.error.message);
+  process.exit(1);
+}
+process.exit(result.status ?? 0);
