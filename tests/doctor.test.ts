@@ -146,11 +146,18 @@ describe("doctor", () => {
     );
     expect(daemonBefore?.status).toBe("fail");
 
-    // Run the auto-start. This will fire `open` (fire-and-forget) and poll
-    // — our fake reports true from poll 1 onward, so this resolves started=true.
-    const result = await tryAutoStartDaemon(probe);
+    // Run the auto-start. The launcher is injected so this test never touches
+    // the real filesystem/process table in CI; our fake probe reports true
+    // from poll 1 onward, so this resolves started=true.
+    const launched: string[] = [];
+    const result = await tryAutoStartDaemon(probe, {
+      launch: (path) => launched.push(path),
+      pollMs: 1,
+      timeoutMs: 50,
+    });
     expect(result.started).toBe(true);
     expect(result.message).toContain("up");
+    expect(launched).toEqual(["/usr/local/bin/cua-driver"]);
 
     // Second doctor pass — daemon now reported as ok.
     const after = await runDoctor(probe);

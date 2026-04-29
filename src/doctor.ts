@@ -270,6 +270,11 @@ export async function runDoctor(
  */
 export async function tryAutoStartDaemon(
   probe: SystemProbe,
+  opts: {
+    launch?: (cuaDriver: string) => void;
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {},
 ): Promise<{ started: boolean; message: string }> {
   // Don't double-start.
   if (await probe.cuaDriverDaemonRunning()) {
@@ -288,12 +293,8 @@ export async function tryAutoStartDaemon(
   // Fire-and-forget. Force the resolved binary to serve in-process so an older
   // /Applications/CuaDriver.app install cannot shadow a bundled driver.
   try {
-    Bun.spawn([cuaDriver, "serve"], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
-    });
+    const launch = opts.launch ?? launchCuaDriverDaemon;
+    launch(cuaDriver);
   } catch (e) {
     return {
       started: false,
@@ -303,8 +304,8 @@ export async function tryAutoStartDaemon(
 
   console.error("[doctor] starting cua-driver daemon...");
 
-  const deadline = Date.now() + 5000;
-  const pollMs = 250;
+  const deadline = Date.now() + (opts.timeoutMs ?? 5000);
+  const pollMs = opts.pollMs ?? 250;
   while (Date.now() < deadline) {
     await sleep(pollMs);
     if (await probe.cuaDriverDaemonRunning()) {
@@ -321,6 +322,15 @@ export async function tryAutoStartDaemon(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function launchCuaDriverDaemon(cuaDriver: string): void {
+  Bun.spawn([cuaDriver, "serve"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
+  });
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
