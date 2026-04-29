@@ -2,6 +2,8 @@
 
 OpenClick is a macOS automation system for completing desktop tasks from natural-language prompts.
 
+Website: [openclick.sh](https://openclick.sh)
+
 The `openclick` CLI is the core package. The native macOS app is an optional wrapper around the same CLI: CLI-only users can install and run `openclick` without installing the Mac app, while Mac app installs bundle the CLI and expose the same command locally.
 
 OpenClick uses hosted planner models, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
