@@ -63,6 +63,15 @@ afterEach(() => {
 
 const text = () => captured.join("\n");
 
+function selectTestOption<T extends string>(
+  options: { value: T }[],
+  value: string | undefined,
+): T {
+  const selected = options.find((option) => option.value === value);
+  if (!selected) throw new Error(`missing test setup option: ${value}`);
+  return selected.value;
+}
+
 describe("cli", () => {
   test("--help prints usage with all four subcommands", async () => {
     await main(["--help"]);
@@ -152,13 +161,21 @@ describe("cli", () => {
         },
         async prompt(question) {
           prompts.push(question);
-          if (question.startsWith("Provider")) return "2";
-          if (question.startsWith("Model setup")) return "1";
           return "";
         },
         async secret(question) {
           prompts.push(question);
           return "sk-openai-interactive";
+        },
+        async select(question, options) {
+          prompts.push(question);
+          if (question === "Choose a model provider") {
+            return selectTestOption(options, "openai");
+          }
+          if (question === "Choose model setup") {
+            return selectTestOption(options, "recommended");
+          }
+          return selectTestOption(options, options[0]?.value);
         },
       },
     );

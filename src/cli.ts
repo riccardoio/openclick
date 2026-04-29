@@ -8,11 +8,12 @@ Commands:
                                        model, API key, and macOS permissions.
                                        --api-key, --model, --yes, and
                                        --skip-doctor are supported for scripts.
-  doctor [--fix] [--json]              Check prereqs (cua-driver, perms, API key).
+  doctor [--fix] [--json] [--watch]    Check prereqs (cua-driver, perms, API key).
                                        Auto-starts the helper if it is down.
                                        --fix is kept as a compatibility alias.
                                        --json prints a structured report to stdout
                                        (status messages go to stderr).
+                                       --watch refreshes until everything is ready.
   run <task> [--live] [--cursor]       Complete a macOS task from your prompt
                                        (default: dry-run: plans but does not act).
                                        --cursor shows the agent cursor moving on
@@ -88,31 +89,25 @@ export async function main(args: string[]): Promise<void> {
     }
     case "doctor": {
       const {
-        runDoctor,
         formatDoctorReport,
         RealSystemProbe,
-        tryAutoStartDaemon,
+        runDoctorWithAutostart,
+        watchDoctor,
       } = await import("./doctor.ts");
       const probe = new RealSystemProbe();
       const json = args.includes("--json");
+      const watch = args.includes("--watch");
 
-      let report = await runDoctor(probe);
-
-      const driverInstalled = report.results.some(
-        (r) => r.name === "cua-driver installed" && r.status === "ok",
-      );
-      if (driverInstalled) {
-        const daemon = report.results.find(
-          (r) => r.name === "cua-driver daemon",
-        );
-        if (daemon?.status === "fail") {
-          const result = await tryAutoStartDaemon(probe);
-          // Status messages on stderr so `--json` stdout stays parseable.
-          console.error(result.message);
-          report = await runDoctor(probe);
-        }
+      if (watch && json) {
+        throw new Error("--watch cannot be combined with --json");
       }
 
+      if (watch) {
+        await watchDoctor(probe);
+        return;
+      }
+
+      const report = await runDoctorWithAutostart(probe);
       if (json) {
         console.log(JSON.stringify(report));
       } else {
