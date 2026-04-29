@@ -107,7 +107,7 @@ describe("doctor", () => {
     const text = formatDoctorReport(report);
     expect(text).toContain("✓ bun runtime");
     expect(text).toContain("✗ ANTHROPIC_API_KEY");
-    expect(text).toContain("→ Run `openclick settings api-key set");
+    expect(text).toContain("→ Run `openclick setup`");
     expect(text).toContain("Fix the");
   });
 

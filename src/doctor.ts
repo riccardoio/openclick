@@ -15,6 +15,7 @@ export interface CheckResult {
 export interface DoctorReport {
   results: CheckResult[];
   allOk: boolean;
+  activity?: string;
 }
 
 /**
@@ -259,7 +260,12 @@ export async function runDoctor(
 
 export async function runDoctorWithAutostart(
   probe: SystemProbe,
-  opts: DoctorOptions = {},
+  opts: DoctorOptions & {
+    autostartTimeoutMs?: number;
+    autostartPollMs?: number;
+    onActivity?: (activity: string) => void;
+    quiet?: boolean;
+  } = {},
 ): Promise<DoctorReport> {
   const report = await runDoctor(probe, opts);
   const driverInstalled = report.results.some(
@@ -270,9 +276,17 @@ export async function runDoctorWithAutostart(
   const daemon = report.results.find((r) => r.name === "cua-driver daemon");
   if (daemon?.status !== "fail") return report;
 
-  const result = await tryAutoStartDaemon(probe);
-  console.error(result.message);
-  return await runDoctor(probe, opts);
+  opts.onActivity?.("Starting CuaDriver...");
+  const result = await tryAutoStartDaemon(probe, {
+    timeoutMs: opts.autostartTimeoutMs,
+    pollMs: opts.autostartPollMs,
+  });
+  if (!opts.quiet) console.error(result.message);
+  const next = await runDoctor(probe, opts);
+  next.activity = result.started
+    ? "CuaDriver started. Checking permissions..."
+    : normalizeDoctorActivity(result.message);
+  return next;
 }
 
 export async function watchDoctor(
@@ -284,17 +298,28 @@ export async function watchDoctor(
   } = {},
 ): Promise<DoctorReport> {
   const intervalMs = opts.intervalMs ?? 1500;
+  let activity = "Preparing checks...";
   while (true) {
-    const report = await runDoctorWithAutostart(probe, opts);
+    const report = await runDoctorWithAutostart(probe, {
+      ...opts,
+      quiet: true,
+      onActivity: (next) => {
+        activity = next;
+        if (opts.clearScreen ?? true) {
+          process.stdout.write("\x1b[2J\x1b[H");
+        }
+        process.stdout.write(
+          formatDoctorReport({ results: [], allOk: false, activity }),
+        );
+      },
+    });
+    activity =
+      report.activity ??
+      (report.allOk ? "Ready." : "Waiting for permissions...");
     if (opts.clearScreen ?? true) {
       process.stdout.write("\x1b[2J\x1b[H");
     }
-    process.stdout.write(formatDoctorReport(report));
-    if (!report.allOk) {
-      process.stdout.write(
-        `Status refreshes every ${Math.round(intervalMs / 100) / 10}s. Press Ctrl-C to stop.\n\n`,
-      );
-    }
+    process.stdout.write(formatDoctorReport({ ...report, activity }));
     opts.onReport?.(report);
     if (report.allOk) return report;
     await sleep(intervalMs);
@@ -347,8 +372,6 @@ export async function tryAutoStartDaemon(
     };
   }
 
-  console.error("[doctor] starting cua-driver daemon...");
-
   const deadline = Date.now() + (opts.timeoutMs ?? 5000);
   const pollMs = opts.pollMs ?? 250;
   while (Date.now() < deadline) {
@@ -363,6 +386,10 @@ export async function tryAutoStartDaemon(
     message:
       "[doctor] CuaDriver helper did not come up within 5s. It may still be launching — re-run `openclick doctor` in a moment.",
   };
+}
+
+function normalizeDoctorActivity(message: string): string {
+  return message.replace(/^\[doctor\]\s*/i, "");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -384,6 +411,12 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push(
     `${colorize("OpenClick", fg.cyan, style.bold)} ${Badge.outline("setup", fg.cyan)} ${report.allOk ? Badge.success("READY") : Badge.warning("ACTION NEEDED")}`,
   );
+  if (report.activity) {
+    lines.push("");
+    lines.push(
+      `${colorize("●", fg.cyan, style.bold)} ${colorize(report.activity, fg.cyan)}`,
+    );
+  }
   lines.push("");
   for (const r of report.results) {
     const mark = r.status === "ok" ? "✓" : "✗";
@@ -391,10 +424,10 @@ export function formatDoctorReport(report: DoctorReport): string {
     const padded = r.name.padEnd(36);
     const explanation = prerequisiteExplanation(r.name);
     lines.push(
-      `  ${colorize(`${mark} ${padded}`, statusColor, style.bold)}${colorize(r.detail, r.status === "ok" ? fg.green : fg.yellow)}${explanation ? colorize(` - ${explanation}`, fg.gray) : ""}`,
+      `  ${colorize(`${mark} ${padded}`, statusColor, style.bold)}${colorize(formatDoctorDetail(r), r.status === "ok" ? fg.green : fg.yellow)}${explanation ? colorize(` - ${explanation}`, fg.gray) : ""}`,
     );
     if (r.status === "fail" && r.fixHint) {
-      lines.push(`       ${colorize(`→ ${r.fixHint}`, fg.cyan)}`);
+      lines.push(`       ${colorize(`→ ${formatDoctorHint(r)}`, fg.cyan)}`);
     }
   }
   lines.push("");
@@ -410,7 +443,9 @@ export function formatDoctorReport(report: DoctorReport): string {
     const failed = report.results.filter((r) => r.status === "fail").length;
     lines.push(
       colorize(
-        `Fix the ${failed} issue(s) above, or keep \`openclick doctor --watch\` open while granting permissions.`,
+        failed > 0
+          ? `Fix the ${failed} issue(s) above. This view refreshes automatically. Press Ctrl-C to stop.`
+          : "Checking status. This view refreshes automatically. Press Ctrl-C to stop.",
         fg.yellow,
         style.bold,
       ),
@@ -423,23 +458,53 @@ export function formatDoctorReport(report: DoctorReport): string {
     titleColor: report.allOk ? fg.green : fg.yellow,
     paddingX: 1,
     paddingY: 1,
+    width: 98,
     dimBorder: true,
   });
   return `\n${box.render(lines.join("\n"))}\n`;
 }
 
+function formatDoctorDetail(result: CheckResult): string {
+  if (result.name === "cua-driver installed" && result.status === "ok") {
+    return "found";
+  }
+  if (result.name === "cua-driver daemon" && result.status === "fail") {
+    return "starting automatically";
+  }
+  if (result.detail === "skipped (daemon not running)") {
+    return "waiting for CuaDriver";
+  }
+  return result.detail;
+}
+
+function formatDoctorHint(result: CheckResult): string {
+  if (result.name === "cua-driver daemon") {
+    return "OpenClick is starting it now. Keep this window open.";
+  }
+  if (result.name.includes("Accessibility")) {
+    return "Grant CuaDriver in System Settings > Privacy & Security > Accessibility.";
+  }
+  if (result.name.includes("Screen Recording")) {
+    return "Grant CuaDriver in System Settings > Privacy & Security > Screen Recording.";
+  }
+  if (result.name.endsWith("_API_KEY")) {
+    return "Run `openclick setup` or `openclick settings api-key set <key>`.";
+  }
+  return result.fixHint ?? "";
+}
+
 function prerequisiteExplanation(name: string): string {
   if (name.includes("Accessibility")) {
-    return "Lets OpenClick click and type in apps.";
+    return "Needed to click and type.";
   }
   if (name.includes("Screen Recording")) {
-    return "Lets OpenClick see the screen and verify progress.";
+    return "Needed to see and verify progress.";
   }
   if (name.includes("cua-driver")) {
-    return "The local helper that performs desktop actions.";
+    return "Local desktop helper.";
   }
   if (name.endsWith("_API_KEY")) {
-    return "Lets OpenClick call your selected model.";
+    return "Needed for the selected model.";
   }
   return "";
 }
