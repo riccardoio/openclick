@@ -112,7 +112,7 @@ describe("planner", () => {
     expect(plan.steps[0]?.purpose).toBe("first plan");
   });
 
-  test("normalizes shifted-symbol press_key steps to hotkey steps", async () => {
+  test("normalizes shifted-symbol keyboard steps to valid hotkey steps", async () => {
     const client: PlannerClient = {
       async generatePlanText() {
         return JSON.stringify({
@@ -126,6 +126,11 @@ describe("planner", () => {
               tool: "press_key",
               args: { pid: 1, key: "A" },
               purpose: "press uppercase A",
+            },
+            {
+              tool: "hotkey",
+              args: { pid: 1, keys: ["+"] },
+              purpose: "press plus",
             },
           ],
           stopWhen: "done",
@@ -141,6 +146,8 @@ describe("planner", () => {
     expect(plan.steps[0]?.args).toEqual({ pid: 1, keys: ["shift", "8"] });
     expect(plan.steps[1]?.tool).toBe("hotkey");
     expect(plan.steps[1]?.args).toEqual({ pid: 1, keys: ["shift", "a"] });
+    expect(plan.steps[2]?.tool).toBe("hotkey");
+    expect(plan.steps[2]?.args).toEqual({ pid: 1, keys: ["shift", "="] });
   });
 
   test("normalizes targetless browser address-bar clicks to command-l", async () => {

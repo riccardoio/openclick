@@ -12,6 +12,8 @@ OpenClick uses hosted planner models, local `cua-driver` primitives, screenshots
 
 OpenClick is early and experimental. It can handle simple app workflows, browser tasks, Calculator tasks, and some visual/canvas workflows. Reliability depends on app accessibility quality, screenshot evidence, model judgment, and `cua-driver` behavior.
 
+This release should be treated as an early `0.1.x` beta. The current basics are expected to work best for Chrome/Safari navigation, Gmail navigation, Finder folder opening, Calculator, TextEdit-style text entry, selection, copy/paste, and common app search/edit shortcuts. Complex multi-window work, canvas-heavy apps such as Figma, unusual native dialogs, and long workflows can still fail or require user takeover.
+
 The active path is prompt-first execution:
 
 ```sh
@@ -95,3 +97,11 @@ OpenClick defaults to shared-seat background mode:
 - foreground/global primitives are blocked unless `--allow-foreground` is set.
 
 When automation is blocked, OpenClick should ask for user takeover only after reasonable recovery options have been exhausted. See [Execution And Learning](docs/execution-and-learning.md).
+
+## Privacy And Logs
+
+OpenClick does not send logs, traces, local memories, API keys, or debug files to OpenClick servers. We do not run a hosted backend for your runs.
+
+Runtime logs and traces are stored locally on your Mac, primarily under `~/.openclick/`. They may include task text, window titles, app names, URLs, file/document names, AX tree snippets, screenshots, model responses, and execution details. Treat them as local debug data and avoid sharing them publicly if they contain private information.
+
+During a run, OpenClick sends the task prompt and the minimum context needed for planning or verification, which may include screenshots or AX text, to the model provider you configured, such as Anthropic or OpenAI. Those requests go directly from your machine to that provider, not to OpenClick servers.

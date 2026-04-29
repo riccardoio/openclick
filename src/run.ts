@@ -1,4 +1,6 @@
+import { spawn as spawnDetached } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import {
   type ExecutionPolicy,
   type ExecutorContext,
@@ -17,6 +19,7 @@ import { requireCuaDriverBinary, resolveCuaDriverBinary } from "./paths.ts";
 import {
   type GeneratePlanOptions,
   type Plan,
+  type PlanStep,
   type PlannerClient,
   RoutedPlannerClient,
   generatePlan,
@@ -539,6 +542,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       maxModelCalls,
       maxScreenshots,
     });
+    plan = hardenPlanForTask(plan, opts.taskPrompt);
     actionRetriesUsed = 0;
     console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
     trace.event("takeover_resumed", marker.summary, {
@@ -583,7 +587,9 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
       }
     }
 
-    const deterministicPlan = buildBrowserNavigationPlan(opts.taskPrompt);
+    const deterministicPlan =
+      buildBrowserNavigationPlan(opts.taskPrompt) ??
+      buildFinderNavigationPlan(opts.taskPrompt);
     if (deterministicPlan) {
       trace.event("planning", "deterministic browser navigation");
       plan = deterministicPlan;
@@ -600,6 +606,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxScreenshots,
       });
     }
+    plan = hardenPlanForTask(plan, opts.taskPrompt);
     console.log(`[openclick] plan: ${plan.steps.length} step(s)`);
     trace.event("plan", `${plan.steps.length} step(s)`, {
       steps: plan.steps.map((step) => ({
@@ -793,6 +800,26 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           );
           break;
         }
+        if (isBrowserNavigationComplete(opts.taskPrompt, result.lastContext)) {
+          stopWhenVerified = true;
+          runSucceeded = true;
+          finalContext = result.lastContext;
+          console.log(
+            "[openclick] browser navigation verified from tab context.",
+          );
+          break;
+        }
+        if (
+          isFinderFolderNavigationComplete(opts.taskPrompt, result.lastContext)
+        ) {
+          stopWhenVerified = true;
+          runSucceeded = true;
+          finalContext = result.lastContext;
+          console.log(
+            "[openclick] Finder folder navigation verified from launch context.",
+          );
+          break;
+        }
         const liveState = await snapshotContextForPrompt(
           result.lastContext,
           telemetry,
@@ -883,6 +910,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             maxModelCalls,
             maxScreenshots,
           });
+          plan = hardenPlanForTask(plan, opts.taskPrompt);
           console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
           trace.event("replan", `${plan.steps.length} step(s)`);
           continue;
@@ -1011,6 +1039,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
             maxModelCalls,
             maxScreenshots,
           });
+          plan = hardenPlanForTask(plan, opts.taskPrompt);
           console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
           trace.event("replan", `${plan.steps.length} step(s)`);
           continue;
@@ -1045,6 +1074,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
           maxModelCalls,
           maxScreenshots,
         });
+        plan = hardenPlanForTask(plan, opts.taskPrompt);
         console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
         continue;
       }
@@ -1199,6 +1229,7 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
         maxModelCalls,
         maxScreenshots,
       });
+      plan = hardenPlanForTask(plan, opts.taskPrompt);
       console.log(`[openclick] replan: ${plan.steps.length} step(s)`);
       trace.event("replan", `${plan.steps.length} step(s)`);
     }
@@ -1715,6 +1746,95 @@ export function buildBrowserNavigationPlan(taskPrompt: string): Plan | null {
   };
 }
 
+export function buildFinderNavigationPlan(taskPrompt: string): Plan | null {
+  if (!isSimpleFinderNavigationTask(taskPrompt)) return null;
+  const target = finderFolderTarget(taskPrompt);
+  if (!target) return null;
+  return {
+    status: "ready",
+    steps: [
+      {
+        tool: "launch_app",
+        args: {
+          bundle_id: "com.apple.finder",
+          urls: [target.path],
+        },
+        purpose: `Open ${target.name} in Finder`,
+        expected_change: `Finder opens the ${target.name} folder`,
+      },
+    ],
+    stopWhen: `Finder is showing the ${target.name} folder as the active folder, not merely listing it as an item inside another folder.`,
+  };
+}
+
+function hardenPlanForTask(plan: Plan, taskPrompt: string): Plan {
+  if (!isCalculatorArithmeticTask(taskPrompt, plan)) return plan;
+  if (plan.steps.some(isCalculatorClearStep)) return plan;
+  const firstInputIndex = plan.steps.findIndex(isCalculatorInputStep);
+  if (firstInputIndex < 0) return plan;
+  const clearStep: PlanStep = {
+    tool: "press_key",
+    args: { pid: "$pid", window_id: "$window_id", key: "escape" },
+    purpose:
+      "Clear stale Calculator input before entering the requested calculation",
+    expected_change:
+      "Calculator input is reset before the requested expression is entered",
+  };
+  return {
+    ...plan,
+    steps: [
+      ...plan.steps.slice(0, firstInputIndex),
+      clearStep,
+      ...plan.steps.slice(firstInputIndex),
+    ],
+  };
+}
+
+function isCalculatorArithmeticTask(taskPrompt: string, plan: Plan): boolean {
+  const lowerTask = taskPrompt.toLowerCase();
+  if (
+    !/\b(calculat|plus|minus|times|multiply|divide|sum|add)\b/.test(lowerTask)
+  )
+    return false;
+  return plan.steps.some((step) => {
+    const bundleId =
+      typeof step.args.bundle_id === "string" ? step.args.bundle_id : "";
+    return (
+      bundleId === "com.apple.calculator" ||
+      /\bcalculator\b/i.test(step.purpose) ||
+      stringPlanArg(step.args.name)?.toLowerCase() === "calculator" ||
+      stringPlanArg(step.args.app_name)?.toLowerCase() === "calculator"
+    );
+  });
+}
+
+function isCalculatorClearStep(step: PlanStep): boolean {
+  const text = `${step.purpose} ${JSON.stringify(step.args)}`.toLowerCase();
+  return /\b(clear|all clear|reset|escape|ac)\b/.test(text);
+}
+
+function isCalculatorInputStep(step: PlanStep): boolean {
+  const tool = step.tool;
+  if (
+    tool !== "click" &&
+    tool !== "press_key" &&
+    tool !== "hotkey" &&
+    tool !== "type_text" &&
+    tool !== "type_text_chars"
+  ) {
+    return false;
+  }
+  if (isCalculatorClearStep(step)) return false;
+  const text = `${step.purpose} ${JSON.stringify(step.args)}`.toLowerCase();
+  return /\b(press|type|enter|digit|number|plus|minus|times|multiply|divide|equals?|calculate|[0-9])\b/.test(
+    text,
+  );
+}
+
+function stringPlanArg(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 function browserNavigationStopWhen(
   taskPrompt: string,
   browserName: string,
@@ -1766,6 +1886,107 @@ function browserUrlTarget(taskPrompt: string): string | null {
   if (/\bgmail\b|\bmail\.google\b/.test(lower))
     return "https://mail.google.com/";
   return null;
+}
+
+function isSimpleFinderNavigationTask(taskPrompt: string): boolean {
+  const lower = taskPrompt.toLowerCase();
+  const operationText = lower.replace(
+    /\b(?:do not|don't|dont|without)\s+(?:delete|trash|move|rename|copy|paste|cut|upload|attach|select|search|find|read|edit|change|create|save|download)\b[^.;,]*/g,
+    "",
+  );
+  if (!/\bfinder\b/.test(lower)) return false;
+  if (!/\b(open|show|go to|navigate to|view|display)\b/.test(lower)) {
+    return false;
+  }
+  if (
+    /\b(copy|paste|cut|delete|trash|move|rename|upload|attach|select|search|find\s+(?!er\b)|read|edit|change|create|new|save|download\s+(?:a|the|this|that|file))\b/.test(
+      operationText,
+    )
+  ) {
+    return false;
+  }
+  return finderFolderTarget(taskPrompt) !== null;
+}
+
+function finderFolderTarget(
+  taskPrompt: string,
+): { name: string; path: string } | null {
+  const lower = taskPrompt.toLowerCase();
+  const folders: Array<{ name: string; path: string; pattern: RegExp }> = [
+    {
+      name: "Downloads",
+      path: `${homedir()}/Downloads`,
+      pattern: /\bdownloads?\b/,
+    },
+    { name: "Desktop", path: `${homedir()}/Desktop`, pattern: /\bdesktop\b/ },
+    {
+      name: "Documents",
+      path: `${homedir()}/Documents`,
+      pattern: /\bdocuments?\b/,
+    },
+    {
+      name: "Applications",
+      path: "/Applications",
+      pattern: /\bapplications?\b|\bapps folder\b/,
+    },
+    {
+      name: "Home",
+      path: homedir(),
+      pattern: /\bhome folder\b|\buser folder\b/,
+    },
+  ];
+  return folders.find((folder) => folder.pattern.test(lower)) ?? null;
+}
+
+function isFinderFolderNavigationComplete(
+  taskPrompt: string,
+  context: ExecutorContext,
+): boolean {
+  if (!buildFinderNavigationPlan(taskPrompt)) return false;
+  const target = finderFolderTarget(taskPrompt);
+  if (!target) return false;
+  return (
+    context.windowTitle?.trim().toLowerCase() === target.name.toLowerCase()
+  );
+}
+
+function isBrowserNavigationComplete(
+  taskPrompt: string,
+  context: ExecutorContext,
+): boolean {
+  if (!isSimpleBrowserNavigationTask(taskPrompt)) return false;
+  const target = browserTarget(taskPrompt.toLowerCase());
+  const targetUrl = browserUrlTarget(taskPrompt);
+  if (!target || !targetUrl) return false;
+  if (context.bundleId && context.bundleId !== target.bundleId) return false;
+  if (!context.tabUrl) return false;
+  return browserUrlSatisfiesTarget(context.tabUrl, targetUrl);
+}
+
+function browserUrlSatisfiesTarget(actual: string, target: string): boolean {
+  const actualUrl = parseUrl(actual);
+  const targetUrl = parseUrl(target);
+  if (!actualUrl || !targetUrl) return false;
+  if (
+    targetUrl.hostname === "mail.google.com" &&
+    (actualUrl.hostname === "mail.google.com" ||
+      actualUrl.hostname === "accounts.google.com")
+  ) {
+    return true;
+  }
+  return (
+    actualUrl.hostname === targetUrl.hostname &&
+    actualUrl.pathname.replace(/\/+$/g, "") ===
+      targetUrl.pathname.replace(/\/+$/g, "")
+  );
+}
+
+function parseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
 }
 
 function successSignalsFor(opts: RunOptions, plan: Plan): string[] {
@@ -2127,6 +2348,9 @@ function isOpenFocusOnlyTask(taskPrompt: string, plan: Plan): boolean {
   const task = normalizeForMatch(taskPrompt);
   if (
     !/^(open|launch|focus|switch to|bring up|show)\b/.test(task) ||
+    /\b(go to|navigate|url|website|web site|gmail|mail\.google|https?|www\.)\b/.test(
+      task,
+    ) ||
     /\b(draw|create|make|search|type|write|click|calculate|edit|delete|move|upload|download|fill)\b/.test(
       task,
     )
@@ -2392,12 +2616,12 @@ async function ensureDaemonRunning(): Promise<void> {
   console.log("[openclick] cua-driver daemon not running; auto-starting...");
   // Fire-and-forget. Force the resolved binary to serve in-process so an older
   // /Applications/CuaDriver.app install cannot shadow the bundled driver.
-  Bun.spawn([cuaDriver, "serve"], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-    env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
+  const daemon = spawnDetached(cuaDriver, ["serve"], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, CUA_DRIVER_NO_RELAUNCH: "1" },
   });
+  daemon.unref();
   const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 250));
@@ -2959,11 +3183,7 @@ function rejectWeakOpenItemYes(args: {
   stopWhen: string;
   intent?: SkillIntent;
 }): { verdict: "unknown"; explanation: string } | null {
-  const taskText = normalizeForMatch(
-    [args.intent?.goal, args.stopWhen, ...(args.intent?.successSignals ?? [])]
-      .filter((part): part is string => typeof part === "string")
-      .join(" "),
-  );
+  const taskText = normalizeForMatch(args.intent?.goal ?? args.stopWhen);
   if (
     !/\b(open|opened|read|view|show|display)\b/.test(taskText) ||
     !/\b(email|emails|mail|message|messages|conversation|thread|unread|result|item)\b/.test(

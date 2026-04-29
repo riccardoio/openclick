@@ -129,6 +129,13 @@ describe("cli", () => {
     expect(text()).toContain("First-run setup wizard");
   });
 
+  test("setup --help prints help without starting setup", async () => {
+    await main(["setup", "--help"]);
+    expect(text()).toContain("Usage: openclick");
+    expect(text()).toContain("First-run setup wizard");
+    expect(text()).not.toContain("Choose a model provider");
+  });
+
   test("setup can configure provider, model, and api key non-interactively", async () => {
     await main([
       "setup",

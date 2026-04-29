@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { StepRunner } from "../src/executor.ts";
 import type { PlannerClient } from "../src/planner.ts";
 import {
   type QueryFn,
   buildBrowserNavigationPlan,
+  buildFinderNavigationPlan,
   runSkill,
   verifyStopWhen,
 } from "../src/run.ts";
@@ -295,6 +297,56 @@ describe("run --fast", () => {
     expect(plannerCalls).toBe(1);
     expect(queryCalls).toBe(0);
     expect(stepsRun).toEqual(["launch_app", "click"]);
+  });
+
+  test("--fast inserts a Calculator clear step before arithmetic input", async () => {
+    const dir = makeFakeSkill("fast-calc-clear");
+    const purposesRun: string[] = [];
+
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          steps: [
+            {
+              tool: "launch_app",
+              args: { bundle_id: "com.apple.calculator" },
+              purpose: "open Calculator",
+            },
+            {
+              tool: "click",
+              args: { pid: "$pid", window_id: "$window_id", element_index: 5 },
+              purpose: "Press 3",
+            },
+          ],
+          stopWhen: "Calculator shows 6",
+        });
+      },
+    };
+    const runner: StepRunner = async (step) => {
+      purposesRun.push(step.purpose);
+      if (step.tool === "launch_app") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({ pid: 42, windows: [{ window_id: 99 }] }),
+        };
+      }
+      return { ok: true };
+    };
+
+    await runSkill({
+      taskPrompt: "open Calculator and calculate 3 plus 3",
+      live: true,
+      maxSteps: 50,
+      fast: true,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(purposesRun).toEqual([
+      "open Calculator",
+      "Clear stale Calculator input before entering the requested calculation",
+      "Press 3",
+    ]);
   });
 
   test("--fast --dry-run prints the plan but executes nothing", async () => {
@@ -633,6 +685,19 @@ describe("run --fast", () => {
     );
     expect(simple?.stopWhen).toContain("Google Chrome is showing");
 
+    const safari = buildBrowserNavigationPlan(
+      "Open Safari and go to https://example.com",
+    );
+    expect(safari?.steps[0]).toEqual({
+      tool: "open_url",
+      args: {
+        bundle_id: "com.apple.Safari",
+        url: "https://example.com",
+      },
+      purpose: "Open https://example.com in Safari",
+      expected_change: "Safari loads https://example.com",
+    });
+
     const compound = buildBrowserNavigationPlan(
       "Open Google Chrome, go to Gmail, and open the last unread email",
     );
@@ -640,6 +705,73 @@ describe("run --fast", () => {
     expect(compound?.stopWhen).toContain("The full user task is complete");
     expect(compound?.stopWhen).toContain("last unread email");
     expect(compound?.stopWhen).toContain("only the first step");
+  });
+
+  test("--fast uses Finder launch urls for simple folder navigation", async () => {
+    let plannerCalled = false;
+    const toolsRun: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        plannerCalled = true;
+        return JSON.stringify({ steps: [], stopWhen: "done" });
+      },
+    };
+    const runner: StepRunner = async (step) => {
+      toolsRun.push({ tool: step.tool, args: step.args });
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          pid: 123,
+          windows: [
+            {
+              window_id: 456,
+              title: "Downloads",
+              bounds: { width: 800, height: 600 },
+            },
+          ],
+        }),
+      };
+    };
+
+    await runSkill({
+      taskPrompt:
+        "open Finder and show the Downloads folder; do not delete or move anything",
+      live: true,
+      maxSteps: 5,
+      fast: true,
+      plannerClient: planner,
+      stepRunner: runner,
+    });
+
+    expect(plannerCalled).toBe(false);
+    expect(toolsRun).toEqual([
+      {
+        tool: "launch_app",
+        args: {
+          bundle_id: "com.apple.finder",
+          urls: [`${homedir()}/Downloads`],
+        },
+      },
+    ]);
+  });
+
+  test("Finder navigation shortcut avoids complex file operations", () => {
+    const simple = buildFinderNavigationPlan("Open Finder and show Downloads");
+    expect(simple?.steps[0]).toEqual({
+      tool: "launch_app",
+      args: {
+        bundle_id: "com.apple.finder",
+        urls: [`${homedir()}/Downloads`],
+      },
+      purpose: "Open Downloads in Finder",
+      expected_change: "Finder opens the Downloads folder",
+    });
+
+    expect(
+      buildFinderNavigationPlan(
+        "Open Finder, show Downloads, and copy the newest PDF",
+      ),
+    ).toBeNull();
   });
 
   test("--fast threads the user task into the planner prompt", async () => {
@@ -825,6 +957,41 @@ describe("verifyStopWhen", () => {
     });
     expect(result.verdict).toBe("unknown");
     expect(result.explanation).toContain("not opened yet");
+  });
+
+  test("accepts Gmail inbox YES for simple Gmail navigation", async () => {
+    const planner: PlannerClient = {
+      async generatePlanText() {
+        return JSON.stringify({
+          verdict: "yes",
+          criteria_met: true,
+          missing: [],
+          quality_issues: [],
+          explanation:
+            "Gmail inbox is open in Chrome with emails visible in the list.",
+        });
+      },
+    };
+    const result = await verifyStopWhen({
+      plannerClient: planner,
+      stopWhen:
+        "Google Chrome is showing https://mail.google.com/ or the sign-in page for that site.",
+      intent: {
+        goal: "open Google Chrome and go to Gmail",
+        successSignals: [
+          "Google Chrome is showing https://mail.google.com/ or the sign-in page for that site.",
+        ],
+      },
+      pid: 1,
+      windowId: 2,
+      settleMs: 0,
+      snapshot: async () => ({
+        ok: true,
+        stdout: '- [1] AXStaticText "Inbox"\n',
+      }),
+      captureScreenshot: noShot,
+    });
+    expect(result.verdict).toBe("yes");
   });
 
   test("accepts Gmail email-content YES when the requested unread email is opened", async () => {

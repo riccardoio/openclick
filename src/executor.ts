@@ -94,6 +94,12 @@ export interface ExecutorContext {
   windowUid?: string;
   /** Title of the selected window, used as a lease fingerprint if id changes. */
   windowTitle?: string;
+  /** AX role/subrole and usability metadata for the selected window lease. */
+  windowRole?: string;
+  windowSubrole?: string;
+  windowActionable?: boolean;
+  windowBounds?: { x?: number; y?: number; width?: number; height?: number };
+  windowDisplayId?: number;
   /** Browser bundle/tab identity for the selected task tab, when available. */
   bundleId?: string;
   tabId?: number;
@@ -123,6 +129,8 @@ export interface AxIndexEntry {
   id?: string;
   /** Visible title / accessibility label, when present. */
   title?: string;
+  /** Visible descendant labels under this addressable AX node. */
+  subtreeText?: string;
   /** Roles of ancestor elements, root-first (no titles, just role chain). */
   ancestorPath: string[];
   /** 0-based line number in the source AX dump; used to find descendants. */
@@ -253,9 +261,11 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
   // Both addressable and non-addressable lines are matched so we can build ancestry.
   const lineRe =
     /^(\s*)-\s+(?:\[(\d+)\]\s+)?(\S+)(?:\s+(?:"([^"]+)"|\(([^)]+)\)))?(?:\s+id=([^\s]+))?/;
-  // Ancestry stack: each entry is { indent, role }. Indent is the leading
-  // whitespace length; deeper lines get the stack snapshot as their path.
-  const stack: Array<{ indent: number; role: string }> = [];
+  // Ancestry stack: each entry is { indent, role, entry? }. Indent is the
+  // leading whitespace length; deeper lines get the stack snapshot as their
+  // path, and descendant labels can be attached to addressable parents.
+  const stack: Array<{ indent: number; role: string; entry?: AxIndexEntry }> =
+    [];
   // (role|title) → count, for ordinal assignment.
   const ordinalCounter = new Map<string, number>();
 
@@ -265,7 +275,9 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
     const indent = (m[1] ?? "").length;
     const indexStr = m[2];
     const role = m[3] ?? "";
-    const title = (m[4] ?? m[5])?.trim() || undefined;
+    const title =
+      (m[4] ?? m[5] ?? rawLine.match(/\s=\s"([^"]+)"/)?.[1])?.trim() ||
+      undefined;
     const id = m[6]?.trim() || undefined;
 
     // Pop the stack until we're at a strictly-greater indent than the last
@@ -273,14 +285,16 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
     while (stack.length > 0 && (stack[stack.length - 1]?.indent ?? 0) >= indent)
       stack.pop();
     const ancestorPath = stack.map((s) => s.role);
+    if (title) appendSubtreeText(stack, title);
 
+    let entry: AxIndexEntry | undefined;
     if (indexStr !== undefined) {
       const index = Number.parseInt(indexStr, 10);
       if (Number.isFinite(index)) {
         const ordKey = `${role.toLowerCase()}|${(title ?? "").toLowerCase()}`;
         const ordinal = ordinalCounter.get(ordKey) ?? 0;
         ordinalCounter.set(ordKey, ordinal + 1);
-        entries.push({
+        entry = {
           index,
           role,
           id,
@@ -289,15 +303,40 @@ export function parseAxTreeIndex(stdout: string): AxIndexEntry[] {
           lineNumber,
           indent,
           ordinal,
-        });
+        };
+        entries.push(entry);
       }
     }
 
     // Whether or not the line is addressable, push onto the stack so deeper
     // children see this role as part of their ancestor path.
-    stack.push({ indent, role });
+    stack.push({ indent, role, entry });
   }
   return entries;
+}
+
+function appendSubtreeText(
+  stack: Array<{ entry?: AxIndexEntry }>,
+  text: string,
+): void {
+  const cleaned = text.trim();
+  if (!cleaned) return;
+  for (const frame of stack) {
+    if (!frame.entry) continue;
+    frame.entry.subtreeText = appendUniqueLine(
+      frame.entry.subtreeText,
+      cleaned,
+    );
+  }
+}
+
+function appendUniqueLine(existing: string | undefined, line: string): string {
+  if (!existing) return line;
+  const lower = line.toLowerCase();
+  if (existing.split("\n").some((value) => value.toLowerCase() === lower)) {
+    return existing;
+  }
+  return `${existing}\n${line}`;
 }
 
 /**
@@ -372,6 +411,13 @@ export async function executePlan(
         windowId: opts.initialContext.windowId,
         windowUid: opts.initialContext.windowUid,
         windowTitle: opts.initialContext.windowTitle,
+        windowRole: opts.initialContext.windowRole,
+        windowSubrole: opts.initialContext.windowSubrole,
+        windowActionable: opts.initialContext.windowActionable,
+        windowBounds: opts.initialContext.windowBounds
+          ? { ...opts.initialContext.windowBounds }
+          : undefined,
+        windowDisplayId: opts.initialContext.windowDisplayId,
         bundleId: opts.initialContext.bundleId,
         tabId: opts.initialContext.tabId,
         tabUrl: opts.initialContext.tabUrl,
@@ -417,6 +463,17 @@ export async function executePlan(
     const normalizedStep = normalizePlanStep(step);
     let resolved = resolveStepForContext(normalizedStep, ctx);
 
+    const invalidTargetError = invalidWindowTargetError(resolved);
+    if (!opts.dryRun && invalidTargetError) {
+      return {
+        stepsExecuted: executed,
+        totalSteps: plan.steps.length,
+        failedStepIndex: i,
+        error: invalidTargetError,
+        lastContext: ctx,
+      };
+    }
+
     if (
       !opts.dryRun &&
       revalidateWindowLease &&
@@ -433,6 +490,20 @@ export async function executePlan(
         };
       }
       resolved = resolveStepForContext(normalizedStep, ctx);
+    }
+
+    const leaseActionabilityError = windowLeaseActionabilityError(
+      resolved,
+      ctx,
+    );
+    if (!opts.dryRun && leaseActionabilityError) {
+      return {
+        stepsExecuted: executed,
+        totalSteps: plan.steps.length,
+        failedStepIndex: i,
+        error: leaseActionabilityError,
+        lastContext: ctx,
+      };
     }
 
     // Auto-refresh: state-changing clicks rerender; element_index drifts. If
@@ -642,7 +713,33 @@ const PID_WINDOW_PAIRED_TOOLS = new Set([
   "paste_svg",
 ]);
 
+const WINDOW_INPUT_TOOLS = new Set([
+  "click",
+  "double_click",
+  "right_click",
+  "drag",
+  "multi_drag",
+  "click_hold",
+  "scroll",
+  "set_value",
+  "type_text",
+  "type_text_chars",
+  "press_key",
+  "hotkey",
+]);
+
 const APP_DISCOVERY_ARG_KEYS = ["app_name", "app", "application", "bundle_id"];
+const APP_BUNDLE_ALIASES: Record<string, string> = {
+  calendar: "com.apple.iCal",
+  finder: "com.apple.finder",
+  mail: "com.apple.mail",
+  notes: "com.apple.Notes",
+  preview: "com.apple.Preview",
+  reminders: "com.apple.reminders",
+  safari: "com.apple.Safari",
+  "system settings": "com.apple.SystemSettings",
+  textedit: "com.apple.TextEdit",
+};
 
 function resolveStepForContext(step: PlanStep, ctx: ExecutorContext): PlanStep {
   return {
@@ -651,6 +748,7 @@ function resolveStepForContext(step: PlanStep, ctx: ExecutorContext): PlanStep {
       step.tool,
       substitutePlaceholders(step.args, ctx, step.purpose),
       ctx,
+      step.purpose,
     ),
     purpose: step.purpose,
   };
@@ -672,6 +770,43 @@ function shouldRevalidateWindowLease(
     WINDOW_TARGETED_TOOLS.has(tool) ||
     (PID_WINDOW_PAIRED_TOOLS.has(tool) && windowId !== null)
   );
+}
+
+function invalidWindowTargetError(step: PlanStep): string | undefined {
+  const tool = canonicalToolName(step.tool);
+  if (!WINDOW_TARGETED_TOOLS.has(tool) && !WINDOW_INPUT_TOOLS.has(tool)) {
+    return undefined;
+  }
+  const pid = asFiniteNumber(step.args.pid);
+  const windowId = asFiniteNumber(step.args.window_id);
+  if (pid !== null && pid <= 0) {
+    return `invalid pid ${pid} for ${tool}; refusing to call cua-driver with placeholder or active-process targeting. Discover a real pid first.`;
+  }
+  if (windowId !== null && windowId <= 0) {
+    return `invalid window_id ${windowId} for ${tool}; refusing to call cua-driver with placeholder or active-window targeting. Discover a real window_id first.`;
+  }
+  if (WINDOW_TARGETED_TOOLS.has(tool) && windowId === null) {
+    return `${tool} requires a concrete window_id in background mode; refusing to fall back to the active window.`;
+  }
+  return undefined;
+}
+
+function windowLeaseActionabilityError(
+  step: PlanStep,
+  ctx: ExecutorContext,
+): string | undefined {
+  const tool = canonicalToolName(step.tool);
+  if (!WINDOW_INPUT_TOOLS.has(tool)) return undefined;
+  const pid = asFiniteNumber(step.args.pid);
+  const windowId = asFiniteNumber(step.args.window_id);
+  if (
+    pid !== ctx.pid ||
+    windowId !== ctx.windowId ||
+    ctx.windowActionable !== false
+  ) {
+    return undefined;
+  }
+  return nonActionableWindowError(ctx, "refusing to send input");
 }
 
 async function revalidateCurrentWindowLease(
@@ -697,8 +832,25 @@ async function revalidateCurrentWindowLease(
     const payload = parseValidateWindowPayload(validateResult.stdout);
     if (payload) {
       if (payload.status === "present") {
-        if (payload.window) rememberWindow(ctx, payload.window);
-        return { ok: true };
+        if (payload.window) {
+          rememberWindow(ctx, payload.window);
+          if (isActionableWindowRecord(payload.window)) return { ok: true };
+        }
+        const replacement = findValidateWindowReplacement(payload);
+        if (replacement) {
+          rememberWindow(ctx, replacement);
+          log(
+            `[openclick] (window lease: reacquired non-actionable window ${originalWindowId} -> ${ctx.windowId})`,
+          );
+          return { ok: true };
+        }
+        return {
+          ok: false,
+          error: nonActionableWindowError(
+            ctx,
+            `window lease ${originalWindowId} is present but not actionable`,
+          ),
+        };
       }
       const replacement = findValidateWindowReplacement(payload);
       if (replacement) {
@@ -722,18 +874,41 @@ async function revalidateCurrentWindowLease(
     purpose: "validate current window lease",
   });
   if (!result.ok || !result.stdout) {
-    log("[openclick] (window lease: validation unavailable)");
-    return { ok: true };
+    return {
+      ok: false,
+      error: `window lease validation unavailable for pid ${ctx.pid} window_id ${originalWindowId}; refusing to send input without a verified target window.`,
+    };
   }
   const windows = parseWindowsPayload(result.stdout);
   if (!windows) {
-    log("[openclick] (window lease: validation returned unparsable windows)");
-    return { ok: true };
+    return {
+      ok: false,
+      error: `window lease validation returned unparsable windows for pid ${ctx.pid} window_id ${originalWindowId}; refusing to send input without a verified target window.`,
+    };
   }
   const exact = findWindowById(windows, originalWindowId);
   if (exact) {
+    const previousTitle = ctx.windowTitle;
     rememberWindow(ctx, exact);
-    return { ok: true };
+    if (isActionableWindowRecord(exact)) return { ok: true };
+    const replacement = findWindowLeaseReplacement(windows, {
+      ...ctx,
+      windowTitle: previousTitle ?? ctx.windowTitle,
+    });
+    if (replacement) {
+      rememberWindow(ctx, replacement);
+      log(
+        `[openclick] (window lease: reacquired non-actionable window ${originalWindowId} -> ${ctx.windowId})`,
+      );
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      error: nonActionableWindowError(
+        ctx,
+        `window lease ${originalWindowId} is present but not actionable`,
+      ),
+    };
   }
 
   const replacement = findWindowLeaseReplacement(windows, ctx);
@@ -772,6 +947,18 @@ async function runResolvedStep(
       ok: false,
       error:
         "message row click did not resolve to a concrete AX row/link; refusing blind click",
+    };
+  }
+
+  const keyFallbackStep = untargetedClickToKeyStep(step, ctx);
+  if (keyFallbackStep) {
+    log("[openclick] (untargeted click fallback: sending key)");
+    return await runner(keyFallbackStep);
+  }
+  if (isUntargetedClick(step)) {
+    return {
+      ok: false,
+      error: `untargeted ${step.tool} blocked before cua-driver call: provide element_index, coordinates, or a recognizable press/click purpose`,
     };
   }
 
@@ -814,6 +1001,7 @@ async function runResolvedStep(
 function backgroundActionReceiptFailure(stdout?: string): string | undefined {
   const receipt = parseActionReceipt(stdout);
   if (!receipt) return undefined;
+  if (isCursorOnlyLeasedWindowReceipt(receipt)) return undefined;
   const unsafe =
     receipt.ok === false ||
     receipt.background_safe === false ||
@@ -831,6 +1019,17 @@ function backgroundActionReceiptFailure(stdout?: string): string | undefined {
   const session = receipt.session ? ` (${receipt.session})` : "";
   const reason = reasons.length > 0 ? reasons.join(", ") : "unsafe action";
   return `background-safety violation from ${route}${session}: ${reason}`;
+}
+
+function isCursorOnlyLeasedWindowReceipt(
+  receipt: DriverActionReceipt,
+): boolean {
+  return (
+    receipt.cursor_moved === true &&
+    receipt.foreground_changed !== true &&
+    receipt.lane === "leased_window" &&
+    receipt.reason?.toLowerCase() === "cursor_moved"
+  );
 }
 
 function parseActionReceipt(stdout?: string): DriverActionReceipt | null {
@@ -1150,6 +1349,13 @@ function planSelectorFromArgs(
   const selector: PlanSelector = {};
   if (typeof args.__title === "string") selector.title = args.__title;
   if (typeof args.__ax_id === "string") selector.ax_id = args.__ax_id;
+  if (typeof args.title === "string") selector.title = args.title;
+  if (typeof args.title_contains === "string")
+    selector.title_contains = args.title_contains;
+  if (typeof args.ax_id === "string") selector.ax_id = args.ax_id;
+  if (typeof args.role === "string") selector.role = args.role;
+  if (typeof args.ordinal === "number" && Number.isInteger(args.ordinal))
+    selector.ordinal = args.ordinal;
   return Object.keys(selector).length > 0 ? selector : null;
 }
 
@@ -1230,6 +1436,42 @@ function buttonCandidatesForKey(key: string): string[] {
   return candidates[lower] ?? candidates[key] ?? [];
 }
 
+function keyFromPurposeTarget(target: string): string | null {
+  const normalized = normalizePurposeTarget(target).toLowerCase();
+  if (/^\d$/.test(normalized)) return normalized;
+  const aliases: Record<string, string> = {
+    multiply: "*",
+    multiplication: "*",
+    "multiplication operator": "*",
+    "multiply operator": "*",
+    times: "*",
+    "×": "*",
+    x: "*",
+    add: "+",
+    addition: "+",
+    "addition operator": "+",
+    plus: "+",
+    "plus operator": "+",
+    subtract: "-",
+    subtraction: "-",
+    "subtraction operator": "-",
+    minus: "-",
+    "minus operator": "-",
+    divide: "/",
+    division: "/",
+    "division operator": "/",
+    "divide operator": "/",
+    equals: "return",
+    "equals operator": "return",
+    equal: "return",
+    return: "return",
+    enter: "return",
+    clear: "escape",
+    "all clear": "escape",
+  };
+  return aliases[normalized] ?? null;
+}
+
 function hasEditableRole(ctx: ExecutorContext): boolean {
   return (
     ctx.axIndex?.some((entry) =>
@@ -1284,10 +1526,12 @@ function keyNameForChar(char: string): string | null {
  */
 function isAxTargetedStep(step: PlanStep): boolean {
   if (!AX_TARGETED_TOOLS.has(step.tool)) return false;
+  if (hasConcreteActionTarget(step.args)) return false;
+  if (commandHotkeyFromPurpose(step.purpose)) return false;
   return (
-    "__selector" in step.args ||
-    "__title" in step.args ||
-    "__ax_id" in step.args
+    planSelectorFromArgs(step.args) !== null ||
+    inferredButtonSelectorFromPurpose(step.purpose) !== null ||
+    purposeLabelCandidatesFromPurpose(step.purpose).length > 0
   );
 }
 
@@ -1319,6 +1563,26 @@ function substitutePlaceholders(
     }
     if (k === "__ax_id" && typeof v === "string") {
       pendingSelector = { ...(pendingSelector ?? {}), ax_id: v };
+      continue;
+    }
+    if (k === "title" && typeof v === "string") {
+      pendingSelector = { ...(pendingSelector ?? {}), title: v };
+      continue;
+    }
+    if (k === "title_contains" && typeof v === "string") {
+      pendingSelector = { ...(pendingSelector ?? {}), title_contains: v };
+      continue;
+    }
+    if (k === "ax_id" && typeof v === "string") {
+      pendingSelector = { ...(pendingSelector ?? {}), ax_id: v };
+      continue;
+    }
+    if (k === "role" && typeof v === "string") {
+      pendingSelector = { ...(pendingSelector ?? {}), role: v };
+      continue;
+    }
+    if (k === "ordinal" && typeof v === "number" && Number.isInteger(v)) {
+      pendingSelector = { ...(pendingSelector ?? {}), ordinal: v };
       continue;
     }
     if (v === "$pid" && ctx.pid !== undefined) out[k] = ctx.pid;
@@ -1372,9 +1636,33 @@ function repairArgsForContext(
   tool: string,
   args: Record<string, unknown>,
   ctx: ExecutorContext,
+  purpose = "",
 ): Record<string, unknown> {
   const normalizedTool = canonicalToolName(tool);
   const out = { ...args };
+
+  if (normalizedTool === "launch_app") {
+    const {
+      app_name: appNameArg,
+      app: appArg,
+      application: applicationArg,
+      ...launchArgs
+    } = out;
+    const appName =
+      stringField(launchArgs.name) ??
+      stringField(appNameArg) ??
+      stringField(appArg) ??
+      stringField(applicationArg);
+    const aliasBundleId = appName ? appBundleAlias(appName) : undefined;
+    if (aliasBundleId) {
+      const { name: _ignoredName, ...argsWithoutName } = launchArgs;
+      return { ...argsWithoutName, bundle_id: aliasBundleId };
+    }
+    if (launchArgs.bundle_id === undefined && appName) {
+      launchArgs.name = appName;
+    }
+    return launchArgs;
+  }
 
   if (normalizedTool === "open_url") {
     if (out.pid === undefined && ctx.pid !== undefined) out.pid = ctx.pid;
@@ -1444,7 +1732,257 @@ function repairArgsForContext(
   ) {
     out.pid = ctx.pid;
   }
+  if (
+    AX_TARGETED_TOOLS.has(normalizedTool) &&
+    !hasConcreteActionTarget(out) &&
+    ctx.axIndex
+  ) {
+    const selector = inferredButtonSelectorFromPurpose(purpose);
+    if (selector) {
+      const idx = resolveSelector(ctx.axIndex, selector);
+      if (idx !== null) out.element_index = idx;
+    }
+    if (out.element_index === undefined) {
+      const idx = resolveActionTargetFromPurpose(ctx.axIndex, purpose);
+      if (idx !== null) out.element_index = idx;
+    }
+  }
   return out;
+}
+
+function hasConcreteActionTarget(args: Record<string, unknown>): boolean {
+  return (
+    args.element_index !== undefined ||
+    (typeof args.x === "number" && typeof args.y === "number")
+  );
+}
+
+function inferredButtonSelectorFromPurpose(
+  purpose: string,
+): PlanSelector | null {
+  const raw = purposeTarget(purpose);
+  if (!raw) return null;
+  const cleaned = normalizePurposeTarget(raw);
+  if (!cleaned || cleaned.length > 24) return null;
+  const keyAlias = keyFromPurposeTarget(cleaned);
+  const candidates = buttonCandidatesForKey(keyAlias ?? cleaned);
+  const title = candidates[0] ?? cleaned;
+  return { title, role: "AXButton" };
+}
+
+function resolveActionTargetFromPurpose(
+  entries: AxIndexEntry[],
+  purpose: string,
+): number | null {
+  for (const label of purposeLabelCandidatesFromPurpose(purpose)) {
+    const idx = resolveActionTargetByLabel(entries, label, purpose);
+    if (idx !== null) return idx;
+  }
+  return null;
+}
+
+function resolveActionTargetByLabel(
+  entries: AxIndexEntry[],
+  label: string,
+  purpose: string,
+): number | null {
+  const wanted = label.trim().toLowerCase();
+  if (!wanted) return null;
+  const scored = entries
+    .map((entry) => {
+      const title = entry.title?.trim().toLowerCase();
+      const titleMatch = title === wanted;
+      const subtreeMatch = subtreeTextHasExactLine(entry.subtreeText, wanted);
+      if (!titleMatch && !subtreeMatch) return null;
+      let score = titleMatch ? 1_000 : 0;
+      if (subtreeMatch) score += 700;
+      score += roleActionScore(entry.role);
+      if (
+        /\b(sidebar|outline)\b/i.test(purpose) &&
+        entry.ancestorPath.some((role) => role.toLowerCase() === "axoutline")
+      ) {
+        score += 200;
+      }
+      score += Math.min(entry.indent, 60);
+      return { entry, score };
+    })
+    .filter(
+      (value): value is { entry: AxIndexEntry; score: number } =>
+        value !== null,
+    )
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (!best) return null;
+  if (scored[1]?.score === best.score) return null;
+  return best.entry.index;
+}
+
+function subtreeTextHasExactLine(
+  subtreeText: string | undefined,
+  wanted: string,
+): boolean {
+  return (
+    subtreeText
+      ?.split("\n")
+      .some((line) => line.trim().toLowerCase() === wanted) ?? false
+  );
+}
+
+function roleActionScore(role: string): number {
+  const normalized = role.toLowerCase();
+  const scores: Record<string, number> = {
+    axbutton: 90,
+    axlink: 90,
+    axcell: 80,
+    axmenuitem: 75,
+    axcheckbox: 75,
+    axradiobutton: 75,
+    axrow: 65,
+    axtextfield: 45,
+    axstatictext: 10,
+  };
+  return scores[normalized] ?? 25;
+}
+
+function purposeLabelCandidatesFromPurpose(purpose: string): string[] {
+  const raw = purposeTarget(purpose);
+  return raw ? purposeLabelCandidates(raw) : [];
+}
+
+function purposeLabelCandidates(raw: string): string[] {
+  const normalized = normalizePurposeTarget(raw);
+  const candidates = new Set<string>();
+  addPurposeCandidate(candidates, normalized);
+  addPurposeCandidate(
+    candidates,
+    normalized.replace(
+      /\s+(?:in|inside|within|on|from|under|via|using)\s+(?:the\s+)?.+$/i,
+      "",
+    ),
+  );
+  for (const value of [...candidates]) {
+    addPurposeCandidate(
+      candidates,
+      value.replace(
+        /\s+(?:folder|item|row|link|field|option|tab|control|operator)$/i,
+        "",
+      ),
+    );
+  }
+  return [...candidates];
+}
+
+function addPurposeCandidate(candidates: Set<string>, value: string): void {
+  const cleaned = value.trim();
+  if (!cleaned) return;
+  const tokenCount = cleaned.split(/\s+/).length;
+  if (cleaned.length > 40 || tokenCount > 5) return;
+  candidates.add(cleaned);
+}
+
+function untargetedClickToKeyStep(
+  step: PlanStep,
+  ctx: ExecutorContext,
+): PlanStep | null {
+  if (
+    step.tool !== "click" &&
+    step.tool !== "double_click" &&
+    step.tool !== "right_click"
+  ) {
+    return null;
+  }
+  if (hasConcreteActionTarget(step.args)) return null;
+  const commandHotkey = commandHotkeyFromPurpose(step.purpose);
+  if (commandHotkey) {
+    const pid = asFiniteNumber(step.args.pid) ?? ctx.pid;
+    if (pid === undefined) return null;
+    const windowId = asFiniteNumber(step.args.window_id) ?? ctx.windowId;
+    const args =
+      windowId === undefined
+        ? { pid, keys: commandHotkey }
+        : { pid, window_id: windowId, keys: commandHotkey };
+    return { tool: "hotkey", args, purpose: step.purpose };
+  }
+  const raw = purposeTarget(step.purpose);
+  if (!raw) return null;
+  const key = keyFromPurposeTarget(raw);
+  if (!key) return null;
+  const pid = asFiniteNumber(step.args.pid) ?? ctx.pid;
+  if (pid === undefined) return null;
+  const windowId = asFiniteNumber(step.args.window_id) ?? ctx.windowId;
+  const args =
+    windowId === undefined ? { pid, key } : { pid, window_id: windowId, key };
+  return normalizePlanStep({ tool: "press_key", args, purpose: step.purpose });
+}
+
+function commandHotkeyFromPurpose(purpose: string): string[] | null {
+  return (
+    commandHotkeyFromPurposeTarget(purpose) ??
+    (purposeTarget(purpose)
+      ? commandHotkeyFromPurposeTarget(purposeTarget(purpose) ?? "")
+      : null)
+  );
+}
+
+function commandHotkeyFromPurposeTarget(target: string): string[] | null {
+  const normalized = normalizePurposeTarget(target).toLowerCase();
+  const aliases: Record<string, string[]> = {
+    copy: ["cmd", "c"],
+    "copy selection": ["cmd", "c"],
+    "copy selected text": ["cmd", "c"],
+    "copy selected item": ["cmd", "c"],
+    paste: ["cmd", "v"],
+    "paste text": ["cmd", "v"],
+    "paste copied text": ["cmd", "v"],
+    cut: ["cmd", "x"],
+    "cut selection": ["cmd", "x"],
+    "select all": ["cmd", "a"],
+    "select all text": ["cmd", "a"],
+    "select everything": ["cmd", "a"],
+    find: ["cmd", "f"],
+    search: ["cmd", "f"],
+    "find text": ["cmd", "f"],
+    "search text": ["cmd", "f"],
+    undo: ["cmd", "z"],
+    redo: ["cmd", "shift", "z"],
+    save: ["cmd", "s"],
+  };
+  return aliases[normalized] ?? null;
+}
+
+function isUntargetedClick(step: PlanStep): boolean {
+  return (
+    (step.tool === "click" ||
+      step.tool === "double_click" ||
+      step.tool === "right_click") &&
+    !hasConcreteActionTarget(step.args)
+  );
+}
+
+function purposeTarget(purpose: string): string | null {
+  const match = purpose.match(
+    /^\s*(?:press|click|tap|select|activate)\s+(.+?)\s*$/i,
+  );
+  return match?.[1]?.trim() || null;
+}
+
+function normalizePurposeTarget(target: string): string {
+  return target
+    .replace(/^the\s+/i, "")
+    .replace(/^(digit|number)\s+/i, "")
+    .replace(/\s+to\s+.+$/i, "")
+    .replace(/\s*\(.+?\)\s*$/i, "")
+    .replace(/\s+(button|key)$/i, "")
+    .trim();
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function appBundleAlias(name: string): string | undefined {
+  return APP_BUNDLE_ALIASES[name.trim().toLowerCase()];
 }
 
 function shouldFillWindowIdForTool(
@@ -1553,10 +2091,15 @@ function absorbContext(
   }
   if (Array.isArray(obj.windows) && obj.windows.length > 0) {
     const preferredWindowId = explicitWindowId ?? anchoredWindowId;
+    const preferredLaunchUrlWindow =
+      tool === "launch_app"
+        ? pickWindowForLaunchUrls(obj.windows, args.urls)
+        : undefined;
     const first =
-      preferredWindowId !== undefined
+      preferredLaunchUrlWindow ??
+      (preferredWindowId !== undefined
         ? findWindowById(obj.windows, preferredWindowId)
-        : pickUsableWindow(obj.windows);
+        : pickUsableWindow(obj.windows));
     if (tool === "list_windows" && preferredWindowId !== undefined && !first) {
       const replacement = findWindowLeaseReplacement(obj.windows, ctx);
       if (replacement) {
@@ -1580,6 +2123,42 @@ function absorbContext(
   }
 }
 
+function pickWindowForLaunchUrls(
+  windows: unknown[],
+  urls: unknown,
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(urls)) return undefined;
+  const wantedTitles = urls
+    .map(windowTitleFromLaunchUrl)
+    .filter((title): title is string => !!title);
+  if (wantedTitles.length === 0) return undefined;
+  const records = windowRecords(windows);
+  const matches = records.filter((window) => {
+    const title =
+      typeof window.title === "string" ? window.title.trim().toLowerCase() : "";
+    return wantedTitles.some((wanted) => title === wanted);
+  });
+  if (matches.length === 0) return undefined;
+  return pickUsableWindow(matches);
+}
+
+function windowTitleFromLaunchUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const raw = value.trim();
+  if (!raw || /^https?:\/\//i.test(raw)) return undefined;
+  let path = raw;
+  if (/^file:\/\//i.test(raw)) {
+    try {
+      path = decodeURIComponent(new URL(raw).pathname);
+    } catch {
+      path = raw.replace(/^file:\/\//i, "");
+    }
+  }
+  const withoutTrailingSlash = path.replace(/\/+$/g, "");
+  const title = withoutTrailingSlash.split("/").filter(Boolean).at(-1);
+  return title?.trim().toLowerCase() || undefined;
+}
+
 function rememberWindow(
   ctx: ExecutorContext,
   window: Record<string, unknown>,
@@ -1589,9 +2168,27 @@ function rememberWindow(
   if (typeof window.window_uid === "string" && window.window_uid.trim()) {
     ctx.windowUid = window.window_uid.trim();
   }
-  if (typeof window.title === "string" && window.title.trim()) {
-    ctx.windowTitle = window.title.trim();
+  if (typeof window.title === "string") {
+    ctx.windowTitle = window.title.trim() || undefined;
   }
+  if (typeof window.role === "string") {
+    ctx.windowRole = window.role.trim() || undefined;
+  }
+  if (typeof window.subrole === "string") {
+    ctx.windowSubrole = window.subrole.trim() || undefined;
+  }
+  if (typeof window.display_id === "number") {
+    ctx.windowDisplayId = window.display_id;
+  }
+  if (isObjectRecord(window.bounds)) {
+    ctx.windowBounds = {
+      x: asFiniteNumber(window.bounds.x) ?? undefined,
+      y: asFiniteNumber(window.bounds.y) ?? undefined,
+      width: asFiniteNumber(window.bounds.width) ?? undefined,
+      height: asFiniteNumber(window.bounds.height) ?? undefined,
+    };
+  }
+  ctx.windowActionable = windowActionability(window);
 }
 
 interface ValidateWindowPayload {
@@ -1628,8 +2225,7 @@ function findValidateWindowReplacement(
   payload: ValidateWindowPayload,
 ): Record<string, unknown> | undefined {
   const candidates = payload.possibleReplacements ?? [];
-  const usable = candidates.filter(isUsableWindowRecord);
-  const replacementPool = usable.length > 0 ? usable : candidates;
+  const replacementPool = candidates.filter(isActionableWindowRecord);
   return replacementPool.length === 1 ? replacementPool[0] : undefined;
 }
 
@@ -1640,7 +2236,7 @@ function findWindowLeaseReplacement(
   const title = ctx.windowTitle?.trim().toLowerCase();
   if (!title) return undefined;
   const matches = windowRecords(windows)
-    .filter(isUsableWindowRecord)
+    .filter(isActionableWindowRecord)
     .filter((window) => {
       const candidateTitle =
         typeof window.title === "string"
@@ -1683,11 +2279,41 @@ function pickUsableWindow(
   if (preferredWindowId !== undefined) {
     const preferred = records.find(
       (window) =>
-        window.window_id === preferredWindowId && isUsableWindowRecord(window),
+        window.window_id === preferredWindowId &&
+        isActionableWindowRecord(window),
     );
     if (preferred) return preferred;
   }
-  return records.sort((a, b) => windowRecordScore(b) - windowRecordScore(a))[0];
+  const actionable = records.filter(isActionableWindowRecord);
+  const usable = records.filter(isUsableWindowRecord);
+  const candidates =
+    actionable.length > 0 ? actionable : usable.length > 0 ? usable : records;
+  return candidates.sort(
+    (a, b) => windowRecordScore(b) - windowRecordScore(a),
+  )[0];
+}
+
+function isActionableWindowRecord(window: Record<string, unknown>): boolean {
+  return windowActionability(window) === true;
+}
+
+function windowActionability(
+  window: Record<string, unknown>,
+): boolean | undefined {
+  const bounds = window.bounds as Record<string, unknown> | undefined;
+  const width = asFiniteNumber(bounds?.width);
+  const height = asFiniteNumber(bounds?.height);
+  if (width === null || height === null) return undefined;
+  if (width < 100 || height < 80) return false;
+  const role = typeof window.role === "string" ? window.role.toLowerCase() : "";
+  const subrole =
+    typeof window.subrole === "string" ? window.subrole.toLowerCase() : "";
+  if (role && role !== "axwindow") return false;
+  if (subrole?.includes("menubar")) return false;
+  if (window.is_on_screen === false && window.on_current_space === false) {
+    return false;
+  }
+  return true;
 }
 
 function isUsableWindowRecord(window: Record<string, unknown>): boolean {
@@ -1695,6 +2321,23 @@ function isUsableWindowRecord(window: Record<string, unknown>): boolean {
   const width = Number(bounds?.width ?? 0);
   const height = Number(bounds?.height ?? 0);
   return width >= 100 && height >= 80;
+}
+
+function nonActionableWindowError(
+  ctx: ExecutorContext,
+  prefix: string,
+): string {
+  const title = ctx.windowTitle ? ` title="${ctx.windowTitle}"` : "";
+  const role = ctx.windowRole ? ` role=${ctx.windowRole}` : "";
+  const subrole = ctx.windowSubrole ? ` subrole=${ctx.windowSubrole}` : "";
+  const bounds = ctx.windowBounds
+    ? ` bounds=${ctx.windowBounds.width ?? "?"}x${ctx.windowBounds.height ?? "?"}@${ctx.windowBounds.x ?? "?"},${ctx.windowBounds.y ?? "?"}`
+    : "";
+  const display =
+    ctx.windowDisplayId !== undefined
+      ? ` display_id=${ctx.windowDisplayId}`
+      : "";
+  return `${prefix}: pid=${ctx.pid ?? "?"} window_id=${ctx.windowId ?? "?"}${title}${role}${subrole}${bounds}${display}. The selected surface is likely a menu/helper/hidden window, not the real app window. Refusing to send input to avoid clicks in the wrong place.`;
 }
 
 function windowRecordScore(window: Record<string, unknown>): number {
@@ -1705,6 +2348,11 @@ function windowRecordScore(window: Record<string, unknown>): number {
   const area = Math.min(width * height, 1_000_000);
   const titleBonus =
     typeof window.title === "string" && window.title.trim() ? 100_000 : 0;
+  const actionabilityBonus = isActionableWindowRecord(window) ? 8_000_000 : 0;
+  const rolePenalty =
+    typeof window.role === "string" && window.role !== "AXWindow"
+      ? -4_000_000
+      : 0;
   const visibleBonus = window.is_on_screen === false ? -2_000_000 : 2_000_000;
   const spaceBonus = window.on_current_space === false ? -2_000_000 : 2_000_000;
   const focusedBonus =
@@ -1717,6 +2365,8 @@ function windowRecordScore(window: Record<string, unknown>): number {
   const zBonus = Number(window.z_index ?? 0) * 100_000;
   return (
     usable +
+    actionabilityBonus +
+    rolePenalty +
     focusedBonus +
     visibleBonus +
     spaceBonus +
@@ -1972,17 +2622,14 @@ async function runOpenUrl(
   }
   const selectedWindowId =
     asFiniteNumber(selectedWindow?.window_id) ??
-    asFiniteNumber(selectedTab?.owning_window_id) ??
     (navigatedInLeasedTab?.ok ? leasedWindowId : undefined) ??
     undefined;
   const selectedWindowUid =
     typeof selectedWindow?.window_uid === "string"
       ? selectedWindow.window_uid
-      : typeof selectedTab?.owning_window_uid === "string"
-        ? selectedTab.owning_window_uid
-        : navigatedInLeasedTab?.ok
-          ? leasedWindowUid
-          : undefined;
+      : navigatedInLeasedTab?.ok
+        ? leasedWindowUid
+        : undefined;
   return {
     ok: true,
     stdout: JSON.stringify({
