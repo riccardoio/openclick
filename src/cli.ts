@@ -75,6 +75,10 @@ export async function main(args: string[]): Promise<void> {
     return;
   }
   const cmd = args[0];
+  if (args.slice(1).some((arg) => arg === "--help" || arg === "-h")) {
+    console.log(USAGE);
+    return;
+  }
   switch (cmd) {
     case "setup": {
       const { runSetup } = await import("./setup.ts");

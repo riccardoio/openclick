@@ -1,3 +1,4 @@
+import { spawn as spawnDetached } from "node:child_process";
 import { existsSync } from "node:fs";
 import { Badge, Box, colorize, fg, style } from "@vr_patel/tui";
 import { resolveCuaDriverBinary, resolveRecorderBinary } from "./paths.ts";
@@ -397,13 +398,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 function launchCuaDriverDaemon(cuaDriver: string): void {
-  const proc = Bun.spawn([cuaDriver, "serve"], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-    env: { ...Bun.env, CUA_DRIVER_NO_RELAUNCH: "1" },
+  const proc = spawnDetached(cuaDriver, ["serve"], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, CUA_DRIVER_NO_RELAUNCH: "1" },
   });
-  proc.unref?.();
+  proc.unref();
 }
 
 export function formatDoctorReport(report: DoctorReport): string {

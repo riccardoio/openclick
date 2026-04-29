@@ -124,7 +124,7 @@ Output ONLY a JSON object {"status":"ready|done|blocked|needs_clarification", "s
 
 Available tools (cua-driver MCP):
 - list_apps — inspect installed/running apps when the target app is ambiguous
-- launch_app, list_windows, diff_windows, list_browser_tabs, get_window_state — use these to establish pid/window_id, compare window changes, inspect browser tabs, and refresh the AX tree. list_windows accepts { pid? }; list_browser_tabs accepts { pid? bundle_id? }; get_window_state accepts { pid, window_id, capture_mode?: "som"|"ax"|"vision", query? }. Use capture_mode "ax" for cheap AX-only refreshes and "som" only when a screenshot is needed. Do not pass app_name to list_windows/get_window_state.
+- launch_app, list_windows, diff_windows, list_browser_tabs, get_window_state — use these to establish pid/window_id, compare window changes, inspect browser tabs, and refresh the AX tree. launch_app accepts { name? bundle_id? urls? }; use the target app's display name when you do not know the bundle_id. For Finder folder/path navigation, prefer launch_app({ bundle_id: "com.apple.finder", urls: ["~/Downloads"] }) over clicking sidebar or file-list rows. list_windows accepts { pid? }; list_browser_tabs accepts { pid? bundle_id? }; get_window_state accepts { pid, window_id, capture_mode?: "som"|"ax"|"vision", query? }. Use capture_mode "ax" for cheap AX-only refreshes and "som" only when a screenshot is needed. Do not pass app_name to list_windows/get_window_state.
 - open_url — local openclick tool for browser navigation, args { url, bundle_id? }. Use this for opening web URLs in a browser instead of clicking the address bar.
 - click / double_click / right_click — args { pid, window_id, __selector: { title?, title_contains?, ax_id?, role?, ordinal? } } OR { pid, x, y }
 - drag — local openclick tool for press-move-release gestures, args { pid, window_id, from: { x, y }, to: { x, y }, duration_ms?, screenshot_width?, screenshot_height? } in the attached screenshot's coordinates
@@ -351,6 +351,31 @@ export function normalizePlanStep(step: PlanStep): PlanStep {
       expected_change:
         step.expected_change ?? "Browser address bar is focused.",
     };
+  }
+  if (step.tool === "hotkey" && Array.isArray(step.args.keys)) {
+    const keys = step.args.keys.filter(
+      (key): key is string => typeof key === "string",
+    );
+    const firstKey = keys[0];
+    const secondKey = keys[1];
+    if (keys.length === 1 && firstKey && SHIFTED_KEY_MAP[firstKey]) {
+      return {
+        ...step,
+        args: { ...step.args, keys: ["shift", SHIFTED_KEY_MAP[firstKey]] },
+      };
+    }
+    if (
+      keys.length === 2 &&
+      firstKey?.toLowerCase() === "shift" &&
+      secondKey &&
+      SHIFTED_KEY_MAP[secondKey]
+    ) {
+      return {
+        ...step,
+        args: { ...step.args, keys: ["shift", SHIFTED_KEY_MAP[secondKey]] },
+      };
+    }
+    return step;
   }
   if (step.tool !== "press_key") return step;
   const key = step.args.key;
