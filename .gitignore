@@ -7,3 +7,4 @@ recorder/.build/
 recorder/.swiftpm/
 mac-app/.build/
 *.log
+.context/codex-session-id
