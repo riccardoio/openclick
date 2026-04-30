@@ -2,6 +2,7 @@
   "name": "openclick",
   "version": "0.1.5",
   "description": "Run macOS desktop tasks from natural-language prompts via cua-driver.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "openclick": "bin/openclick"
