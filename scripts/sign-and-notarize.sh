@@ -88,21 +88,30 @@ else
   notary_args+=(--apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID")
 fi
 
+# Parse JSON fields with plutil (built into macOS) — awk-based parsing
+# was fragile because notary's JSON field order isn't deterministic.
+# `plutil -extract <key> raw -o -` reads JSON and prints the bare value.
+extract_json_field() {
+  local key="$1"
+  local file="$2"
+  plutil -extract "$key" raw -o - "$file" 2>/dev/null || true
+}
+
 if ! "${notary_args[@]}" >"$NOTARY_OUTPUT"; then
   echo "notary submission failed" >&2
   cat "$NOTARY_OUTPUT" >&2 || true
-  submission_id="$(awk -F'"' '/"id"/ { print $4; exit }' "$NOTARY_OUTPUT" 2>/dev/null || true)"
+  submission_id="$(extract_json_field id "$NOTARY_OUTPUT")"
   if [[ -n "$submission_id" ]]; then
     xcrun notarytool log "$submission_id" --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" >&2 || true
   fi
   exit 1
 fi
 
-status="$(awk -F'"' '/"status"/ { print $4; exit }' "$NOTARY_OUTPUT" 2>/dev/null || true)"
+status="$(extract_json_field status "$NOTARY_OUTPUT")"
 if [[ "$status" != "Accepted" ]]; then
-  echo "notary submission was not accepted" >&2
+  echo "notary submission was not accepted (status: ${status:-unknown})" >&2
   cat "$NOTARY_OUTPUT" >&2 || true
-  submission_id="$(awk -F'"' '/"id"/ { print $4; exit }' "$NOTARY_OUTPUT" 2>/dev/null || true)"
+  submission_id="$(extract_json_field id "$NOTARY_OUTPUT")"
   if [[ -n "$submission_id" ]]; then
     xcrun notarytool log "$submission_id" --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" >&2 || true
   fi
