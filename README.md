@@ -1,8 +1,6 @@
 # OpenClick
 
-<video src="https://github.com/riccardoio/openclick/releases/download/v0.2.0/demo.mp4" controls width="720"></video>
-
-> Demo: OpenClick completing a desktop task from a natural-language prompt. ([watch](https://github.com/riccardoio/openclick/releases/download/v0.2.0/demo.mp4))
+![OpenClick demo — completing a desktop task from a natural-language prompt](docs/demo.gif)
 
 OpenClick is a macOS automation system for completing desktop tasks from natural-language prompts.
 
