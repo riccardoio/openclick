@@ -44,13 +44,35 @@ done
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_DIR/Contents/Info.plist"
 
+# Sign innermost binaries first, then the outer bundle. Apple deprecated
+# --deep for nested binaries previously signed by a different identity
+# (notary rejects with "The signature of the binary is invalid"). The
+# upstream daemon arrives signed as com.trycua.driver — we strip that and
+# re-sign under com.openclick.helper.daemon with our identity.
+DAEMON_BIN="$APP_DIR/Contents/Resources/openclick-daemon"
+
+codesign --remove-signature "$DAEMON_BIN" 2>/dev/null || true
+
 codesign \
   --force \
-  --deep \
+  --options runtime \
+  --identifier com.openclick.helper.daemon \
+  --entitlements "$ROOT/mac-app/OpenclickHelper.entitlements" \
+  --sign "$CERT_APPLICATION_NAME" \
+  --timestamp \
+  "$DAEMON_BIN"
+
+codesign \
+  --force \
   --options runtime \
   --entitlements "$ROOT/mac-app/OpenclickHelper.entitlements" \
   --sign "$CERT_APPLICATION_NAME" \
+  --timestamp \
   "$APP_DIR"
+
+# Sanity-check both signatures before submitting to notary.
+codesign --verify --strict --verbose=2 "$DAEMON_BIN"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 rm -f "$ZIP_PATH" "$NOTARY_OUTPUT"
 (
