@@ -2,16 +2,32 @@
 
 All notable changes to openclick are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to a 4-digit versioning scheme: `MAJOR.MINOR.PATCH.MICRO`.
 
-## Unreleased
+## [0.2.0.0] - 2026-05-04
 
 ### Added
-- Renamed the macOS desktop helper to signed `OpenclickHelper.app` with bundle ID `com.openclick.helper`, plus a first-run helper window for macOS permissions and migration cleanup. On first run, OpenclickHelper will guide existing users through re-granting macOS permissions. Old CuaDriver entries can be removed in System Settings.
-- `openclick uninstall` for removing OpenclickHelper, resetting its macOS permissions, and deleting `~/.openclick/` unless `--keep-config` is set.
+- Renamed the macOS desktop helper to signed + notarized `OpenclickHelper.app` with bundle ID `com.openclick.helper`, signed by Speedrun Labs Ltd (team `LH7NH6SPDB`). Single-app architecture: a Swift dispatcher at `Contents/MacOS/OpenclickHelper` either shows the GUI or `execv`s the embedded daemon at `Contents/Resources/openclick-daemon` based on argv. macOS TCC binds a single identity for both jobs.
+- Step-by-step permission setup window (Accessibility, Screen Recording, Automation, Developer Tools — last two env-gated) with live TCC polling, deep-links to the right Settings panes, retry-on-timeout, and a `Done` button that returns control to the calling CLI.
+- The CLI auto-opens the permission window on first `openclick run`, polls the helper's status file, and continues after a successful grant. If the user closes the window without clicking `Done` but TCC permissions are actually granted, the CLI does a final `check_permissions` and continues anyway.
+- `openclick uninstall` removes `/Applications/OpenclickHelper.app`, resets TCC entries, and deletes `~/.openclick/`. `--keep-config` preserves user data; `--yes` skips the confirmation prompt for scripted uninstalls.
+- New `scripts/sign-and-notarize.sh` and `scripts/build-universal.sh` produce the signed/notarized `.app` from the maintainer's Mac (Developer ID Application + hardened runtime + apple-events entitlement, daemon signed first then bundle, JSON parsed via `plutil`).
+- New `scripts/dev-install.sh` for local iteration: builds the dispatcher, embeds the daemon, signs with Developer ID (skips notarization), and installs to `/Applications/OpenclickHelper.app` so macOS Launch Services finds it for auto-relaunches after Screen Recording grants.
+- New npm subpackage `@openclick/openclick-helper-darwin` (replaces `@openclick/cua-driver-darwin-arm64`); idempotent `postinstall.js` copies the `.app` to `/Applications/` (fallback `~/Applications/`).
 - Provider abstraction for Anthropic/OpenAI model calls without changing the AX/helper action loop.
 - OpenAI Responses API provider support for planner, verifier, result, and compile model calls.
 - Mac app Settings window for choosing Anthropic/OpenAI and changing the saved API key without revealing it.
 - `openclick settings provider ...`, `openclick settings model ...`, `openclick settings api-key ...`, and `openclick settings openai-api-key ...` for CLI-only provider management.
 - `openclick server` local HTTP API, `openclick mcp` stdio MCP server, and `openclick daemon install|uninstall|status` for a launchd-backed always-on API server.
+
+### Changed
+- `src/paths.ts` resolves `/Applications/OpenclickHelper.app/Contents/MacOS/OpenclickHelper` first, falls back to `~/Applications/`, then the npm-bundled path. The previous unsigned `bin/cua-driver` resolution path is gone.
+- `src/run.ts` captures daemon stderr to `~/.openclick/helper-daemon.stderr.log` and surfaces it on startup failure, replacing the silent 6-second timeout that masked permission and signature issues.
+- After a successful `launch_app` step in `--allow-foreground` mode, openclick now runs `/usr/bin/open -b <bundle_id>` to bring the launched app to the front. Background mode (default) is unchanged.
+
+### Fixed
+- Hotkey shifted-symbol normalization now handles symbols anywhere in a `keys` array (`["+"]`, `["shift","+"]`, `["command","+"]`, `["control","shift","?"]`, etc.). Previous logic only caught two specific patterns and let unknown symbols reach the daemon, producing `Unknown key name: +`.
+
+### Removed
+- The migration step from the permission setup window — there are no real users on the prior `CuaDriver`-named install to migrate.
 
 ## [0.1.0.0] - 2026-04-25
 
