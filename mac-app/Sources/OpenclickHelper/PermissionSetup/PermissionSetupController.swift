@@ -73,13 +73,14 @@ final class PermissionSetupController: NSObject, NSWindowDelegate {
     window.isOpaque = false
     window.backgroundColor = .clear
     window.hasShadow = true
+    let fixedSize = NSSize(width: 560, height: 700)
+    window.contentMinSize = fixedSize
+    window.contentMaxSize = fixedSize
+    window.setContentSize(fixedSize)
     window.delegate = self
 
     viewModel.onFinish = { [weak self] in
-      guard let self else { return }
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-        self.window.close()
-      }
+      self?.window.close()
     }
 
     let host = NSHostingView(rootView: PermissionSetupView(viewModel: viewModel))
@@ -335,140 +336,82 @@ struct PermissionSetupView: View {
   @ObservedObject var viewModel: PermissionSetupViewModel
 
   var body: some View {
-    ZStack(alignment: .top) {
-      // Subtle accent gradient overlay for depth (sits on top of the
-      // window's vibrancy material — gives the "liquid glass" feel
-      // without depending on macOS-26-only APIs).
-      LinearGradient(
-        colors: [
-          Color.accentColor.opacity(0.10),
-          Color.accentColor.opacity(0.0),
-        ],
-        startPoint: .top,
-        endPoint: .center
-      )
-      .frame(height: 240)
-      .blur(radius: 30)
-      .allowsHitTesting(false)
+    VStack(alignment: .leading, spacing: 0) {
+      header
+        .padding(.horizontal, 24)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
 
-      VStack(alignment: .leading, spacing: 18) {
-        header
-        if !viewModel.installMessage.isEmpty {
-          installRow
-        }
-        VStack(spacing: 10) {
-          ForEach(viewModel.steps) { step in
-            PermissionStepCard(
+      Divider()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(Array(viewModel.steps.enumerated()), id: \.element.id) { index, step in
+            PermissionStepRow(
               step: step,
               request: { viewModel.request(step: step.kind) },
               retry: { viewModel.retryActiveStep() }
             )
+            if index < viewModel.steps.count - 1 {
+              Divider().padding(.leading, 56)
+            }
           }
         }
-        Spacer(minLength: 12)
-        if viewModel.isReady {
-          ready
-            .transition(.scale(scale: 0.94).combined(with: .opacity))
-        }
       }
-      .padding(28)
+
+      Divider()
+
+      footer
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .frame(width: 520, height: 600)
     .background(.regularMaterial)
-    .animation(.smooth(duration: 0.35), value: viewModel.isReady)
   }
 
   private var header: some View {
-    HStack(alignment: .top, spacing: 14) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .fill(.thinMaterial)
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-        Image(systemName: "cursorarrow.click.2")
-          .font(.system(size: 22, weight: .semibold))
-          .foregroundStyle(Color.accentColor)
-      }
-      .frame(width: 52, height: 52)
-      .shadow(color: Color.black.opacity(0.10), radius: 10, y: 3)
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Set up OpenclickHelper")
+        .font(.system(size: 22, weight: .semibold))
+      Text(
+        viewModel.installMessage.isEmpty
+          ? "Grant the permissions OpenclickHelper needs to drive your apps."
+          : viewModel.installMessage
+      )
+      .font(.system(size: 13))
+      .foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
 
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Set up OpenclickHelper")
-          .font(.system(size: 26, weight: .bold, design: .rounded))
-          .foregroundStyle(.primary)
-        Text("Two macOS permissions. About 30 seconds.")
+  private var footer: some View {
+    HStack {
+      if viewModel.isReady {
+        Label("All set", systemImage: "checkmark.circle.fill")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(.green)
+      } else {
+        Text("\(grantedCount) of \(viewModel.steps.count) granted")
           .font(.system(size: 13))
           .foregroundStyle(.secondary)
       }
-      Spacer(minLength: 0)
-    }
-  }
-
-  private var installRow: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "shippingbox.fill")
-        .imageScale(.small)
-        .foregroundStyle(.tertiary)
-      Text(viewModel.installMessage)
-        .font(.system(size: 12.5))
-        .foregroundStyle(.secondary)
-        .lineLimit(2)
-    }
-  }
-
-  private var ready: some View {
-    VStack(spacing: 14) {
-      HStack(spacing: 16) {
-        ZStack {
-          Circle()
-            .fill(Color.green.opacity(0.15))
-            .frame(width: 64, height: 64)
-          Circle()
-            .fill(Color.green.opacity(0.25))
-            .frame(width: 48, height: 48)
-            .blur(radius: 8)
-          Image(systemName: "checkmark.circle.fill")
-            .font(.system(size: 44, weight: .semibold))
-            .foregroundStyle(Color.green)
-            .shadow(color: Color.green.opacity(0.4), radius: 6, y: 2)
-        }
-        VStack(alignment: .leading, spacing: 4) {
-          Text("OpenclickHelper is ready")
-            .font(.system(size: 19, weight: .bold, design: .rounded))
-          Text(
-            viewModel.completionAction == .continueRun
-              ? "Continuing your task in the terminal."
-              : "You can close this window."
-          )
-          .font(.system(size: 13))
-          .foregroundStyle(.secondary)
-        }
-        Spacer()
-      }
+      Spacer()
       Button(action: { viewModel.finish() }) {
         Text(viewModel.completionAction.buttonTitle)
-          .font(.system(size: 15, weight: .semibold))
-          .frame(maxWidth: .infinity, minHeight: 32)
-          .contentShape(Rectangle())
       }
       .buttonStyle(.borderedProminent)
       .controlSize(.large)
       .keyboardShortcut(.defaultAction)
+      .disabled(!viewModel.isReady)
     }
-    .padding(18)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(.thinMaterial)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-    )
-    .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
+  }
+
+  private var grantedCount: Int {
+    viewModel.steps.filter { $0.state == .done }.count
   }
 }
 
-struct PermissionStepCard: View {
+struct PermissionStepRow: View {
   let step: PermissionSetupStep
   let request: () -> Void
   let retry: () -> Void
@@ -476,176 +419,67 @@ struct PermissionStepCard: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 14) {
-      badge
-      VStack(alignment: .leading, spacing: step.state == .done ? 2 : 10) {
-        HStack(spacing: 8) {
-          Text(step.title)
-            .font(.system(size: 14.5, weight: .semibold, design: .rounded))
-            .foregroundStyle(.primary)
-          Spacer(minLength: 8)
-          statusPill
-        }
+      Image(systemName: stateSymbol)
+        .font(.system(size: 18, weight: .regular))
+        .foregroundStyle(stateColor)
+        .frame(width: 26, height: 26)
+
+      VStack(alignment: .leading, spacing: 4) {
+        Text(step.title)
+          .font(.system(size: 13, weight: .semibold))
+        Text(step.state == .done ? step.doneStatus : step.subtitle)
+          .font(.system(size: 12))
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+
         if step.state != .done {
-          Text(step.subtitle)
-            .font(.system(size: 12.5))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
           HStack(spacing: 10) {
-            Button(action: request) {
-              HStack(spacing: 5) {
-                Text("Open Settings")
-                Image(systemName: "arrow.up.right")
-                  .imageScale(.small)
-              }
-              .font(.system(size: 12.5, weight: .medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-            .disabled(step.state == .pending)
+            Button("Open Settings", action: request)
+              .controlSize(.small)
+              .disabled(step.state == .pending)
 
             Button(action: { showingWhy.toggle() }) {
-              HStack(spacing: 4) {
-                Image(systemName: "questionmark.circle")
-                Text("Why?")
-              }
-              .font(.system(size: 12.5))
-              .foregroundStyle(.secondary)
+              Text("Why?")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.link)
+            .controlSize(.small)
             .popover(isPresented: $showingWhy, arrowEdge: .bottom) {
-              VStack(alignment: .leading, spacing: 6) {
-                Text(step.title)
-                  .font(.system(size: 13, weight: .semibold, design: .rounded))
-                Text(step.why)
-                  .font(.system(size: 12.5))
-                  .foregroundStyle(.secondary)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
-              .padding(14)
-              .frame(width: 280, alignment: .leading)
+              Text(step.why)
+                .font(.system(size: 12))
+                .padding(12)
+                .frame(width: 260, alignment: .leading)
             }
 
             if step.waitingTooLong {
-              Button(action: retry) {
-                HStack(spacing: 4) {
-                  Image(systemName: "arrow.clockwise")
-                  Text("Retry")
-                }
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.orange)
-              }
-              .buttonStyle(.borderless)
+              Button("Retry", action: retry)
+                .controlSize(.small)
             }
           }
+          .padding(.top, 2)
         }
       }
+
+      Spacer(minLength: 0)
     }
-    .padding(14)
-    .background(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(.thinMaterial)
-        .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(stateTint)
-        )
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(borderColor, lineWidth: 0.6)
-    )
-    .shadow(color: shadowColor, radius: step.state == .active ? 8 : 3, y: 1)
-    .animation(.smooth(duration: 0.25), value: step.state)
+    .padding(.horizontal, 24)
+    .padding(.vertical, 14)
   }
 
-  private var badge: some View {
-    ZStack {
-      Circle()
-        .fill(badgeFill)
-        .shadow(color: badgeFill.opacity(0.45), radius: 4, y: 1)
-      Image(systemName: badgeSymbol)
-        .font(.system(size: 12, weight: .bold))
-        .foregroundStyle(.white)
-        .scaleEffect(step.state == .done ? 1.05 : 1.0)
-        .animation(.spring(response: 0.32, dampingFraction: 0.6), value: step.state)
-    }
-    .frame(width: 26, height: 26)
-  }
-
-  private var statusPill: some View {
-    Text(step.status)
-      .font(.system(size: 10.5, weight: .semibold))
-      .textCase(.uppercase)
-      .tracking(0.4)
-      .foregroundStyle(pillTextColor)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 4)
-      .background(pillBackground, in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .strokeBorder(pillTextColor.opacity(0.18), lineWidth: 0.5)
-      )
-  }
-
-  private var badgeFill: Color {
+  private var stateSymbol: String {
     switch step.state {
-    case .done: return .green
-    case .active: return .accentColor
-    case .error: return .red
-    case .pending: return .gray.opacity(0.45)
-    }
-  }
-
-  private var badgeSymbol: String {
-    switch step.state {
-    case .done: return "checkmark"
-    case .active: return "circle.fill"
-    case .error: return "xmark"
+    case .done: return "checkmark.circle.fill"
+    case .active: return "circle.dashed"
+    case .error: return "exclamationmark.circle.fill"
     case .pending: return "circle"
     }
   }
 
-  private var stateTint: Color {
+  private var stateColor: Color {
     switch step.state {
-    case .active: return Color.accentColor.opacity(0.10)
-    case .done: return Color.green.opacity(0.06)
-    case .error: return Color.red.opacity(0.08)
-    case .pending: return Color.clear
-    }
-  }
-
-  private var borderColor: Color {
-    switch step.state {
-    case .active: return Color.accentColor.opacity(0.40)
-    case .done: return Color.green.opacity(0.28)
-    case .error: return Color.red.opacity(0.30)
-    case .pending: return Color.white.opacity(0.06)
-    }
-  }
-
-  private var shadowColor: Color {
-    switch step.state {
-    case .active: return Color.accentColor.opacity(0.18)
-    case .done: return Color.green.opacity(0.10)
-    case .error: return Color.red.opacity(0.10)
-    case .pending: return Color.black.opacity(0.04)
-    }
-  }
-
-  private var pillBackground: Color {
-    switch step.state {
-    case .active: return Color.accentColor.opacity(0.18)
-    case .done: return Color.green.opacity(0.18)
-    case .error: return Color.red.opacity(0.20)
-    case .pending: return Color.gray.opacity(0.18)
-    }
-  }
-
-  private var pillTextColor: Color {
-    switch step.state {
-    case .active: return Color.accentColor
-    case .done: return Color.green
-    case .error: return Color.red
-    case .pending: return Color.secondary
+    case .done: return .green
+    case .active: return .accentColor
+    case .error: return .red
+    case .pending: return .secondary
     }
   }
 }
