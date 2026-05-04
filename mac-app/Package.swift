@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-  name: "openclick-recorder",
-  platforms: [.macOS(.v14)],
+  name: "openclick-helper",
+  platforms: [.macOS(.v13)],
   products: [
     .executable(name: "openclick-recorder", targets: ["Recorder"]),
-    .executable(name: "openclick-app", targets: ["OpenClickApp"]),
+    .executable(name: "OpenclickHelper", targets: ["OpenclickHelper"]),
     .library(name: "RecorderCore", targets: ["RecorderCore"]),
   ],
   targets: [
     .executableTarget(name: "Recorder", dependencies: ["RecorderCore"]),
-    .executableTarget(name: "OpenClickApp"),
+    .executableTarget(name: "OpenclickHelper", exclude: ["Info.plist"]),
     .target(name: "RecorderCore"),
     .testTarget(name: "RecorderCoreTests", dependencies: ["RecorderCore"]),
   ]

@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  resolveCuaDriverBinary,
+  resolveOpenclickHelperBinary,
   resolveSkillTrajectoryPath,
 } from "../src/paths.ts";
 import { waitForRecorderExit } from "../src/record.ts";
@@ -15,19 +15,19 @@ describe("paths", () => {
     expect(result).toMatch(/\.cua\/skills\/triage-issues\/trajectory$/);
   });
 
-  test("resolveCuaDriverBinary honors the CUA_DRIVER override", () => {
-    const dir = mkdtempSync(join(tmpdir(), "openclick-cua-driver-"));
-    const fakeBinary = join(dir, "cua-driver");
+  test("resolveOpenclickHelperBinary honors the OPENCLICK_HELPER_BIN override", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openclick-helper-"));
+    const fakeBinary = join(dir, "OpenclickHelper");
     writeFileSync(fakeBinary, "#!/bin/sh\nexit 0\n");
     chmodSync(fakeBinary, 0o755);
 
-    const original = Bun.env.CUA_DRIVER;
-    Bun.env.CUA_DRIVER = fakeBinary;
+    const original = Bun.env.OPENCLICK_HELPER_BIN;
+    Bun.env.OPENCLICK_HELPER_BIN = fakeBinary;
     try {
-      expect(resolveCuaDriverBinary()).toBe(fakeBinary);
+      expect(resolveOpenclickHelperBinary()).toBe(fakeBinary);
     } finally {
-      if (original === undefined) Bun.env.CUA_DRIVER = undefined;
-      else Bun.env.CUA_DRIVER = original;
+      if (original === undefined) Bun.env.OPENCLICK_HELPER_BIN = undefined;
+      else Bun.env.OPENCLICK_HELPER_BIN = original;
     }
   });
 });

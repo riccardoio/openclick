@@ -1,7 +1,12 @@
-import { spawn as spawnDetached } from "node:child_process";
+import { spawn as spawnDetached, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { Badge, Box, colorize, fg, style } from "@vr_patel/tui";
-import { resolveCuaDriverBinary, resolveRecorderBinary } from "./paths.ts";
+import {
+  OPENCLICK_HELPER_BUNDLE_ID,
+  helperAppPathFromBinary,
+  resolveOpenclickHelperBinary,
+  resolveRecorderBinary,
+} from "./paths.ts";
 import { apiKeyStatus, resolveModelProvider } from "./settings.ts";
 
 export type CheckStatus = "ok" | "fail";
@@ -25,8 +30,10 @@ export interface DoctorReport {
  */
 export interface SystemProbe {
   bunVersion(): string | null;
-  cuaDriverPath(): string | null;
-  cuaDriverDaemonRunning(): Promise<boolean>;
+  macOSVersion(): string | null;
+  openclickHelperPath(): string | null;
+  openclickHelperDaemonRunning(): Promise<boolean>;
+  openclickHelperSignatureValid(): Promise<boolean | null>;
   accessibilityGranted(): Promise<boolean>;
   screenRecordingGranted(): Promise<boolean>;
   recorderBinaryExists(): boolean;
@@ -47,18 +54,45 @@ export class RealSystemProbe implements SystemProbe {
     }
   }
 
-  cuaDriverPath(): string | null {
-    return resolveCuaDriverBinary();
+  macOSVersion(): string | null {
+    if (process.platform !== "darwin") return null;
+    const result = spawnSync("/usr/bin/sw_vers", ["-productVersion"], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) return null;
+    return result.stdout.trim() || null;
   }
 
-  async cuaDriverDaemonRunning(): Promise<boolean> {
-    const path = this.cuaDriverPath();
+  openclickHelperPath(): string | null {
+    return resolveOpenclickHelperBinary();
+  }
+
+  async openclickHelperDaemonRunning(): Promise<boolean> {
+    const path = this.openclickHelperPath();
     if (!path) return false;
     const proc = Bun.spawn([path, "status"], {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
+    await proc.exited;
+    return proc.exitCode === 0;
+  }
+
+  async openclickHelperSignatureValid(): Promise<boolean | null> {
+    if (Bun.env.OPENCLICK_HELPER_BIN) return null;
+    const path = this.openclickHelperPath();
+    if (!path) return null;
+    const appPath = helperAppPathFromBinary(path);
+    if (!appPath) return null;
+    const proc = Bun.spawn(
+      ["/usr/bin/codesign", "--verify", "--deep", "--strict", appPath],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     await proc.exited;
     return proc.exitCode === 0;
   }
@@ -72,7 +106,7 @@ export class RealSystemProbe implements SystemProbe {
   }
 
   private async permissionGranted(namePattern: RegExp): Promise<boolean> {
-    const path = this.cuaDriverPath();
+    const path = this.openclickHelperPath();
     if (!path) return false;
     const proc = Bun.spawn([path, "check_permissions"], {
       stdin: "ignore",
@@ -109,18 +143,43 @@ export class RealSystemProbe implements SystemProbe {
   }
 }
 
-const CUA_INSTALL_HINT =
-  '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"';
-const CUA_DAEMON_AUTOFIX_HINT =
-  "openclick starts this automatically when the app or runner needs it";
+const HELPER_INSTALL_HINT =
+  "Run `openclick setup` to open the OpenclickHelper installer and permission window.";
+const HELPER_DAEMON_AUTOFIX_HINT =
+  "openclick starts OpenclickHelper automatically when the app or runner needs it";
 const SR_HINT =
-  "Run `cua-driver check_permissions`. If Screen Recording is missing, grant it in System Settings → Privacy & Security → Screen Recording for the CuaDriver app, then restart the daemon.";
+  "Run `openclick setup`. If Screen Recording is missing, grant it in System Settings -> Privacy & Security -> Screen Recording for OpenclickHelper, then restart the daemon.";
 const RECORDER_BUILD_HINT =
   "cd mac-app && swift build -c release  # builds ./.build/release/openclick-recorder";
 const ACCESSIBILITY_HINT =
   "Open System Settings → Privacy & Security → Accessibility → click + → add the recorder binary at the path above. Then re-run `openclick doctor`. (Each rebuild changes the binary's cdhash, so the grant must be re-added after rebuilds.)";
 const API_KEY_HINT =
   "Run `openclick settings api-key set sk-ant-...`, `openclick settings openai-api-key set sk-...`, or add the provider API key to your shell.";
+
+function macOSVersionResult(version: string | null): CheckResult {
+  if (!version) {
+    return {
+      name: "macOS version",
+      status: "fail",
+      detail: "not detected",
+      fixHint: "Requires macOS 13.0 or later.",
+    };
+  }
+  if (!isAtLeastMacOS13(version)) {
+    return {
+      name: "macOS version",
+      status: "fail",
+      detail: version,
+      fixHint: "Requires macOS 13.0 or later.",
+    };
+  }
+  return { name: "macOS version", status: "ok", detail: version };
+}
+
+function isAtLeastMacOS13(version: string): boolean {
+  const major = Number.parseInt(version.split(".")[0] ?? "", 10);
+  return Number.isInteger(major) && major >= 13;
+}
 
 export async function runDoctor(
   probe: SystemProbe,
@@ -140,27 +199,60 @@ export async function runDoctor(
         },
   );
 
-  const cuaPath = probe.cuaDriverPath();
+  const macOS = probe.macOSVersion();
+  results.push(macOSVersionResult(macOS));
+
+  const helperPath = probe.openclickHelperPath();
   results.push(
-    cuaPath
-      ? { name: "cua-driver installed", status: "ok", detail: cuaPath }
+    helperPath
+      ? {
+          name: "OpenclickHelper installed",
+          status: "ok",
+          detail: `${helperPath} (${OPENCLICK_HELPER_BUNDLE_ID})`,
+        }
       : {
-          name: "cua-driver installed",
+          name: "OpenclickHelper installed",
           status: "fail",
-          detail: "not found in PATH or standard locations",
-          fixHint: `Install: ${CUA_INSTALL_HINT}`,
+          detail: "not found at /Applications or ~/Applications",
+          fixHint: HELPER_INSTALL_HINT,
         },
   );
 
-  const daemonRunning = cuaPath ? await probe.cuaDriverDaemonRunning() : false;
+  const signatureValid = helperPath
+    ? await probe.openclickHelperSignatureValid()
+    : null;
+  if (helperPath) {
+    results.push(
+      signatureValid === false
+        ? {
+            name: "OpenclickHelper signature",
+            status: "fail",
+            detail: "codesign verification failed",
+            fixHint:
+              "Reinstall the signed OpenclickHelper app with `openclick setup`.",
+          }
+        : {
+            name: "OpenclickHelper signature",
+            status: "ok",
+            detail:
+              signatureValid === null
+                ? "skipped for OPENCLICK_HELPER_BIN"
+                : "valid",
+          },
+    );
+  }
+
+  const daemonRunning = helperPath
+    ? await probe.openclickHelperDaemonRunning()
+    : false;
   results.push(
     daemonRunning
-      ? { name: "cua-driver daemon", status: "ok", detail: "running" }
+      ? { name: "OpenclickHelper daemon", status: "ok", detail: "running" }
       : {
-          name: "cua-driver daemon",
+          name: "OpenclickHelper daemon",
           status: "fail",
           detail: "not running",
-          fixHint: CUA_DAEMON_AUTOFIX_HINT,
+          fixHint: HELPER_DAEMON_AUTOFIX_HINT,
         },
   );
 
@@ -168,18 +260,18 @@ export async function runDoctor(
   results.push(
     ax
       ? {
-          name: "Accessibility (via cua-driver)",
+          name: "Accessibility (OpenclickHelper)",
           status: "ok",
           detail: "granted",
         }
       : {
-          name: "Accessibility (via cua-driver)",
+          name: "Accessibility (OpenclickHelper)",
           status: "fail",
           detail: daemonRunning
             ? "not granted"
             : "skipped (daemon not running)",
           fixHint:
-            "Grant Accessibility in System Settings → Privacy & Security → Accessibility for CuaDriver, then restart the daemon.",
+            "Grant Accessibility in System Settings -> Privacy & Security -> Accessibility for OpenclickHelper, then restart the daemon.",
         },
   );
 
@@ -187,12 +279,12 @@ export async function runDoctor(
   results.push(
     sr
       ? {
-          name: "Screen Recording (via cua-driver)",
+          name: "Screen Recording (OpenclickHelper)",
           status: "ok",
           detail: "granted",
         }
       : {
-          name: "Screen Recording (via cua-driver)",
+          name: "Screen Recording (OpenclickHelper)",
           status: "fail",
           detail: daemonRunning
             ? "not granted"
@@ -270,14 +362,16 @@ export async function runDoctorWithAutostart(
 ): Promise<DoctorReport> {
   const report = await runDoctor(probe, opts);
   const driverInstalled = report.results.some(
-    (r) => r.name === "cua-driver installed" && r.status === "ok",
+    (r) => r.name === "OpenclickHelper installed" && r.status === "ok",
   );
   if (!driverInstalled) return report;
 
-  const daemon = report.results.find((r) => r.name === "cua-driver daemon");
+  const daemon = report.results.find(
+    (r) => r.name === "OpenclickHelper daemon",
+  );
   if (daemon?.status !== "fail") return report;
 
-  opts.onActivity?.("Starting CuaDriver...");
+  opts.onActivity?.("Starting OpenclickHelper...");
   const result = await tryAutoStartDaemon(probe, {
     timeoutMs: opts.autostartTimeoutMs,
     pollMs: opts.autostartPollMs,
@@ -285,7 +379,7 @@ export async function runDoctorWithAutostart(
   if (!opts.quiet) console.error(result.message);
   const next = await runDoctor(probe, opts);
   next.activity = result.started
-    ? "CuaDriver started. Checking permissions..."
+    ? "OpenclickHelper started. Checking permissions..."
     : normalizeDoctorActivity(result.message);
   return next;
 }
@@ -328,7 +422,7 @@ export async function watchDoctor(
 }
 
 /**
- * Attempts to launch the resolved cua-driver daemon directly, then polls the
+ * Attempts to launch the resolved OpenclickHelper daemon directly, then polls the
  * probe until it reports the daemon as running or a deadline elapses.
  * Side-effecty by design — kept out of `runDoctor` so the report builder stays
  * pure.
@@ -342,34 +436,32 @@ export async function watchDoctor(
 export async function tryAutoStartDaemon(
   probe: SystemProbe,
   opts: {
-    launch?: (cuaDriver: string) => void;
+    launch?: (openclickHelper: string) => void;
     timeoutMs?: number;
     pollMs?: number;
   } = {},
 ): Promise<{ started: boolean; message: string }> {
   // Don't double-start.
-  if (await probe.cuaDriverDaemonRunning()) {
+  if (await probe.openclickHelperDaemonRunning()) {
     return { started: false, message: "[doctor] daemon already running" };
   }
 
-  const cuaDriver = probe.cuaDriverPath();
-  if (!cuaDriver) {
+  const helper = probe.openclickHelperPath();
+  if (!helper) {
     return {
       started: false,
       message:
-        "[doctor] could not start the cua-driver helper automatically because no cua-driver binary was found.",
+        "[doctor] could not start OpenclickHelper automatically because no helper app was found.",
     };
   }
 
-  // Fire-and-forget. Force the resolved binary to serve in-process so an older
-  // /Applications/CuaDriver.app install cannot shadow a bundled driver.
   try {
-    const launch = opts.launch ?? launchCuaDriverDaemon;
-    launch(cuaDriver);
+    const launch = opts.launch ?? launchOpenclickHelperDaemon;
+    launch(helper);
   } catch (e) {
     return {
       started: false,
-      message: `[doctor] could not start the CuaDriver helper automatically (${(e as Error).message}). Reinstall CuaDriver or open the openclick permissions window again.`,
+      message: `[doctor] could not start OpenclickHelper automatically (${(e as Error).message}). Reinstall OpenclickHelper or open the openclick permissions window again.`,
     };
   }
 
@@ -377,7 +469,7 @@ export async function tryAutoStartDaemon(
   const pollMs = opts.pollMs ?? 250;
   while (Date.now() < deadline) {
     await sleep(pollMs);
-    if (await probe.cuaDriverDaemonRunning()) {
+    if (await probe.openclickHelperDaemonRunning()) {
       return { started: true, message: "[doctor] daemon up" };
     }
   }
@@ -385,7 +477,7 @@ export async function tryAutoStartDaemon(
   return {
     started: false,
     message:
-      "[doctor] CuaDriver helper did not come up within 5s. It may still be launching — re-run `openclick doctor` in a moment.",
+      "[doctor] OpenclickHelper did not come up within 5s. It may still be launching - re-run `openclick doctor` in a moment.",
   };
 }
 
@@ -397,11 +489,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function launchCuaDriverDaemon(cuaDriver: string): void {
-  const proc = spawnDetached(cuaDriver, ["serve"], {
+function launchOpenclickHelperDaemon(openclickHelper: string): void {
+  const proc = spawnDetached(openclickHelper, ["serve"], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, CUA_DRIVER_NO_RELAUNCH: "1" },
+    env: { ...process.env, OPENCLICK_HELPER_NO_RELAUNCH: "1" },
   });
   proc.unref();
 }
@@ -465,27 +557,27 @@ export function formatDoctorReport(report: DoctorReport): string {
 }
 
 function formatDoctorDetail(result: CheckResult): string {
-  if (result.name === "cua-driver installed" && result.status === "ok") {
+  if (result.name === "OpenclickHelper installed" && result.status === "ok") {
     return "found";
   }
-  if (result.name === "cua-driver daemon" && result.status === "fail") {
+  if (result.name === "OpenclickHelper daemon" && result.status === "fail") {
     return "starting automatically";
   }
   if (result.detail === "skipped (daemon not running)") {
-    return "waiting for CuaDriver";
+    return "waiting for OpenclickHelper";
   }
   return result.detail;
 }
 
 function formatDoctorHint(result: CheckResult): string {
-  if (result.name === "cua-driver daemon") {
-    return "OpenClick is starting it now. Keep this window open.";
+  if (result.name === "OpenclickHelper daemon") {
+    return "OpenClick is starting OpenclickHelper now. Keep this window open.";
   }
   if (result.name.includes("Accessibility")) {
-    return "Grant CuaDriver in System Settings > Privacy & Security > Accessibility.";
+    return "Grant OpenclickHelper in System Settings > Privacy & Security > Accessibility.";
   }
   if (result.name.includes("Screen Recording")) {
-    return "Grant CuaDriver in System Settings > Privacy & Security > Screen Recording.";
+    return "Grant OpenclickHelper in System Settings > Privacy & Security > Screen Recording.";
   }
   if (result.name.endsWith("_API_KEY")) {
     return "Run `openclick setup` or `openclick settings api-key set <key>`.";
@@ -500,8 +592,11 @@ function prerequisiteExplanation(name: string): string {
   if (name.includes("Screen Recording")) {
     return "Needed to see and verify progress.";
   }
-  if (name.includes("cua-driver")) {
+  if (name.includes("OpenclickHelper")) {
     return "Local desktop helper.";
+  }
+  if (name === "macOS version") {
+    return "Ventura or later is required.";
   }
   if (name.endsWith("_API_KEY")) {
     return "Needed for the selected model.";

@@ -1,18 +1,15 @@
 # Installation
 
-OpenClick has two install surfaces:
-
-- CLI-only: install the `openclick` npm package and use the `openclick` command.
-- Mac app: install/build the native macOS app. The app bundles the CLI and exposes the same command locally.
+OpenClick installs as a CLI plus a signed macOS helper app named `OpenclickHelper`.
+The helper is installed at `/Applications/OpenclickHelper.app` when possible, with
+`~/Applications/OpenclickHelper.app` as the fallback.
 
 ## Requirements
 
-- macOS 14+
-- Bun
+- macOS 13 Ventura or later
+- Bun for source installs
 - Anthropic or OpenAI API key
-- macOS Accessibility and Screen Recording permissions
-
-The npm package includes the signed `cua-driver` helper for macOS arm64. `cua-driver` is the small local helper that performs desktop actions for OpenClick. Source builds can also use a manually installed `cua-driver` through `OPENCLICK_CUA_DRIVER_BIN`, `CUA_DRIVER`, or `PATH`.
+- Accessibility and Screen Recording permissions for `OpenclickHelper`
 
 ## npm Install
 
@@ -21,13 +18,16 @@ npm install -g openclick
 openclick setup
 ```
 
+`openclick setup` configures your model provider and opens the
+OpenclickHelper permission window. Existing users migrating from CuaDriver will
+be asked to grant macOS permissions again because permissions do not carry over
+between bundle IDs.
+
 Run a live task:
 
 ```sh
 openclick run "open Calculator and calculate 17 times 23" --live
 ```
-
-`openclick setup` is the recommended first-run path. It guides terminal users through provider selection, model defaults/custom model selection, API-key storage, and macOS permission checks.
 
 For scripted setup:
 
@@ -47,14 +47,28 @@ Useful setup flags:
 | `--api-key <key>` | Save the provider API key without prompting. |
 | `--model <model>` | Use one model for planner, verifier, and result roles. |
 | `--yes` | Accept defaults where possible. |
-| `--skip-doctor` | Skip macOS/helper checks. Useful in CI. |
+| `--skip-doctor` | Skip helper and macOS permission setup. Useful in CI. |
 
-`openclick doctor` only checks dependencies and permissions. If `cua-driver` is installed but its helper is down, OpenClick tries to start it automatically.
+## Health Checks
 
 ```sh
 openclick doctor --fix
 openclick doctor --json
 ```
+
+`openclick doctor` checks Bun, macOS version, OpenclickHelper install path,
+helper signing, daemon status, permissions, and the configured API key.
+
+## Uninstall
+
+```sh
+openclick uninstall
+```
+
+This trashes OpenclickHelper, resets its Accessibility and Screen Recording
+entries, removes `~/.openclick/`, and prints the npm command for removing the CLI.
+
+Use `--keep-config` to preserve `~/.openclick/`, and `--yes` or `-y` for scripts.
 
 ## Source Install
 
@@ -72,10 +86,6 @@ bun ./bin/openclick doctor
 bun ./bin/openclick run "open Safari and search Google for OpenAI" --live
 ```
 
-Optionally link the CLI for local development:
-
-```sh
-bun link
-openclick doctor
-openclick run "open Calculator and calculate 18 times 24" --live
-```
+For helper development, set `OPENCLICK_HELPER_BIN` to a local
+`OpenclickHelper.app/Contents/MacOS/OpenclickHelper` path. Doctor suppresses
+signing warnings when this override is present.

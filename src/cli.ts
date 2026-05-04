@@ -1,3 +1,14 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import {
+  OPENCLICK_HELPER_BUNDLE_ID,
+  OPENCLICK_HELPER_SYSTEM_APP_PATH,
+  OPENCLICK_HELPER_USER_APP_PATH,
+  resolveOpenClickHome,
+} from "./paths.ts";
 import type { InterventionReason } from "./trace.ts";
 import { VERSION } from "./version.ts";
 
@@ -8,8 +19,9 @@ Commands:
                                        model, API key, and macOS permissions.
                                        --api-key, --model, --yes, and
                                        --skip-doctor are supported for scripts.
-  doctor [--fix] [--json] [--watch]    Check prereqs (cua-driver, perms, API key).
-                                       Auto-starts the helper if it is down.
+  doctor [--fix] [--json] [--watch]    Check prereqs (OpenclickHelper, perms,
+                                       API key). Auto-starts the helper if it
+                                       is down.
                                        --fix is kept as a compatibility alias.
                                        --json prints a structured report to stdout
                                        (status messages go to stderr).
@@ -29,7 +41,10 @@ Commands:
                                        steal focus, move cursor, or touch global state.
                                        --agent uses the legacy Agent SDK path.
                                        Plans cheap small batches, executes via
-                                       cua-driver, then screenshots/replans.
+                                       OpenclickHelper, then screenshots/replans.
+  uninstall [--keep-config] [--yes]    Remove OpenclickHelper, reset its macOS
+                                       permissions, and remove ~/.openclick
+                                       unless --keep-config is set.
   cancel <run-id>                      Request cancellation for a running task.
   takeover finish --run-id <id>        Mark a manual takeover finished for
                                        the paused runner.
@@ -118,6 +133,13 @@ export async function main(args: string[]): Promise<void> {
         console.log(formatDoctorReport(report));
       }
       if (!report.allOk) process.exitCode = 1;
+      return;
+    }
+    case "uninstall": {
+      await uninstallOpenclick({
+        keepConfig: args.includes("--keep-config"),
+        yes: args.includes("--yes") || args.includes("-y"),
+      });
       return;
     }
     case "record": {
@@ -501,6 +523,101 @@ export async function main(args: string[]): Promise<void> {
     default:
       throw new Error(`unknown subcommand: ${cmd}`);
   }
+}
+
+async function uninstallOpenclick(options: {
+  keepConfig: boolean;
+  yes: boolean;
+}): Promise<void> {
+  if (!options.yes) {
+    const confirmed = await confirmUninstall();
+    if (!confirmed) {
+      console.log("[openclick] uninstall cancelled.");
+      return;
+    }
+  }
+
+  const trashed: string[] = [];
+  for (const appPath of [
+    OPENCLICK_HELPER_SYSTEM_APP_PATH,
+    OPENCLICK_HELPER_USER_APP_PATH,
+  ]) {
+    const result = trashPath(appPath);
+    if (result) trashed.push(result);
+  }
+
+  resetTcc("Accessibility", OPENCLICK_HELPER_BUNDLE_ID);
+  resetTcc("ScreenCapture", OPENCLICK_HELPER_BUNDLE_ID);
+
+  if (!options.keepConfig) {
+    rmSync(resolveOpenClickHome(), { recursive: true, force: true });
+  }
+
+  if (trashed.length > 0) {
+    console.log(`[openclick] trashed ${trashed.join(", ")}`);
+  } else {
+    console.log("[openclick] no OpenclickHelper app was installed.");
+  }
+  console.log(
+    options.keepConfig
+      ? "[openclick] preserved ~/.openclick config and logs."
+      : "[openclick] removed ~/.openclick config and logs.",
+  );
+  console.log("Run `npm uninstall -g openclick` to remove the CLI.");
+}
+
+async function confirmUninstall(): Promise<boolean> {
+  const prompt =
+    "This will remove OpenclickHelper, reset its macOS permissions, and delete all openclick config and logs at ~/.openclick/. This cannot be undone. Continue? [y/N] ";
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = (await rl.question(prompt)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+function trashPath(path: string): string | null {
+  if (!existsSync(path)) return null;
+  const trashDir = join(homedir(), ".Trash");
+  mkdirSync(trashDir, { recursive: true });
+  const destination = uniqueTrashDestination(trashDir, basename(path));
+  try {
+    renameSync(path, destination);
+    return path;
+  } catch (error) {
+    console.warn(
+      `[openclick] could not trash ${path}: ${(error as Error).message}`,
+    );
+    return null;
+  }
+}
+
+function uniqueTrashDestination(trashDir: string, name: string): string {
+  let candidate = join(trashDir, name);
+  if (!existsSync(candidate)) return candidate;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  candidate = join(trashDir, `${name}.${stamp}`);
+  let index = 1;
+  while (existsSync(candidate)) {
+    candidate = join(trashDir, `${name}.${stamp}.${index}`);
+    index++;
+  }
+  return candidate;
+}
+
+function resetTcc(
+  service: "Accessibility" | "ScreenCapture",
+  bundleId: string,
+) {
+  spawnSync("/usr/bin/tccutil", ["reset", service, bundleId], {
+    stdio: "ignore",
+  });
 }
 
 function parseOptionalStringFlag(

@@ -31,7 +31,9 @@ const FIXTURES = ["calc", "triage", "todo"] as const;
 // and skipped locally otherwise. Each fixture also needs a real `trajectory/`
 // directory; if one's missing, the live test for that fixture skips with a
 // clear note.
-const RUN_LIVE = !!process.env.ANTHROPIC_API_KEY;
+const RUN_LIVE =
+  process.env.OPENCLICK_RUN_LIVE_EVAL === "1" &&
+  !!process.env.ANTHROPIC_API_KEY;
 
 describe("eval (offline structure check)", () => {
   for (const fx of FIXTURES) {

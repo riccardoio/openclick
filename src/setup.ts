@@ -1,4 +1,14 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   Badge,
@@ -10,15 +20,14 @@ import {
   style,
   select as tuiSelect,
 } from "@vr_patel/tui";
+import type { CheckResult, DoctorReport } from "./doctor.ts";
 import {
-  type CheckResult,
-  type DoctorReport,
-  RealSystemProbe,
-  formatDoctorReport,
-  runDoctor,
-  tryAutoStartDaemon,
-  watchDoctor,
-} from "./doctor.ts";
+  resolveOpenClickHome,
+  resolveOpenclickHelperBinary,
+  resolveSetupCompletionMarkerPath,
+  resolveSetupLockPath,
+  resolveSetupStatusPath,
+} from "./paths.ts";
 import {
   type ModelProvider,
   apiKeyStatus,
@@ -61,6 +70,15 @@ export interface SetupResult {
   apiKeyConfigured: boolean;
   modelConfigured: boolean;
   doctor?: DoctorReport;
+}
+
+export type HelperCompletionAction = "continue" | "done";
+
+export interface PermissionSetupWindowResult {
+  completed: boolean;
+  status: "completed" | "closed" | "blocked" | "failed";
+  message: string;
+  stderr?: string;
 }
 
 export async function runSetup(
@@ -264,30 +282,31 @@ async function runSetupDoctor(io: SetupIO): Promise<DoctorReport> {
   io.write("");
   const spinner = isInteractiveTerminal()
     ? new Spinner({
-        text: "Checking macOS permissions and local helpers",
+        text: "Opening OpenclickHelper permission setup",
         style: "dots",
         color: fg.cyan,
       }).start()
     : null;
-  const probe = new RealSystemProbe();
-  let report = await runDoctor(probe);
-  const daemon = report.results.find((r) => r.name === "cua-driver daemon");
-  if (daemon?.status === "fail") {
-    spinner?.update("Starting the local CuaDriver helper");
-    const started = await tryAutoStartDaemon(probe);
-    if (!spinner) io.write(started.message);
-    report = await runDoctor(probe);
-  }
-  if (report.allOk) spinner?.stop("macOS checks passed");
-  else spinner?.warn("macOS still needs a few permissions");
-  io.write(formatDoctorReport(report));
-  if (!report.allOk && process.stdin.isTTY && process.stdout.isTTY) {
-    io.write(
-      "Keeping this status live while you grant permissions. Press Ctrl-C to stop.",
-    );
-    report = await watchDoctor(probe);
-  }
-  return report;
+  const result = await runPermissionSetupWindow({
+    completionAction: "done",
+    io,
+  });
+  if (result.completed) spinner?.stop("OpenclickHelper is ready");
+  else spinner?.warn("OpenclickHelper setup did not complete");
+  if (!spinner) io.write(result.message);
+  return {
+    allOk: result.completed,
+    results: [
+      {
+        name: "OpenclickHelper permission setup",
+        status: result.completed ? "ok" : "fail",
+        detail: result.message,
+        fixHint: result.completed
+          ? undefined
+          : "Run `openclick setup` to retry.",
+      },
+    ],
+  };
 }
 
 function printPermissionSummary(results: CheckResult[], io: SetupIO): void {
@@ -450,4 +469,243 @@ export function setupSummary(): string {
     `api_key=${status.available ? `${status.source}:${status.masked}` : "missing"}`,
     `planner=${settings.models?.planner ?? resolveModelName("planner", provider)}`,
   ].join(" ");
+}
+
+export async function runPermissionSetupWindow(options: {
+  completionAction: HelperCompletionAction;
+  io?: Pick<SetupIO, "write">;
+  pollMs?: number;
+}): Promise<PermissionSetupWindowResult> {
+  const lock = acquireSetupLock();
+  if (!lock.ok) {
+    options.io?.write(lock.message);
+    return {
+      completed: false,
+      status: "blocked",
+      message: lock.message,
+    };
+  }
+
+  try {
+    const helper = resolveOpenclickHelperBinary();
+    if (!helper) {
+      return {
+        completed: false,
+        status: "failed",
+        message:
+          "OpenclickHelper is not installed. Reinstall openclick or run `openclick setup` after the helper package installs.",
+      };
+    }
+
+    mkdirSync(resolveOpenClickHome(), { recursive: true });
+    const statusPath = resolveSetupStatusPath();
+    try {
+      unlinkSync(statusPath);
+    } catch {
+      // No previous status file.
+    }
+
+    options.io?.write(
+      "Permission setup in progress - see the OpenclickHelper window",
+    );
+    const proc = spawn(
+      helper,
+      [
+        "permission-setup",
+        "--completion-action",
+        options.completionAction,
+        "--status-file",
+        statusPath,
+      ],
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: {
+          ...process.env,
+          OPENCLICK_SETUP_COMPLETION_ACTION: options.completionAction,
+          OPENCLICK_SETUP_STATUS_FILE: statusPath,
+        },
+      },
+    );
+
+    let stderr = "";
+    proc.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    let exited = false;
+    proc.on("exit", () => {
+      exited = true;
+    });
+    proc.on("error", (error) => {
+      stderr += `${error.message}\n`;
+      exited = true;
+    });
+
+    const pollMs = options.pollMs ?? 500;
+    while (!exited) {
+      const status = readPermissionSetupStatus(statusPath);
+      if (status?.status === "completed") {
+        writeSetupCompletionMarker();
+        return {
+          completed: true,
+          status: "completed",
+          message:
+            options.completionAction === "continue"
+              ? "OpenclickHelper setup complete. Continuing run."
+              : "OpenclickHelper setup complete.",
+        };
+      }
+      if (status?.status === "closed" || status?.status === "failed") {
+        return {
+          completed: false,
+          status: status.status,
+          message:
+            status.message ??
+            "Setup not completed. Run `openclick setup` to retry.",
+          stderr: stderr.trim() || undefined,
+        };
+      }
+      await sleep(pollMs);
+    }
+
+    const status = readPermissionSetupStatus(statusPath);
+    if (status?.status === "completed") {
+      writeSetupCompletionMarker();
+      return {
+        completed: true,
+        status: "completed",
+        message: "OpenclickHelper setup complete.",
+      };
+    }
+    return {
+      completed: false,
+      status: "closed",
+      message: stderr.trim()
+        ? `Setup not completed. OpenclickHelper exited with: ${stderr.trim()}`
+        : "Setup not completed. Run `openclick setup` to retry.",
+      stderr: stderr.trim() || undefined,
+    };
+  } finally {
+    lock.release();
+  }
+}
+
+interface PermissionSetupStatus {
+  status: "completed" | "closed" | "failed";
+  message?: string;
+}
+
+function readPermissionSetupStatus(path: string): PermissionSetupStatus | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      status?: unknown;
+      message?: unknown;
+    };
+    if (
+      parsed.status === "completed" ||
+      parsed.status === "closed" ||
+      parsed.status === "failed"
+    ) {
+      return {
+        status: parsed.status,
+        message:
+          typeof parsed.message === "string" ? parsed.message : undefined,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function writeSetupCompletionMarker(): void {
+  const marker = resolveSetupCompletionMarkerPath();
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${new Date().toISOString()}\n`);
+}
+
+function acquireSetupLock():
+  | { ok: true; release(): void }
+  | { ok: false; message: string } {
+  const path = resolveSetupLockPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = readSetupLock(path);
+  if (existing && isPidAlive(existing.pid)) {
+    return {
+      ok: false,
+      message: "Setup in progress - finish the OpenclickHelper window first",
+    };
+  }
+  if (existing) {
+    try {
+      unlinkSync(path);
+    } catch {
+      // A racing setup may have removed it.
+    }
+  }
+
+  const lock = { pid: process.pid, timestamp: Date.now() };
+  try {
+    const fd = openSync(path, "wx", 0o600);
+    try {
+      writeFileSync(fd, `${JSON.stringify(lock)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return {
+      ok: false,
+      message: "Setup in progress - finish the OpenclickHelper window first",
+    };
+  }
+
+  return {
+    ok: true,
+    release() {
+      const current = readSetupLock(path);
+      if (current?.pid !== process.pid) return;
+      try {
+        unlinkSync(path);
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+}
+
+function readSetupLock(
+  path: string,
+): { pid: number; timestamp: number } | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      pid?: unknown;
+      timestamp?: unknown;
+    };
+    if (
+      typeof parsed.pid === "number" &&
+      Number.isInteger(parsed.pid) &&
+      typeof parsed.timestamp === "number"
+    ) {
+      return { pid: parsed.pid, timestamp: parsed.timestamp };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

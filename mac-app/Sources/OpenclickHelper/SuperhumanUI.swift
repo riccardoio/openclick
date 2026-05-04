@@ -179,7 +179,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     switch self {
     case .accessibility: return "Accessibility"
     case .screenRecording: return "Screen Recording"
-    case .cuaDriver: return "CuaDriver"
+    case .cuaDriver: return "OpenclickHelper"
     case .apiKey: return "Model API key"
     }
   }

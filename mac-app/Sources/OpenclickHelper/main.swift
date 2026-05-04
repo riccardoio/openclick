@@ -1,26 +1,137 @@
 import AppKit
 import Carbon
+import Darwin
 import Foundation
 import SwiftUI
 
+// MARK: - Daemon dispatcher
+//
+// OpenclickHelper.app is a single bundle that does two jobs: it shows the
+// permission setup window and the chat-bar / onboarding GUI, AND it serves the
+// daemon protocol the openclick CLI talks to (serve, mcp, call, status, etc.).
+// The daemon binary itself lives at Contents/Resources/openclick-daemon and is
+// the upstream cua-driver Mach-O, signed under com.openclick.helper as part of
+// bundle signing.
+//
+// When argv[1] is one of the known daemon commands we execv the embedded
+// binary so the running process is the daemon. macOS TCC traces the
+// responsible-process back to the .app bundle, so all permission grants for
+// com.openclick.helper apply transparently.
+//
+// Anything else (no args, "permission-setup", flags) falls through to the
+// AppKit path below.
+
+private let daemonCommands: Set<String> = [
+  "serve",
+  "mcp",
+  "call",
+  "status",
+  "check_permissions",
+  "set_agent_cursor_enabled",
+  "click",
+  "type_text",
+  "screenshot",
+  "get_window_state",
+  "list_apps",
+  "list_windows",
+  "diff_windows",
+  "list_browser_tabs",
+  "launch_app",
+  "scroll",
+  "press_key",
+  "hotkey",
+]
+
+private func resolveEmbeddedDaemonPath() -> String? {
+  if let override = ProcessInfo.processInfo.environment["OPENCLICK_DAEMON_BIN"],
+     !override.isEmpty {
+    return override
+  }
+  if let resourcePath = Bundle.main.resourcePath {
+    return resourcePath + "/openclick-daemon"
+  }
+  return nil
+}
+
+private func dispatchToEmbeddedDaemonIfRequested() {
+  let args = CommandLine.arguments
+  guard args.count >= 2, daemonCommands.contains(args[1]) else { return }
+
+  guard let daemonPath = resolveEmbeddedDaemonPath() else {
+    fputs("OpenclickHelper: cannot resolve embedded daemon path (Bundle.main.resourcePath is nil)\n", stderr)
+    exit(1)
+  }
+
+  guard FileManager.default.fileExists(atPath: daemonPath) else {
+    fputs("OpenclickHelper: embedded daemon missing at \(daemonPath)\n", stderr)
+    fputs("This OpenclickHelper.app is incomplete. Run `openclick setup` to reinstall.\n", stderr)
+    exit(1)
+  }
+
+  // Forward argv[1...] to the daemon, with the daemon path itself as argv[0].
+  var cStrings: [UnsafeMutablePointer<CChar>?] = []
+  cStrings.append(strdup(daemonPath))
+  for arg in args.dropFirst() {
+    cStrings.append(strdup(arg))
+  }
+  cStrings.append(nil)
+
+  _ = execv(daemonPath, &cStrings)
+  // execv only returns on error.
+  fputs("OpenclickHelper: execv failed for \(daemonPath): \(String(cString: strerror(errno)))\n", stderr)
+  exit(1)
+}
+
+dispatchToEmbeddedDaemonIfRequested()
+
+// MARK: - GUI mode
+
+func argumentValue(after flag: String, in args: [String]) -> String? {
+  guard let index = args.firstIndex(of: flag), index + 1 < args.count else {
+    return nil
+  }
+  return args[index + 1]
+}
+
 @MainActor
-final class OpenClickAppDelegate: NSObject, NSApplicationDelegate {
+final class OpenclickHelperAppDelegate: NSObject, NSApplicationDelegate {
   private var statusController: StatusController?
   private var hotKeyController: HotKeyController?
   private var onboardingController: OnboardingController?
   private var settingsController: SettingsController?
+  private var permissionSetupController: PermissionSetupController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
+    if let setupOptions = permissionSetupOptionsFromArguments() {
+      let setup = PermissionSetupController(options: setupOptions)
+      permissionSetupController = setup
+      setup.show()
+      return
+    }
+
     CliInstaller.installBundledCliIfAvailable()
 
     let chatBar = ChatBarController()
     let onboarding = OnboardingController()
     let settings = SettingsController()
+    let permissionSetup = PermissionSetupController(
+      options: PermissionSetupLaunchOptions(
+        completionAction: .done,
+        statusFile: nil,
+        terminateOnCompletion: false
+      )
+    )
     chatBar.openOnboarding = { [weak onboarding] in onboarding?.show() }
     onboardingController = onboarding
     settingsController = settings
-    statusController = StatusController(chatBar: chatBar, onboarding: onboarding, settings: settings)
+    permissionSetupController = permissionSetup
+    statusController = StatusController(
+      chatBar: chatBar,
+      onboarding: onboarding,
+      settings: settings,
+      permissionSetup: permissionSetup
+    )
     hotKeyController = HotKeyController { chatBar.toggle() }
     hotKeyController?.register()
 
@@ -32,11 +143,27 @@ final class OpenClickAppDelegate: NSObject, NSApplicationDelegate {
       chatBar.show()
     }
   }
+
+  private func permissionSetupOptionsFromArguments() -> PermissionSetupLaunchOptions? {
+    let args = CommandLine.arguments
+    guard args.contains("permission-setup") else { return nil }
+    let rawAction = argumentValue(after: "--completion-action", in: args)
+      ?? ProcessInfo.processInfo.environment["OPENCLICK_SETUP_COMPLETION_ACTION"]
+      ?? PermissionCompletionAction.done.rawValue
+    let action = PermissionCompletionAction(rawValue: rawAction) ?? .done
+    let statusFile = argumentValue(after: "--status-file", in: args)
+      ?? ProcessInfo.processInfo.environment["OPENCLICK_SETUP_STATUS_FILE"]
+    return PermissionSetupLaunchOptions(
+      completionAction: action,
+      statusFile: statusFile,
+      terminateOnCompletion: true
+    )
+  }
 }
 
 MainActor.assumeIsolated {
   let app = NSApplication.shared
-  let delegate = OpenClickAppDelegate()
+  let delegate = OpenclickHelperAppDelegate()
   app.delegate = delegate
   app.setActivationPolicy(.accessory)
   app.run()
@@ -48,11 +175,18 @@ final class StatusController: NSObject {
   private let chatBar: ChatBarController
   private let onboarding: OnboardingController
   private let settings: SettingsController
+  private let permissionSetup: PermissionSetupController
 
-  init(chatBar: ChatBarController, onboarding: OnboardingController, settings: SettingsController) {
+  init(
+    chatBar: ChatBarController,
+    onboarding: OnboardingController,
+    settings: SettingsController,
+    permissionSetup: PermissionSetupController
+  ) {
     self.chatBar = chatBar
     self.onboarding = onboarding
     self.settings = settings
+    self.permissionSetup = permissionSetup
     super.init()
 
     if let button = statusItem.button {
@@ -103,7 +237,7 @@ final class StatusController: NSObject {
   }
 
   @objc private func showOnboarding() {
-    onboarding.show()
+    permissionSetup.show()
   }
 
   @objc private func showSettings() {
@@ -328,12 +462,6 @@ final class ChatBarController: NSObject {
     if let apiKey = OpenClickKeychain.apiKey(provider: .openai), !apiKey.isEmpty {
       env["OPENAI_API_KEY"] = apiKey
     }
-    if env["CUA_DRIVER"] == nil,
-       let bundledDriver = Bundle.main.url(forResource: "cua-driver", withExtension: nil),
-       FileManager.default.fileExists(atPath: bundledDriver.path)
-    {
-      env["CUA_DRIVER"] = bundledDriver.path
-    }
     if env["OPENCLICK_BIN"] == nil && env["OPENCLICK_REPO_ROOT"] == nil {
       env["OPENCLICK_TAKEOVER_WAIT_MS"] = env["OPENCLICK_TAKEOVER_WAIT_MS"] ?? "600000"
     }
@@ -553,7 +681,7 @@ final class ActivityLogController: NSObject {
       return "Accessibility looks blocked. Open Permissions to grant it to the recorder."
     }
     if (lower.contains("screen recording") || lower.contains("screen-recording") || lower.contains("screencapture")) && (lower.contains("denied") || lower.contains("not granted") || lower.contains("blocked") || lower.contains("permission")) {
-      return "Screen Recording looks blocked. Open Permissions to grant it to CuaDriver."
+      return "Screen Recording looks blocked. Open Permissions to grant it to OpenclickHelper."
     }
     if lower.contains("could not launch openclick") || lower.contains("executable not found") || lower.contains("no such file") {
       return "openclick could not launch. Open Permissions to check setup."
@@ -561,8 +689,10 @@ final class ActivityLogController: NSObject {
     if lower.contains("anthropic_api_key") && (lower.contains("not set") || lower.contains("missing") || lower.contains("unset")) {
       return "ANTHROPIC_API_KEY isn’t set. Open Permissions for the export command."
     }
-    if lower.contains("cua-driver") && (lower.contains("not running") || lower.contains("not installed") || lower.contains("not found")) {
-      return "CuaDriver isn’t ready. Open Permissions to install or start it."
+    if (lower.contains("openclickhelper") || lower.contains("cua-driver")) &&
+      (lower.contains("not running") || lower.contains("not installed") || lower.contains("not found"))
+    {
+      return "OpenclickHelper isn’t ready. Open Permissions to install or start it."
     }
     if lower.contains("dry-run") || lower.contains("dry run") {
       return "This was a dry run. No actions were executed."

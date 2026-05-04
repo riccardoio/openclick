@@ -1,6 +1,14 @@
 import { spawn as spawnDetached } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type ExecutionPolicy,
   type ExecutorContext,
@@ -15,7 +23,12 @@ import {
   recordTakeoverLearning,
   renderRelevantMemoriesForPrompt,
 } from "./memory.ts";
-import { requireCuaDriverBinary, resolveCuaDriverBinary } from "./paths.ts";
+import {
+  requireOpenclickHelperBinary,
+  resolveOpenClickHome,
+  resolveOpenclickHelperBinary,
+  resolveSetupCompletionMarkerPath,
+} from "./paths.ts";
 import {
   type GeneratePlanOptions,
   type Plan,
@@ -163,9 +176,15 @@ async function runTaskAgent(opts: RunOptions): Promise<void> {
 
   const queryFn = opts.queryFn ?? (await loadRealQuery());
   const toggleCursor = opts.cursorToggleFn ?? defaultCursorToggle;
+  if (opts.live && !opts.queryFn) {
+    await ensurePermissionSetupReady();
+    const helper = requireOpenclickHelperBinary();
+    await ensureDaemonRunning(helper);
+    await ensureDaemonPermissions(helper);
+  }
   const cuaDriver =
-    resolveCuaDriverBinary() ??
-    (opts.queryFn ? "cua-driver" : requireCuaDriverBinary());
+    resolveOpenclickHelperBinary() ??
+    (opts.queryFn ? "cua-driver" : requireOpenclickHelperBinary());
 
   // Enable the overlay before the agent starts so the very first cua-driver
   // tool call already animates. Only when --live (otherwise no actions fire).
@@ -280,10 +299,13 @@ async function runTaskFast(opts: RunOptions): Promise<void> {
   // fails with "No cached AX state for pid <X>". Auto-start if needed.
   //
   // When a custom stepRunner is injected (tests, dry-run harnesses), no real
-  // cua-driver subprocess will be spawned — skip the daemon check so CI runners
-  // without cua-driver installed can still exercise the planning logic.
+  // helper subprocess will be spawned — skip the daemon check so CI runners
+  // without OpenclickHelper installed can still exercise the planning logic.
   if (opts.live && !opts.stepRunner) {
-    await ensureDaemonRunning();
+    await ensurePermissionSetupReady();
+    const helper = requireOpenclickHelperBinary();
+    await ensureDaemonRunning(helper);
+    await ensureDaemonPermissions(helper);
   }
 
   // Abort flag pattern (see runTaskAgent for rationale).
@@ -2584,7 +2606,7 @@ async function defaultCursorToggle(enabled: boolean): Promise<void> {
 }
 
 async function runCuaDriver(args: string[]): Promise<void> {
-  const cuaDriver = requireCuaDriverBinary();
+  const cuaDriver = requireOpenclickHelperBinary();
   const proc = Bun.spawn([cuaDriver, ...args], {
     stdin: "ignore",
     stdout: "pipe",
@@ -2600,8 +2622,8 @@ async function runCuaDriver(args: string[]): Promise<void> {
 }
 
 /**
- * Verifies the cua-driver daemon is up. If not, launches the resolved bundled
- * cua-driver directly and polls `cua-driver status` until the socket appears.
+ * Verifies the OpenclickHelper daemon is up. If not, launches the resolved
+ * app-bundle executable directly and polls `status` until the socket appears.
  * Throws if the daemon doesn't come up within ~6 seconds — that's an
  * environment problem the user has to fix.
  *
@@ -2610,17 +2632,25 @@ async function runCuaDriver(args: string[]): Promise<void> {
  * isn't running, each `cua-driver call` runs in-process, the cache dies with
  * each invocation, and clicks fail with "No cached AX state for pid <X>".
  */
-async function ensureDaemonRunning(): Promise<void> {
-  const cuaDriver = requireCuaDriverBinary();
+async function ensureDaemonRunning(
+  cuaDriver: string = requireOpenclickHelperBinary(),
+): Promise<void> {
   if (await isDaemonRunning(cuaDriver)) return;
-  console.log("[openclick] cua-driver daemon not running; auto-starting...");
-  // Fire-and-forget. Force the resolved binary to serve in-process so an older
-  // /Applications/CuaDriver.app install cannot shadow the bundled driver.
+  console.log(
+    "[openclick] OpenclickHelper daemon not running; auto-starting...",
+  );
+  const stderrPath = join(resolveOpenClickHome(), "helper-daemon.stderr.log");
+  mkdirSync(resolveOpenClickHome(), { recursive: true });
+  const stderrFd = openSync(stderrPath, "w", 0o600);
+  // Fire-and-forget. The resolved path is the full app bundle executable path
+  // (/Applications/OpenclickHelper.app/Contents/MacOS/OpenclickHelper) so TCC
+  // binds permissions to the signed bundle identity.
   const daemon = spawnDetached(cuaDriver, ["serve"], {
     detached: true,
-    stdio: "ignore",
-    env: { ...process.env, CUA_DRIVER_NO_RELAUNCH: "1" },
+    stdio: ["ignore", "ignore", stderrFd],
+    env: { ...process.env, OPENCLICK_HELPER_NO_RELAUNCH: "1" },
   });
+  closeSync(stderrFd);
   daemon.unref();
   const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
@@ -2630,13 +2660,91 @@ async function ensureDaemonRunning(): Promise<void> {
       return;
     }
   }
+  const stderr = readDaemonStderr(stderrPath);
   throw new Error(
-    "cua-driver helper failed to start automatically within 6s. Reopen openclick or check the CuaDriver installation.",
+    `OpenclickHelper failed to start automatically within 6s.${stderr ? `\n\nDaemon stderr:\n${stderr}` : " No daemon stderr was captured."}`,
   );
 }
 
+async function ensurePermissionSetupReady(): Promise<void> {
+  if (existsSync(resolveSetupCompletionMarkerPath())) return;
+  const { runPermissionSetupWindow } = await import("./setup.ts");
+  const result = await runPermissionSetupWindow({
+    completionAction: "continue",
+    io: { write: (line) => console.log(`[openclick] ${line}`) },
+  });
+  if (!result.completed) {
+    throw new Error(result.message);
+  }
+}
+
+async function ensureDaemonPermissions(cuaDriver: string): Promise<void> {
+  const first = await missingDaemonPermissions(cuaDriver);
+  if (first.missing.length === 0) return;
+  console.log(
+    `[openclick] OpenclickHelper needs ${first.missing.join(" and ")} permission; opening setup window...`,
+  );
+  const { runPermissionSetupWindow } = await import("./setup.ts");
+  const result = await runPermissionSetupWindow({
+    completionAction: "continue",
+    io: { write: (line) => console.log(`[openclick] ${line}`) },
+  });
+  if (!result.completed) {
+    throw new Error(result.message);
+  }
+  const next = await missingDaemonPermissions(cuaDriver);
+  if (next.missing.length > 0) {
+    throw new Error(
+      `OpenclickHelper still needs ${next.missing.join(" and ")} permission.${next.stderr ? `\n\ncheck_permissions stderr:\n${next.stderr}` : ""}`,
+    );
+  }
+}
+
+async function missingDaemonPermissions(cuaDriver: string): Promise<{
+  missing: string[];
+  stderr: string;
+}> {
+  const proc = Bun.spawn([cuaDriver, "check_permissions"], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const { exitCode, stdout, stderr, timedOut } = await collectProcess(
+    proc,
+    5_000,
+  );
+  const combined = `${stdout}\n${stderr}`;
+  const missing: string[] = [];
+  if (
+    /accessibility/i.test(combined) &&
+    !/(accessibility[^\n]*(granted|true|ok|allowed))/i.test(combined)
+  ) {
+    missing.push("Accessibility");
+  }
+  if (
+    /screen[\s_]?recording|screencapture/i.test(combined) &&
+    !/(screen[\s_]?recording[^\n]*(granted|true|ok|allowed)|screencapture[^\n]*(granted|true|ok|allowed))/i.test(
+      combined,
+    )
+  ) {
+    missing.push("Screen Recording");
+  }
+  if ((timedOut || exitCode !== 0) && missing.length === 0) {
+    missing.push("macOS");
+  }
+  return { missing, stderr: stderr.trim() };
+}
+
+function readDaemonStderr(path: string): string {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 async function isDaemonRunning(
-  cuaDriver: string = requireCuaDriverBinary(),
+  cuaDriver: string = requireOpenclickHelperBinary(),
 ): Promise<boolean> {
   const proc = Bun.spawn([cuaDriver, "status"], {
     stdin: "ignore",
@@ -2663,7 +2771,7 @@ function makeVerboseStepRunner(
   telemetry?: RunTelemetry,
 ): import("./executor.ts").StepRunner {
   return async (step) => {
-    const cuaDriver = requireCuaDriverBinary();
+    const cuaDriver = requireOpenclickHelperBinary();
     const trim = (s: string, n = 200): string =>
       s.length <= n ? s.trim() : `${s.slice(0, n).trim()}…`;
     const startedAt = Date.now();
@@ -2682,7 +2790,7 @@ async function runCuaDriverCapture(
   args: string[],
   timeoutMs?: number,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const cuaDriver = requireCuaDriverBinary();
+  const cuaDriver = requireOpenclickHelperBinary();
   const proc = Bun.spawn([cuaDriver, ...args], {
     stdin: "ignore",
     stdout: "pipe",

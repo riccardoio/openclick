@@ -5,7 +5,9 @@ All notable changes to openclick are documented here. The format follows [Keep a
 ## Unreleased
 
 ### Added
-- Provider abstraction for Anthropic/OpenAI model calls without changing the AX/cua-driver action loop.
+- Renamed the macOS desktop helper to signed `OpenclickHelper.app` with bundle ID `com.openclick.helper`, plus a first-run helper window for macOS permissions and migration cleanup. On first run, OpenclickHelper will guide existing users through re-granting macOS permissions. Old CuaDriver entries can be removed in System Settings.
+- `openclick uninstall` for removing OpenclickHelper, resetting its macOS permissions, and deleting `~/.openclick/` unless `--keep-config` is set.
+- Provider abstraction for Anthropic/OpenAI model calls without changing the AX/helper action loop.
 - OpenAI Responses API provider support for planner, verifier, result, and compile model calls.
 - Mac app Settings window for choosing Anthropic/OpenAI and changing the saved API key without revealing it.
 - `openclick settings provider ...`, `openclick settings model ...`, `openclick settings api-key ...`, and `openclick settings openai-api-key ...` for CLI-only provider management.

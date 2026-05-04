@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StepRunner } from "../src/executor.ts";
 import type { PlannerClient } from "../src/planner.ts";
@@ -13,14 +13,22 @@ import {
 } from "../src/run.ts";
 
 let originalExitCode: typeof process.exitCode;
+let originalHome: string | undefined;
+let home: string;
 
 beforeEach(() => {
   originalExitCode = process.exitCode;
+  originalHome = Bun.env.OPENCLICK_HOME;
+  home = mkdtempSync(join(tmpdir(), "openclick-run-"));
+  Bun.env.OPENCLICK_HOME = home;
   process.exitCode = 0;
 });
 
 afterEach(() => {
   process.exitCode = originalExitCode ?? 0;
+  if (originalHome === undefined) Bun.env.OPENCLICK_HOME = undefined;
+  else Bun.env.OPENCLICK_HOME = originalHome;
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe("run", () => {
@@ -212,7 +220,9 @@ describe("run", () => {
       queryFn: fakeQuery,
     });
     expect(registered).toHaveProperty("cua-driver");
-    expect(registered["cua-driver"].command).toMatch(/cua-driver$/);
+    expect(registered["cua-driver"].command).toMatch(
+      /(cua-driver|OpenclickHelper)$/,
+    );
     expect(registered["cua-driver"].args).toEqual(["mcp"]);
   });
 

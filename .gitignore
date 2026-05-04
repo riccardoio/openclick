@@ -8,3 +8,6 @@ recorder/.swiftpm/
 mac-app/.build/
 *.log
 .context/codex-session-id
+signing.env
+*.signing.env
+.openclick/signing.env

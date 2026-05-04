@@ -27,8 +27,11 @@ afterEach(() => {
 function makeProbe(overrides: Partial<SystemProbe> = {}): SystemProbe {
   return {
     bunVersion: () => "1.3.11",
-    cuaDriverPath: () => "/usr/local/bin/cua-driver",
-    cuaDriverDaemonRunning: async () => true,
+    macOSVersion: () => "14.0",
+    openclickHelperPath: () =>
+      "/Applications/OpenclickHelper.app/Contents/MacOS/OpenclickHelper",
+    openclickHelperDaemonRunning: async () => true,
+    openclickHelperSignatureValid: async () => true,
     accessibilityGranted: async () => true,
     screenRecordingGranted: async () => true,
     recorderBinaryExists: () => true,
@@ -46,19 +49,21 @@ describe("doctor", () => {
     expect(report.results.every((r) => !r.fixHint)).toBe(true);
   });
 
-  test("missing cua-driver propagates to daemon + screen recording fails", async () => {
+  test("missing helper propagates to daemon + screen recording fails", async () => {
     const report = await runDoctor(
       makeProbe({
-        cuaDriverPath: () => null,
-        cuaDriverDaemonRunning: async () => true, // ignored when path is null
+        openclickHelperPath: () => null,
+        openclickHelperDaemonRunning: async () => true, // ignored when path is null
       }),
     );
     expect(report.allOk).toBe(false);
     const driver = report.results.find(
-      (r) => r.name === "cua-driver installed",
+      (r) => r.name === "OpenclickHelper installed",
     );
     expect(driver?.status).toBe("fail");
-    const daemon = report.results.find((r) => r.name === "cua-driver daemon");
+    const daemon = report.results.find(
+      (r) => r.name === "OpenclickHelper daemon",
+    );
     expect(daemon?.status).toBe("fail");
     expect(daemon?.detail).toBe("not running");
   });
@@ -120,14 +125,14 @@ describe("doctor", () => {
 
   test("--fix path: tryAutoStartDaemon flips daemon ok on rerun", async () => {
     // The user's pain point: every fresh shell, the daemon is down. With
-    // --fix, we spawn `open -n -g -a CuaDriver --args serve` and poll the
+    // --fix, we spawn `open -n -g -a OpenclickHelper --args serve` and poll the
     // status command. Here we fake the transition: the first two probe
     // calls (the doctor's pre-fix check + the autostart's early-return
     // check) report false; subsequent polls report true, simulating the
     // daemon coming up after `open` was invoked.
     let probeCalls = 0;
     const probe = makeProbe({
-      cuaDriverDaemonRunning: async () => {
+      openclickHelperDaemonRunning: async () => {
         probeCalls++;
         // calls 1 (doctor pre-fix) and 2 (autostart guard) → false.
         // calls ≥3 (polling after spawn) → true.
@@ -142,7 +147,7 @@ describe("doctor", () => {
     // First doctor pass — daemon not yet up.
     const before = await runDoctor(probe);
     const daemonBefore = before.results.find(
-      (r) => r.name === "cua-driver daemon",
+      (r) => r.name === "OpenclickHelper daemon",
     );
     expect(daemonBefore?.status).toBe("fail");
 
@@ -157,12 +162,14 @@ describe("doctor", () => {
     });
     expect(result.started).toBe(true);
     expect(result.message).toContain("up");
-    expect(launched).toEqual(["/usr/local/bin/cua-driver"]);
+    expect(launched).toEqual([
+      "/Applications/OpenclickHelper.app/Contents/MacOS/OpenclickHelper",
+    ]);
 
     // Second doctor pass — daemon now reported as ok.
     const after = await runDoctor(probe);
     const daemonAfter = after.results.find(
-      (r) => r.name === "cua-driver daemon",
+      (r) => r.name === "OpenclickHelper daemon",
     );
     expect(daemonAfter?.status).toBe("ok");
     expect(daemonAfter?.detail).toBe("running");
@@ -171,7 +178,7 @@ describe("doctor", () => {
   test("--fix path: tryAutoStartDaemon is a no-op when daemon already running", async () => {
     let calls = 0;
     const probe = makeProbe({
-      cuaDriverDaemonRunning: async () => {
+      openclickHelperDaemonRunning: async () => {
         calls++;
         return true;
       },
@@ -185,18 +192,20 @@ describe("doctor", () => {
 
   test("daemon-down fix-hint says openclick starts the helper automatically", async () => {
     const report = await runDoctor(
-      makeProbe({ cuaDriverDaemonRunning: async () => false }),
+      makeProbe({ openclickHelperDaemonRunning: async () => false }),
     );
-    const daemon = report.results.find((r) => r.name === "cua-driver daemon");
+    const daemon = report.results.find(
+      (r) => r.name === "OpenclickHelper daemon",
+    );
     expect(daemon?.status).toBe("fail");
-    expect(daemon?.fixHint).toContain("starts this automatically");
+    expect(daemon?.fixHint).toContain("starts OpenclickHelper automatically");
   });
 
   test("doctor report is JSON-serializable with stable shape (consumed by Swift onboarding)", async () => {
     const report = await runDoctor(
       makeProbe({
         anthropicApiKeySet: () => false,
-        cuaDriverDaemonRunning: async () => false,
+        openclickHelperDaemonRunning: async () => false,
       }),
     );
     const round = JSON.parse(JSON.stringify(report));
@@ -213,15 +222,17 @@ describe("doctor", () => {
     }
     // Every check the onboarding cares about must be present by name.
     const names = round.results.map((r: { name: string }) => r.name);
-    expect(names).toContain("cua-driver installed");
-    expect(names).toContain("cua-driver daemon");
-    expect(names).toContain("Accessibility (via cua-driver)");
-    expect(names).toContain("Screen Recording (via cua-driver)");
+    expect(names).toContain("macOS version");
+    expect(names).toContain("OpenclickHelper installed");
+    expect(names).toContain("OpenclickHelper signature");
+    expect(names).toContain("OpenclickHelper daemon");
+    expect(names).toContain("Accessibility (OpenclickHelper)");
+    expect(names).toContain("Screen Recording (OpenclickHelper)");
     expect(names).toContain("ANTHROPIC_API_KEY");
   });
 
-  test("Screen Recording parser handles cua-driver title-case + JSON formats (regression)", () => {
-    // cua-driver's CLI prints '✅ Screen Recording: granted.' (title case, with
+  test("Screen Recording parser handles helper title-case + JSON formats (regression)", () => {
+    // OpenclickHelper prints '✅ Screen Recording: granted.' (title case, with
     // space). The original parser looked for 'screen_recording' (snake_case)
     // and never matched. This test pins the parsing rules used inside
     // RealSystemProbe.screenRecordingGranted.

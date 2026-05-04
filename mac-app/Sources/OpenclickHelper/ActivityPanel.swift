@@ -1361,10 +1361,10 @@ struct ActivityCardView: View {
     .onAppear {
       syncShimmer()
     }
-    .onChange(of: card.slot.rawValue) {
+    .onChange(of: card.slot.rawValue) { _ in
       syncShimmer()
     }
-    .onChange(of: card.state.animationKey) {
+    .onChange(of: card.state.animationKey) { _ in
       syncShimmer()
     }
   }
@@ -1645,10 +1645,10 @@ struct ActivityCardStatusMark: View {
     .onAppear {
       syncPulse()
     }
-    .onChange(of: slot.rawValue) {
+    .onChange(of: slot.rawValue) { _ in
       syncPulse()
     }
-    .onChange(of: state.animationKey) {
+    .onChange(of: state.animationKey) { _ in
       syncPulse()
     }
   }
@@ -1983,7 +1983,7 @@ struct InlineLogListView: View {
         .padding(.vertical, 1)
       }
       .frame(maxHeight: maxHeight)
-      .onChange(of: entries.count) {
+      .onChange(of: entries.count) { _ in
         if let last = entries.last {
           withAnimation(.easeOut(duration: 0.16)) {
             proxy.scrollTo(last.id, anchor: .bottom)
@@ -2285,7 +2285,7 @@ struct DetailsLogView: View {
           .padding(.vertical, 2)
         }
         .frame(maxHeight: 150)
-        .onChange(of: entries.count) {
+        .onChange(of: entries.count) { _ in
           if let last = entries.last {
             withAnimation(.easeOut(duration: 0.16)) {
               proxy.scrollTo(last.id, anchor: .bottom)

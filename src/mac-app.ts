@@ -9,6 +9,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  OPENCLICK_HELPER_APP_NAME,
+  OPENCLICK_HELPER_BUNDLE_ID,
+  OPENCLICK_HELPER_EXECUTABLE_NAME,
+} from "./paths.ts";
 
 export async function launchMacApp(options: { detach?: boolean } = {}) {
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -23,7 +28,9 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
   });
   const buildCode = await build.exited;
   if (buildCode !== 0) {
-    throw new Error(`OpenClick app build failed with status ${buildCode}`);
+    throw new Error(
+      `OpenclickHelper app build failed with status ${buildCode}`,
+    );
   }
 
   const executable = join(
@@ -31,7 +38,7 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
     ".build",
     process.arch === "arm64" ? "arm64-apple-macosx" : "x86_64-apple-macosx",
     "debug",
-    "openclick-app",
+    OPENCLICK_HELPER_EXECUTABLE_NAME,
   );
 
   if (options.detach) {
@@ -48,9 +55,9 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
     });
     const code = await launch.exited;
     if (code !== 0) {
-      throw new Error(`OpenClick app launch failed with status ${code}`);
+      throw new Error(`OpenclickHelper app launch failed with status ${code}`);
     }
-    console.log("[openclick] Mac app launched.");
+    console.log("[openclick] OpenclickHelper app launched.");
     return;
   }
 
@@ -69,7 +76,7 @@ export async function launchMacApp(options: { detach?: boolean } = {}) {
   const code = await proc.exited;
   // 130 (SIGINT) and 143 (SIGTERM) mean "user closed the attached run" — not a crash.
   if (code !== 0 && code !== 130 && code !== 143) {
-    throw new Error(`OpenClick app exited with status ${code}`);
+    throw new Error(`OpenclickHelper app exited with status ${code}`);
   }
 }
 
@@ -89,17 +96,15 @@ function createAppBundle(options: {
   executable: string;
   openclickBin: string;
 }): string {
-  const appPath = join(options.repoRoot, ".build", "OpenClickApp.app");
+  const appPath = join(options.repoRoot, ".build", OPENCLICK_HELPER_APP_NAME);
   const contentsPath = join(appPath, "Contents");
   const macOsPath = join(contentsPath, "MacOS");
   const resourcesPath = join(contentsPath, "Resources");
-  const bundledExecutable = join(macOsPath, "openclick-app");
+  const bundledExecutable = join(macOsPath, OPENCLICK_HELPER_EXECUTABLE_NAME);
   const bundledRecorder = join(resourcesPath, "openclick-recorder");
-  const bundledCuaDriver = join(resourcesPath, "cua-driver");
   const bundledCliRoot = join(resourcesPath, "openclick-cli");
   const bundledCliBinDir = join(bundledCliRoot, "bin");
   const bundledCli = join(bundledCliBinDir, "openclick");
-  const cuaDriverSource = resolveCuaDriverBundleSource(options.repoRoot);
 
   mkdirSync(macOsPath, { recursive: true });
   mkdirSync(resourcesPath, { recursive: true });
@@ -113,10 +118,6 @@ function createAppBundle(options: {
   if (existsSync(recorderExecutable)) {
     copyFileSync(recorderExecutable, bundledRecorder);
     chmodSync(bundledRecorder, 0o755);
-  }
-  if (cuaDriverSource) {
-    copyFileSync(cuaDriverSource, bundledCuaDriver);
-    chmodSync(bundledCuaDriver, 0o755);
   }
   copyFileSync(options.openclickBin, bundledCli);
   cpSync(join(options.repoRoot, "src"), join(bundledCliRoot, "src"), {
@@ -137,15 +138,17 @@ function createAppBundle(options: {
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>openclick-app</string>
+  <string>${OPENCLICK_HELPER_EXECUTABLE_NAME}</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.openclick.app</string>
+  <string>${OPENCLICK_HELPER_BUNDLE_ID}</string>
   <key>CFBundleName</key>
-  <string>openclick</string>
+  <string>OpenclickHelper</string>
+  <key>CFBundleDisplayName</key>
+  <string>OpenclickHelper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>13.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSEnvironment</key>
@@ -154,12 +157,6 @@ function createAppBundle(options: {
     <string>${escapePlist(options.repoRoot)}</string>
     <key>OPENCLICK_BIN</key>
     <string>${escapePlist(bundledCli)}</string>
-    ${
-      cuaDriverSource
-        ? `<key>CUA_DRIVER</key>
-    <string>${escapePlist(bundledCuaDriver)}</string>`
-        : ""
-    }
   </dict>
 </dict>
 </plist>
@@ -167,26 +164,6 @@ function createAppBundle(options: {
   );
 
   return appPath;
-}
-
-function resolveCuaDriverBundleSource(repoRoot: string): string | null {
-  const candidates = [
-    Bun.env.OPENCLICK_CUA_DRIVER_BIN,
-    Bun.env.CUA_DRIVER,
-    join(
-      dirname(repoRoot),
-      "cua",
-      "libs",
-      "cua-driver",
-      ".build",
-      "release",
-      "cua-driver",
-    ),
-  ];
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 function escapePlist(value: string): string {

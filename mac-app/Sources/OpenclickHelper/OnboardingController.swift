@@ -53,7 +53,7 @@ final class GlassEffectView: NSVisualEffectView {
 @MainActor
 final class OnboardingController: NSObject {
   static let hasSeenOnboardingKey = "openclick.hasSeenOnboarding"
-  static let defaults: UserDefaults = UserDefaults(suiteName: "dev.openclick.app") ?? .standard
+  static let defaults: UserDefaults = UserDefaults(suiteName: "com.openclick.helper") ?? .standard
 
   private let window: NSWindow
   private let viewModel = OnboardingViewModel()
@@ -165,9 +165,9 @@ final class OnboardingController: NSObject {
     switch result {
     case .ok(let report):
       let byName = Dictionary(uniqueKeysWithValues: report.results.map { ($0.name, $0) })
-      applySimple(.accessibility, name: "Accessibility (via cua-driver)", in: byName, okMessage: "Lets OpenClick click and type in apps.")
-      applySimple(.screenRecording, name: "Screen Recording (via cua-driver)", in: byName, okMessage: "Lets OpenClick see the screen and verify progress.")
-      applyCuaDriver(installed: byName["cua-driver installed"], daemon: byName["cua-driver daemon"])
+      applySimple(.accessibility, name: "Accessibility (OpenclickHelper)", in: byName, okMessage: "Lets OpenClick click and type in apps.")
+      applySimple(.screenRecording, name: "Screen Recording (OpenclickHelper)", in: byName, okMessage: "Lets OpenClick see the screen and verify progress.")
+      applyCuaDriver(installed: byName["OpenclickHelper installed"], daemon: byName["OpenclickHelper daemon"])
       let apiKeyName = viewModel.provider == .openai ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
       applySimple(
         .apiKey,
@@ -268,7 +268,7 @@ final class OnboardingController: NSObject {
       // Action varies based on row state — read it back via item title.
       if let item = viewModel.items.first(where: { $0.kind == .cuaDriver }) {
         if item.actionTitle.lowercased().contains("install") {
-          CuaDriverActions.copyInstall()
+          OpenclickHelperActions.copyInstall()
         } else if item.actionTitle.lowercased().contains("check") {
           runChecks()
         } else {
@@ -459,9 +459,9 @@ enum NativePermissionPrompts {
   }
 }
 
-enum CuaDriverActions {
+enum OpenclickHelperActions {
   static let installCommand =
-    "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)\""
+    "openclick setup"
 
   static func copyInstall() {
     let pb = NSPasteboard.general
@@ -469,23 +469,23 @@ enum CuaDriverActions {
     pb.setString(installCommand, forType: .string)
     notify(
       title: "Install command copied",
-      message: "Paste it into Terminal to install CuaDriver, then run Check Again."
+      message: "Paste it into Terminal to open OpenclickHelper setup, then run Check Again."
     )
   }
 
   static func startDaemon() {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    process.arguments = ["-n", "-g", "-a", "CuaDriver", "--args", "serve"]
+    process.arguments = ["-n", "-g", "-a", "OpenclickHelper", "--args", "serve"]
     do {
       try process.run()
       notify(
-        title: "Starting CuaDriver",
+        title: "Starting OpenclickHelper",
         message: "Give it a few seconds, then run Check Again."
       )
     } catch {
       notify(
-        title: "Could not start CuaDriver",
+        title: "Could not start OpenclickHelper",
         message: error.localizedDescription
       )
     }

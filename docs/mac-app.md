@@ -1,14 +1,25 @@
 # Mac App
 
-The native macOS app is an optional wrapper around the CLI. CLI-only users can install and run `openclick` without installing the app. App installs bundle the CLI and expose the same command locally.
+The native SwiftPM executable target is `OpenclickHelper`. Release builds are
+packaged as:
 
-The Mac app includes:
+```text
+OpenclickHelper.app
+└── Contents/MacOS/OpenclickHelper
+```
 
-- menu bar chat bar
-- onboarding and permission checks
-- provider/API-key settings
-- task activity panel
-- takeover/learning UI
+Bundle identity:
+
+- Bundle ID: `com.openclick.helper`
+- Minimum macOS: 13.0
+- Entitlement: `com.apple.security.automation.apple-events`
+
+The helper app owns the macOS permission identity. The CLI always launches the
+daemon through the full bundle executable path, for example:
+
+```text
+/Applications/OpenclickHelper.app/Contents/MacOS/OpenclickHelper
+```
 
 For local Mac app development:
 
@@ -17,16 +28,18 @@ bun run build:mac-app
 bun run launch:mac-app
 ```
 
-CI/release Swift package commands:
+Release scaffolding:
 
 ```sh
-swift build --package-path mac-app -c release
-swift test --package-path mac-app
+scripts/build-universal.sh
+scripts/sign-and-notarize.sh
 ```
+
+The signing script reads variable names from `~/.openclick/signing.env`; do not
+store signing credentials in the repo.
 
 Swift products:
 
-- `openclick-app`: native menu bar app
+- `OpenclickHelper`: helper app and permission setup window
 - `openclick-recorder`: legacy recorder executable used by the old recording workflow
 - `RecorderCore`: shared recorder core library
-

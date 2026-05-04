@@ -2,17 +2,17 @@
 
 OpenClick is a macOS automation system for completing desktop tasks from natural-language prompts.
 
-OpenClick is based on the [cua-driver](https://github.com/trycua/cua) by [cua.ai](https://cua.ai/).
+OpenClick uses a signed local macOS helper named `OpenclickHelper` for desktop actions.
 
 Website: [openclick.sh](https://openclick.sh)
 
 The `openclick` CLI is the core package. The native macOS app is an optional wrapper around the same CLI: CLI-only users can install and run `openclick` without installing the Mac app, while Mac app installs bundle the CLI and expose the same command locally.
 
-OpenClick uses hosted planner models, local `cua-driver` primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
+OpenClick uses hosted planner models, local helper primitives, screenshots, AX trees, verification, critique/replanning, and incremental local memories to keep working through multi-step desktop tasks.
 
 ## Status
 
-OpenClick is early and experimental. It can handle simple app workflows, browser tasks, Calculator tasks, and some visual/canvas workflows. Reliability depends on app accessibility quality, screenshot evidence, model judgment, and `cua-driver` behavior.
+OpenClick is early and experimental. It can handle simple app workflows, browser tasks, Calculator tasks, and some visual/canvas workflows. Reliability depends on app accessibility quality, screenshot evidence, model judgment, and OpenclickHelper behavior.
 
 This release should be treated as an early `0.1.x` beta. The current basics are expected to work best for Chrome/Safari navigation, Gmail navigation, Finder folder opening, Calculator, TextEdit-style text entry, selection, copy/paste, and common app search/edit shortcuts. Complex multi-window work, canvas-heavy apps such as Figma, unusual native dialogs, and long workflows can still fail or require user takeover.
 
@@ -34,11 +34,13 @@ openclick run "open Calculator and calculate 17 times 23" --live
 
 Requirements:
 
-- macOS 14+
+- macOS 13+
 - Anthropic or OpenAI API key
-- macOS Accessibility and Screen Recording permissions
+- macOS Accessibility and Screen Recording permissions for OpenclickHelper
 
-The npm package includes the signed `cua-driver` helper for macOS arm64. `cua-driver` is the small local helper that performs desktop actions for OpenClick. See [Installation](docs/installation.md) for source setup and local development install options.
+On first run after upgrading from CuaDriver, OpenclickHelper will guide you through re-granting macOS permissions. Old CuaDriver entries can be removed in System Settings.
+
+The npm package installs the signed `OpenclickHelper.app` for macOS. OpenclickHelper is the small local helper that performs desktop actions for OpenClick. See [Installation](docs/installation.md) for source setup and local development install options.
 
 ## Core Concepts
 
@@ -63,6 +65,7 @@ openclick doctor [--fix] [--json]
 openclick setup [--provider <anthropic|openai>] [--api-key <key>] [--model <model>]
 openclick run <task> [--live] [--criteria <text>] [--max-steps <n>] [--max-batches <n>]
 openclick cancel <run-id>
+openclick uninstall [--keep-config] [--yes]
 
 openclick settings provider set <anthropic|openai>
 openclick settings anthropic-api-key set <key>

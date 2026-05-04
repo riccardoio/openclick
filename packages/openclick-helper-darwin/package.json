@@ -1,0 +1,12 @@
+{
+  "name": "@openclick/openclick-helper-darwin",
+  "version": "0.1.0",
+  "description": "Signed and notarized OpenclickHelper app bundle for macOS.",
+  "license": "MIT",
+  "type": "module",
+  "os": ["darwin"],
+  "files": ["OpenclickHelper.app", "postinstall.js"],
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}

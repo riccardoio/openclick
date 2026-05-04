@@ -80,6 +80,7 @@ describe("cli", () => {
     expect(t).toContain("record");
     expect(t).toContain("compile");
     expect(t).toContain("run");
+    expect(t).toContain("uninstall");
   });
 
   test("--version prints version", async () => {
@@ -227,6 +228,13 @@ describe("cli", () => {
     await expect(main(["run", "--allow-foreground"])).rejects.toThrow(
       /run requires <task>/i,
     );
+  });
+
+  test("uninstall --yes --keep-config preserves openclick home", async () => {
+    await main(["uninstall", "--yes", "--keep-config"]);
+    expect(existsSync(home)).toBe(true);
+    expect(text()).toContain("preserved ~/.openclick");
+    expect(text()).toContain("npm uninstall -g openclick");
   });
 
   test("memory list/export/import commands work", async () => {
