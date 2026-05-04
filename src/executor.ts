@@ -2420,7 +2420,47 @@ export async function runCuaDriverStep(
       stdout,
     };
   }
+  if (
+    step.tool === "launch_app" &&
+    (opts.executionPolicy ?? "background") === "foreground"
+  ) {
+    // Upstream launch_app intentionally doesn't activate the app — it
+    // returns active:false so background mode stays unobtrusive. In
+    // foreground mode (--allow-foreground), bring the launched app to
+    // the front via /usr/bin/open so the user can actually see what
+    // openclick is doing. Best-effort: a failed activation does NOT
+    // fail the run.
+    await activateLaunchedApp(step.args, stdout);
+  }
   return { ok: true, stdout };
+}
+
+async function activateLaunchedApp(
+  args: Record<string, unknown>,
+  stdout: string,
+): Promise<void> {
+  const bundleId =
+    stringField(args.bundle_id) ?? extractBundleIdFromStdout(stdout);
+  if (!bundleId) return;
+  try {
+    const proc = Bun.spawn(["/usr/bin/open", "-b", bundleId], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await proc.exited;
+  } catch {
+    // Activation is best-effort; the launch already succeeded.
+  }
+}
+
+function extractBundleIdFromStdout(stdout: string): string | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as { bundle_id?: unknown };
+    return typeof parsed.bundle_id === "string" ? parsed.bundle_id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function runVirtualMultiDrag(

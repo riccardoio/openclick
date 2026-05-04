@@ -154,7 +154,7 @@ Principles:
 - For drawing, resizing, sliders, canvas selection, or any press-move-release gesture where vector paste is not appropriate, use drag. For app-specific tools, first infer and select the right tool from the observed UI, then use drag in that app's coordinate space. If the state block includes screenshot_width and screenshot_height, include them in drag args so optimized screenshots map back to real window coordinates. Do NOT invent hotkeys like "drag".
 - type_text requires a focused editable role. If you don't see one in the AX tree, click the buttons or press_key instead.
 - Do not use type_text as a shortcut for button grids, keypads, calculators, or other non-editable controls. Use visible buttons, press_key, or hotkey.
-- Do not use press_key for shifted symbols such as "*", "+", "?", or uppercase letters. Use hotkey with ["shift", "..."] when needed.
+- NEVER emit shifted symbols ("*", "+", "?", "@", uppercase letters, etc.) directly in press_key.key OR hotkey.keys. Always use the base key plus an explicit "shift" modifier — emit \`hotkey ["shift","="]\` not \`press_key "+"\` and not \`hotkey ["+"]\`; emit \`hotkey ["command","shift","="]\` not \`hotkey ["command","+"]\`. The runtime keymap only knows unshifted key names.
 - For exact stateful input tasks (calculations, forms, search boxes), reset or clear stale input before entering the requested content unless the current state clearly shows a fresh empty/default input. If you just launched or attached to an existing app and have not observed a fresh input, assume it may be stale and reset it. Do not rely on a previous result already matching the requested answer.
 - For browser address/search bar navigation, after typing a URL or query, press return unless the typed text itself includes a trailing newline/return.
 - On replan, return only the SUFFIX (the remaining work). Don't restart from step 0.
@@ -356,26 +356,38 @@ export function normalizePlanStep(step: PlanStep): PlanStep {
     const keys = step.args.keys.filter(
       (key): key is string => typeof key === "string",
     );
-    const firstKey = keys[0];
-    const secondKey = keys[1];
-    if (keys.length === 1 && firstKey && SHIFTED_KEY_MAP[firstKey]) {
-      return {
-        ...step,
-        args: { ...step.args, keys: ["shift", SHIFTED_KEY_MAP[firstKey]] },
-      };
+    // Walk every position. Any shifted symbol ("+", "?", "*", uppercase
+    // letters, etc.) is rewritten to its base key, and "shift" is added
+    // to the modifier set if it isn't already there. Catches the patterns
+    // ["+"], ["shift","+"], ["command","+"], ["control","shift","?"], etc.
+    let needsShift = false;
+    const rewritten = keys.map((key) => {
+      const baseFromShifted = SHIFTED_KEY_MAP[key];
+      if (baseFromShifted !== undefined) {
+        needsShift = true;
+        return baseFromShifted;
+      }
+      if (key.length === 1 && key >= "A" && key <= "Z") {
+        needsShift = true;
+        return key.toLowerCase();
+      }
+      return key;
+    });
+    const hasShift = rewritten.some((key) => key.toLowerCase() === "shift");
+    if (needsShift && !hasShift) {
+      // Insert "shift" right before the last (presumed non-modifier) key
+      // so existing modifiers stay before it: ["command","="] becomes
+      // ["command","shift","="].
+      const insertAt = Math.max(0, rewritten.length - 1);
+      rewritten.splice(insertAt, 0, "shift");
     }
     if (
-      keys.length === 2 &&
-      firstKey?.toLowerCase() === "shift" &&
-      secondKey &&
-      SHIFTED_KEY_MAP[secondKey]
+      rewritten.length === keys.length &&
+      rewritten.every((key, i) => key === keys[i])
     ) {
-      return {
-        ...step,
-        args: { ...step.args, keys: ["shift", SHIFTED_KEY_MAP[secondKey]] },
-      };
+      return step;
     }
-    return step;
+    return { ...step, args: { ...step.args, keys: rewritten } };
   }
   if (step.tool !== "press_key") return step;
   const key = step.args.key;
