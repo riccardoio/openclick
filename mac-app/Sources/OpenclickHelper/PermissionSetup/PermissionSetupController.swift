@@ -162,7 +162,12 @@ final class PermissionSetupViewModel: ObservableObject {
   }
 
   func writeStatus(status: String, message: String) {
-    guard let statusFile else { return }
+    // Write to the explicit --status-file / OPENCLICK_SETUP_STATUS_FILE
+    // path when one is provided, AND always also write to the canonical
+    // ~/.openclick/setup-status.json. The canonical path is the fallback
+    // for the case where macOS strips env vars on a Screen Recording TCC
+    // auto-relaunch — the CLI's polling reads the canonical path either
+    // way, so completion is never lost.
     let payload: [String: String] = [
       "status": status,
       "message": message,
@@ -171,11 +176,22 @@ final class PermissionSetupViewModel: ObservableObject {
     guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
       return
     }
-    try? FileManager.default.createDirectory(
-      at: URL(fileURLWithPath: statusFile).deletingLastPathComponent(),
-      withIntermediateDirectories: true
-    )
-    try? data.write(to: URL(fileURLWithPath: statusFile))
+    var paths: [String] = []
+    if let statusFile { paths.append(statusFile) }
+    paths.append(Self.canonicalStatusFilePath())
+    for path in paths {
+      let url = URL(fileURLWithPath: path)
+      try? FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try? data.write(to: url)
+    }
+  }
+
+  static func canonicalStatusFilePath() -> String {
+    let home = NSHomeDirectory()
+    return "\(home)/.openclick/setup-status.json"
   }
 
   private func evaluateSteps() {

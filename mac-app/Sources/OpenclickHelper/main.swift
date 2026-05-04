@@ -95,53 +95,28 @@ func argumentValue(after flag: String, in args: [String]) -> String? {
 
 @MainActor
 final class OpenclickHelperAppDelegate: NSObject, NSApplicationDelegate {
-  private var statusController: StatusController?
-  private var hotKeyController: HotKeyController?
-  private var onboardingController: OnboardingController?
-  private var settingsController: SettingsController?
   private var permissionSetupController: PermissionSetupController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    NSApp.setActivationPolicy(.accessory)
-    if let setupOptions = permissionSetupOptionsFromArguments() {
-      let setup = PermissionSetupController(options: setupOptions)
-      permissionSetupController = setup
-      setup.show()
-      return
-    }
-
-    CliInstaller.installBundledCliIfAvailable()
-
-    let chatBar = ChatBarController()
-    let onboarding = OnboardingController()
-    let settings = SettingsController()
-    let permissionSetup = PermissionSetupController(
-      options: PermissionSetupLaunchOptions(
-        completionAction: .done,
-        statusFile: nil,
-        terminateOnCompletion: false
-      )
+    // OpenclickHelper.app currently does exactly one thing in GUI mode:
+    // show the permission-setup window. The chat-bar / onboarding / settings
+    // / hot-key UI is shelved while we focus on the setup ritual. Daemon
+    // commands (serve, mcp, click, etc.) never reach this delegate — they
+    // are execv'd to the embedded daemon by the dispatcher in main.swift
+    // before NSApplication is even created.
+    //
+    // .regular activation policy ensures the window foregrounds when
+    // launched from a terminal-spawned process, after a Screen Recording
+    // TCC relaunch, or from a double-click in Finder.
+    NSApp.setActivationPolicy(.regular)
+    let options = permissionSetupOptionsFromArguments() ?? PermissionSetupLaunchOptions(
+      completionAction: .done,
+      statusFile: nil,
+      terminateOnCompletion: true
     )
-    chatBar.openOnboarding = { [weak onboarding] in onboarding?.show() }
-    onboardingController = onboarding
-    settingsController = settings
-    permissionSetupController = permissionSetup
-    statusController = StatusController(
-      chatBar: chatBar,
-      onboarding: onboarding,
-      settings: settings,
-      permissionSetup: permissionSetup
-    )
-    hotKeyController = HotKeyController { chatBar.toggle() }
-    hotKeyController?.register()
-
-    let hasSeen = OnboardingController.defaults.bool(forKey: OnboardingController.hasSeenOnboardingKey)
-    if hasSeen {
-      chatBar.show()
-    } else {
-      onboarding.show()
-      chatBar.show()
-    }
+    let setup = PermissionSetupController(options: options)
+    permissionSetupController = setup
+    setup.show()
   }
 
   private func permissionSetupOptionsFromArguments() -> PermissionSetupLaunchOptions? {
