@@ -43,7 +43,37 @@ cp "$DEV_BIN" "$APP_DIR/Contents/MacOS/OpenclickHelper"
 cp "$ROOT/mac-app/Sources/OpenclickHelper/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$DAEMON_SOURCE" "$APP_DIR/Contents/Resources/openclick-daemon"
 chmod 755 "$APP_DIR/Contents/MacOS/OpenclickHelper" "$APP_DIR/Contents/Resources/openclick-daemon"
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+
+# The daemon binary ships with hardened runtime + com.apple.security.automation.apple-events
+# entitlement. macOS SIGKILLs hardened-runtime processes that aren't signed by a real
+# Developer ID (ad-hoc signing isn't trusted enough). For dev iteration we need the
+# real cert; notarization is only required for distribution, not for local launches.
+SIGNING_IDENTITY="${CERT_APPLICATION_NAME:-}"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep "Developer ID Application" \
+    | head -1 \
+    | sed -E 's/^[[:space:]]*[0-9]+\)[[:space:]]+[A-F0-9]+[[:space:]]+"([^"]+)".*/\1/')"
+fi
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  echo "no Developer ID Application identity found in keychain" >&2
+  echo "set CERT_APPLICATION_NAME to a valid signing identity, or run scripts/sign-and-notarize.sh first" >&2
+  exit 1
+fi
+
+ENTITLEMENTS="$ROOT/mac-app/OpenclickHelper.entitlements"
+
+codesign --force --options runtime --identifier com.openclick.helper.daemon \
+  --entitlements "$ENTITLEMENTS" --sign "$SIGNING_IDENTITY" \
+  "$APP_DIR/Contents/Resources/openclick-daemon" >/dev/null
+
+codesign --force --options runtime \
+  --entitlements "$ENTITLEMENTS" --sign "$SIGNING_IDENTITY" \
+  "$APP_DIR" >/dev/null
+
+codesign --verify --strict --verbose=1 "$APP_DIR/Contents/Resources/openclick-daemon" >/dev/null
+codesign --verify --deep --strict --verbose=1 "$APP_DIR" >/dev/null
+echo "Signed with: $SIGNING_IDENTITY"
 
 if [[ "${1:-}" == "--reset-tcc" ]]; then
   tccutil reset Accessibility com.openclick.helper >/dev/null 2>&1 || true
