@@ -96,9 +96,6 @@ final class PermissionSetupController: NSObject, NSWindowDelegate {
 @MainActor
 final class PermissionSetupViewModel: ObservableObject {
   @Published var steps: [PermissionSetupStep] = PermissionSetupStep.defaultSteps()
-  @Published var migrationIssues: [MigrationIssue] = []
-  @Published var migrationMessage: String =
-    "We're moving to a new helper. macOS will ask you to grant permissions once - old grants don't carry over."
   @Published var installMessage: String = "Checking install location..."
   @Published var isReady = false
   @Published var activeIndex = 0
@@ -110,7 +107,6 @@ final class PermissionSetupViewModel: ObservableObject {
   private let statusFile: String?
   private var timer: Timer?
   private var activeStartedAt = Date()
-  private var fullDiskAccessNeeded = false
   private var developerToolsNeeded = false
 
   init(completionAction: PermissionCompletionAction, statusFile: String?) {
@@ -119,10 +115,7 @@ final class PermissionSetupViewModel: ObservableObject {
   }
 
   func start() {
-    MigrationDetector.killOldDaemon()
     installMessage = installHelperIfNeeded()
-    migrationIssues = MigrationDetector.detect()
-    fullDiskAccessNeeded = migrationIssues.contains { $0.kind == .staleTcc }
     developerToolsNeeded =
       ProcessInfo.processInfo.environment["OPENCLICK_REQUIRE_DEVELOPER_TOOLS"] == "1"
     evaluateSteps()
@@ -130,13 +123,6 @@ final class PermissionSetupViewModel: ObservableObject {
     timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.evaluateSteps() }
     }
-  }
-
-  func cleanupMigration() {
-    migrationMessage = MigrationDetector.cleanup()
-    migrationIssues = MigrationDetector.detect()
-    fullDiskAccessNeeded = migrationIssues.contains { $0.kind == .staleTcc }
-    evaluateSteps()
   }
 
   func request(step: PermissionSetupStep.Kind) {
@@ -153,8 +139,6 @@ final class PermissionSetupViewModel: ObservableObject {
     case .automation:
       _ = PermissionProbes.automationGranted()
       SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
-    case .fullDiskAccess:
-      SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
     case .developerTools:
       SettingsLink.open("x-apple.systempreferences:com.apple.preference.security?Privacy_DeveloperTools")
     }
@@ -233,8 +217,6 @@ final class PermissionSetupViewModel: ObservableObject {
       return CGPreflightScreenCaptureAccess()
     case .automation:
       return PermissionProbes.automationGranted()
-    case .fullDiskAccess:
-      return !fullDiskAccessNeeded || PermissionProbes.fullDiskAccessAvailable()
     case .developerTools:
       return !developerToolsNeeded || PermissionProbes.developerToolsAllowed()
     }
@@ -288,7 +270,6 @@ struct PermissionSetupStep: Identifiable, Equatable {
     case accessibility
     case screenRecording
     case automation
-    case fullDiskAccess
     case developerTools
   }
 
@@ -337,14 +318,6 @@ struct PermissionSetupStep: Identifiable, Equatable {
       ),
       PermissionSetupStep(
         id: 4,
-        kind: .fullDiskAccess,
-        title: "Full Disk Access",
-        subtitle: "Needed only to inspect or clean protected legacy permission rows.",
-        why: "Used for migration cleanup when macOS protects stale TCC entries.",
-        doneStatus: "Ready"
-      ),
-      PermissionSetupStep(
-        id: 5,
         kind: .developerTools,
         title: "Developer Tools / SIP",
         subtitle: "Needed only on Macs that require developer-tool authorization.",
@@ -364,7 +337,6 @@ struct PermissionSetupView: View {
       Text(viewModel.installMessage)
         .font(.system(size: 12.5))
         .foregroundStyle(.secondary)
-      migration
       ForEach(viewModel.steps) { step in
         PermissionStepCard(
           step: step,
@@ -388,27 +360,6 @@ struct PermissionSetupView: View {
       Text("Two macOS permissions. About 30 seconds.")
         .font(.system(size: 14))
         .foregroundStyle(.secondary)
-    }
-  }
-
-  @ViewBuilder
-  private var migration: some View {
-    if !viewModel.migrationIssues.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Migration")
-          .font(.system(size: 14, weight: .semibold))
-        Text(viewModel.migrationMessage)
-          .font(.system(size: 12.5))
-          .foregroundStyle(.secondary)
-        ForEach(viewModel.migrationIssues) { issue in
-          Text("\(issue.title): \(issue.detail)")
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-        }
-        Button("Clean Up") { viewModel.cleanupMigration() }
-      }
-      .padding(12)
-      .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
   }
 

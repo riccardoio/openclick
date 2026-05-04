@@ -556,6 +556,22 @@ export async function runPermissionSetupWindow(options: {
         };
       }
       if (status?.status === "closed" || status?.status === "failed") {
+        // The window reports closed/failed, but the user may have granted
+        // every permission and just dismissed the window without clicking
+        // Continue/Done. Treat actual TCC state as the source of truth.
+        const granted = await daemonPermissionsGranted(helper);
+        if (granted) {
+          writeSetupCompletionMarker();
+          options.io?.write("Permissions granted; continuing.");
+          return {
+            completed: true,
+            status: "completed",
+            message:
+              options.completionAction === "continue"
+                ? "OpenclickHelper setup complete. Continuing run."
+                : "OpenclickHelper setup complete.",
+          };
+        }
         return {
           completed: false,
           status: status.status,
@@ -577,6 +593,20 @@ export async function runPermissionSetupWindow(options: {
         message: "OpenclickHelper setup complete.",
       };
     }
+    // Window exited without writing "completed". Final TCC check before giving up.
+    const granted = await daemonPermissionsGranted(helper);
+    if (granted) {
+      writeSetupCompletionMarker();
+      options.io?.write("Permissions granted; continuing.");
+      return {
+        completed: true,
+        status: "completed",
+        message:
+          options.completionAction === "continue"
+            ? "OpenclickHelper setup complete. Continuing run."
+            : "OpenclickHelper setup complete.",
+      };
+    }
     return {
       completed: false,
       status: "closed",
@@ -587,6 +617,41 @@ export async function runPermissionSetupWindow(options: {
     };
   } finally {
     lock.release();
+  }
+}
+
+async function daemonPermissionsGranted(helperPath: string): Promise<boolean> {
+  // Mirror missingDaemonPermissions() in run.ts: spawn `OpenclickHelper
+  // check_permissions` and look for explicit "granted/true/ok/allowed"
+  // on both Accessibility and Screen Recording lines. Anything else
+  // (timeout, daemon error, missing line) counts as not granted.
+  try {
+    const proc = Bun.spawn([helperPath, "check_permissions"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && proc.exitCode === null) {
+      await sleep(100);
+    }
+    if (proc.exitCode === null) {
+      proc.kill();
+      return false;
+    }
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const combined = `${stdout}\n${stderr}`;
+    const accessibilityGranted =
+      /accessibility[^\n]*(granted|true|ok|allowed)/i.test(combined);
+    const screenGranted = /screen[^\n]*(granted|true|ok|allowed)/i.test(
+      combined,
+    );
+    return accessibilityGranted && screenGranted;
+  } catch {
+    return false;
   }
 }
 
