@@ -364,22 +364,36 @@ struct PermissionSetupView: View {
   }
 
   private var ready: some View {
-    HStack(spacing: 16) {
-      Image(systemName: "checkmark.circle.fill")
-        .font(.system(size: 42, weight: .semibold))
-        .foregroundStyle(.green)
-      VStack(alignment: .leading, spacing: 4) {
-        Text("OpenclickHelper is ready")
-          .font(.system(size: 19, weight: .bold))
-        Button(viewModel.completionAction.buttonTitle) {
-          viewModel.finish()
+    VStack(spacing: 14) {
+      HStack(spacing: 16) {
+        Image(systemName: "checkmark.circle.fill")
+          .font(.system(size: 42, weight: .semibold))
+          .foregroundStyle(.green)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("OpenclickHelper is ready")
+            .font(.system(size: 19, weight: .bold))
+          Text(
+            viewModel.completionAction == .continueRun
+              ? "Continuing your task in the terminal."
+              : "You can close this window."
+          )
+          .font(.system(size: 13))
+          .foregroundStyle(.secondary)
         }
-        .keyboardShortcut(.defaultAction)
+        Spacer()
       }
-      Spacer()
+      Button(action: { viewModel.finish() }) {
+        Text(viewModel.completionAction.buttonTitle)
+          .font(.system(size: 15, weight: .semibold))
+          .frame(maxWidth: .infinity, minHeight: 28)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.borderedProminent)
+      .controlSize(.large)
+      .keyboardShortcut(.defaultAction)
     }
-    .padding(14)
-    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    .padding(16)
+    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
   }
 }
 
