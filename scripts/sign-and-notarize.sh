@@ -11,13 +11,15 @@ ZIP_PATH="$BUILD_DIR/OpenclickHelper.zip"
 NOTARY_OUTPUT="$BUILD_DIR/notary-submit.json"
 PACKAGE_APP_DIR="$ROOT/packages/openclick-helper-darwin/$APP_NAME"
 
-if [[ ! -f "$SIGNING_ENV" ]]; then
-  echo "missing $SIGNING_ENV" >&2
-  exit 1
+# Credentials come from one of two sources:
+#   1. ~/.openclick/signing.env (chmod 600, gitignored) if present
+#   2. Whatever is already exported in the current shell environment
+# Either is fine. The required-vars check below catches missing values
+# regardless of source.
+if [[ -f "$SIGNING_ENV" ]]; then
+  # shellcheck source=/dev/null
+  source "$SIGNING_ENV"
 fi
-
-# shellcheck source=/dev/null
-source "$SIGNING_ENV"
 
 required_vars=(
   APPLE_TEAM_ID
